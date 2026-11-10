@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="fr" data-phase="noon">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Workeda AI Commerce Studio</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main id="stage">
+    <canvas id="map" tabindex="0" role="img" aria-label="Archipel isométrique : une île par département autour d'une place centrale. Glisser pour déplacer, molette pour zoomer."></canvas>
+    <div id="overlay"></div>
+    <header id="topbar" class="panel">
+      <canvas id="logo" width="44" height="7" aria-label="Workeda" role="img"></canvas>
+      <span class="sub">AI Commerce Studio</span>
+      <div class="search-wrap"><input id="search" type="search" placeholder="Rechercher un agent…" aria-label="Rechercher un agent par nom ou rôle" autocomplete="off"><ul id="search-results" class="panel" hidden></ul></div>
+      <span id="missions-count" class="chip">0 mission ouverte</span>
+      <button id="phase-pill" class="chip accent" type="button" aria-haspopup="true">Midi</button>
+      <span id="connections" class="chip soft">Vérification locale…</span>
+      <button id="settings-btn" class="icon" type="button" aria-label="Réglages" aria-haspopup="true">⚙</button>
+    </header>
+    <section id="settings" class="panel" hidden aria-label="Réglages">
+      <label>Ciel <select id="sky"><option value="auto">Automatique</option><option value="morning">Matin</option><option value="noon">Midi</option><option value="evening">Soir</option><option value="night">Nuit</option></select></label>
+      <div class="zoom">Zoom <button id="zoom-out" type="button" aria-label="Dézoomer">−</button><span id="zoom-label">100 %</span><button id="zoom-in" type="button" aria-label="Zoomer">+</button></div>
+      <ul class="legend"><li><span class="dot idle"></span>En attente (aucune icône)</li><li><span class="dot working"></span>Au travail</li><li><span class="dot waiting"></span>Attend une réponse</li><li><span class="dot blocked"></span>Bloqué</li></ul>
+      <p class="note">« Détecté » signifie seulement que le programme est présent sur cet ordinateur. Aucune écriture Shopify sans approbation explicite.</p>
+    </section>
+    <form id="missionbar" class="panel" aria-label="Donner une mission">
+      <select name="assignedTo" aria-label="Agent assigné"><option value="">Sans agent</option></select>
+      <input name="title" required maxlength="120" placeholder="Donner une mission…" aria-label="Titre de la mission">
+      <button type="submit" class="primary">Créer la mission</button>
+    </form>
+    <aside id="minimap" class="panel" aria-label="Plan de l'archipel">
+      <div class="mm-head"><span>Plan de l'archipel</span><button id="minimap-toggle" type="button" aria-label="Replier le plan">▾</button></div>
+      <div id="minimap-grid"><div id="minimap-view"></div></div>
+    </aside>
+    <section id="pop" class="panel" hidden tabindex="-1" role="dialog" aria-label="Détails"></section>
+    <div id="live" class="sr" aria-live="polite"></div>
+  </main>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

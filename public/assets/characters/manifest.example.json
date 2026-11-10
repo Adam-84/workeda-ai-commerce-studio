@@ -1,0 +1,21 @@
+{
+  "license": "",
+  "author": "",
+  "frameWidth": 64,
+  "frameHeight": 64,
+  "anchorX": 32,
+  "anchorY": 61,
+  "fps": 4,
+  "variants": [
+    {
+      "idle": { "src": "agent-a-idle.png", "frames": 3 },
+      "working": { "src": "agent-a-working.png", "frames": 3 },
+      "waiting": { "src": "agent-a-waiting.png", "frames": 3 },
+      "blocked": { "src": "agent-a-blocked.png", "frames": 3 },
+      "walk-down": { "src": "agent-a-walk-down.png", "frames": 3 },
+      "walk-up": { "src": "agent-a-walk-up.png", "frames": 3 },
+      "walk-left": { "src": "agent-a-walk-left.png", "frames": 3 },
+      "walk-right": { "src": "agent-a-walk-right.png", "frames": 3 }
+    }
+  ]
+}

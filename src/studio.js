@@ -1,0 +1,138 @@
+import { DatabaseSync } from 'node:sqlite';
+import { randomUUID } from 'node:crypto';
+import { isValidAppearance } from '../public/sprites.js';
+import { isValidIslandStyle, normalizeIslandStyle } from '../public/island-style.js';
+
+const DEPARTMENTS = [
+  ['Direction', 'Pilotage et validations'], ['Catalogue', 'Produits et collections'],
+  ['Création', 'Contenus et thème'], ['Marketing', 'Acquisition et campagnes'],
+  ['Service client', 'Support et retours'], ['Opérations', 'Commandes et flux'],
+  ['Données', 'Analyses et qualité'], ['Laboratoire', 'Expérimentations approuvées']
+];
+
+const now = () => new Date().toISOString();
+const asBoolean = (value) => Boolean(value);
+const mapDepartment = (row) => ({ ...row, enabled: asBoolean(row.enabled) });
+const mapAgent = (row) => ({ ...row, enabled: asBoolean(row.enabled), statusSource: row.status_source });
+const mapMission = (row) => ({ ...row, requiresApproval: asBoolean(row.requires_approval) });
+const mapMessage = (row) => ({ ...row, fromAgentId: row.from_agent_id, toAgentId: row.to_agent_id, missionId: row.mission_id });
+
+export function createStudio(filename = 'data/workeda.db') {
+  const db = new DatabaseSync(filename);
+  db.exec(`PRAGMA foreign_keys = ON;
+    CREATE TABLE IF NOT EXISTS departments (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL, department_id TEXT NOT NULL REFERENCES departments(id), enabled INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'idle', status_source TEXT NOT NULL DEFAULT 'manual', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS missions (id TEXT PRIMARY KEY, title TEXT NOT NULL, requested_by TEXT REFERENCES agents(id), assigned_to TEXT REFERENCES agents(id), state TEXT NOT NULL DEFAULT 'draft', requires_approval INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, from_agent_id TEXT NOT NULL REFERENCES agents(id), to_agent_id TEXT NOT NULL REFERENCES agents(id), mission_id TEXT REFERENCES missions(id), body TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, agent_id TEXT REFERENCES agents(id), kind TEXT NOT NULL, detail TEXT NOT NULL, source TEXT NOT NULL, verified INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS approvals (id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id), action TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL, decided_at TEXT);
+    CREATE TABLE IF NOT EXISTS agent_appearance (agent_id TEXT PRIMARY KEY REFERENCES agents(id), hair_style TEXT NOT NULL, hair_color TEXT NOT NULL, skin TEXT NOT NULL, eyes TEXT NOT NULL, outfit TEXT NOT NULL, top_color TEXT NOT NULL, accessory TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS island_styles (department_id TEXT PRIMARY KEY REFERENCES departments(id), label TEXT, accent TEXT, floor TEXT, wall TEXT, emblem TEXT, tree TEXT, ground TEXT, lanterns INTEGER, updated_at TEXT NOT NULL);
+  `);
+  const seeded = db.prepare('SELECT COUNT(*) AS count FROM departments').get().count;
+  if (seeded === 0) {
+    const insert = db.prepare('INSERT INTO departments (id, name, description, created_at) VALUES (?, ?, ?, ?)');
+    for (const [name, description] of DEPARTMENTS) insert.run(randomUUID(), name, description, now());
+  }
+
+  const emit = (agentId, kind, detail, source = 'manual', verified = true) => {
+    db.prepare('INSERT INTO events (id, agent_id, kind, detail, source, verified, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(randomUUID(), agentId ?? null, kind, detail, source, Number(verified), now());
+  };
+  const one = (sql, id, map = (x) => x) => { const result = db.prepare(sql).get(id); return result && map(result); };
+
+  const mapAppearance = (r) => ({ agentId: r.agent_id, hairStyle: r.hair_style, hairColor: r.hair_color, skin: r.skin, eyes: r.eyes, outfit: r.outfit, topColor: r.top_color, accessory: r.accessory, updatedAt: r.updated_at });
+  const requireAgent = (id) => { if (!one('SELECT id FROM agents WHERE id = ?', id)) throw Object.assign(new Error('Agent introuvable.'), { status: 404 }); };
+
+  const mapIslandStyle = (r) => ({ departmentId: r.department_id, label: r.label, accent: r.accent, floor: r.floor, wall: r.wall, emblem: r.emblem, tree: r.tree, ground: r.ground, lanterns: r.lanterns === null ? null : Boolean(r.lanterns), updatedAt: r.updated_at });
+  const requireDepartment = (id) => { const d = one('SELECT id, name FROM departments WHERE id = ?', id); if (!d) throw Object.assign(new Error('Département introuvable.'), { status: 404 }); return d; };
+
+  return {
+    listDepartments: () => db.prepare('SELECT * FROM departments ORDER BY created_at').all().map(mapDepartment),
+    createDepartment({ name, description = '' }) {
+      if (!name?.trim()) throw new Error('Le nom du département est obligatoire.');
+      const id = randomUUID(); db.prepare('INSERT INTO departments (id, name, description, created_at) VALUES (?, ?, ?, ?)').run(id, name.trim(), description.trim(), now());
+      return one('SELECT * FROM departments WHERE id = ?', id, mapDepartment);
+    },
+    updateDepartment(id, { name, description, enabled }) {
+      const existing = one('SELECT * FROM departments WHERE id = ?', id); if (!existing) throw new Error('Département introuvable.');
+      db.prepare('UPDATE departments SET name = ?, description = ?, enabled = ? WHERE id = ?').run(name?.trim() || existing.name, description?.trim() ?? existing.description, enabled === undefined ? existing.enabled : Number(enabled), id);
+      return one('SELECT * FROM departments WHERE id = ?', id, mapDepartment);
+    },
+    listAgents: () => db.prepare(`SELECT a.*, d.name AS department_name FROM agents a JOIN departments d ON d.id=a.department_id ORDER BY a.created_at DESC`).all().map(mapAgent),
+    hireAgent({ name, role, departmentId }) {
+      if (!name?.trim() || !role?.trim() || !departmentId) throw new Error('Nom, rôle et département sont obligatoires.');
+      if (!one('SELECT id FROM departments WHERE id = ?', departmentId)) throw new Error('Département introuvable.');
+      const id = randomUUID(); const timestamp = now();
+      db.prepare('INSERT INTO agents (id, name, role, department_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(id, name.trim(), role.trim(), departmentId, timestamp, timestamp);
+      emit(id, 'agent.hired', `${name.trim()} a été recruté.`, 'manual', true);
+      return one('SELECT * FROM agents WHERE id = ?', id, mapAgent);
+    },
+    updateAgent(id, { name, role, departmentId, enabled }) {
+      const existing = one('SELECT * FROM agents WHERE id = ?', id); if (!existing) throw new Error('Agent introuvable.');
+      db.prepare('UPDATE agents SET name=?, role=?, department_id=?, enabled=?, updated_at=? WHERE id=?').run(name?.trim() || existing.name, role?.trim() || existing.role, departmentId || existing.department_id, enabled === undefined ? existing.enabled : Number(enabled), now(), id);
+      emit(id, enabled === false ? 'agent.disabled' : 'agent.updated', 'Configuration mise à jour.', 'manual', true);
+      return one('SELECT * FROM agents WHERE id = ?', id, mapAgent);
+    },
+    recordActivity({ agentId, status, source, verified, detail = '' }) {
+      if (!['idle', 'working', 'waiting', 'blocked'].includes(status)) throw new Error('Statut invalide.');
+      if (!verified) throw new Error('Une activité externe doit être vérifiée avant affichage.');
+      if (!['claude', 'codex', 'shopify', 'manual'].includes(source)) throw new Error('Source inconnue.');
+      if (!one('SELECT id FROM agents WHERE id = ?', agentId)) throw new Error('Agent introuvable.');
+      db.prepare('UPDATE agents SET status=?, status_source=?, updated_at=? WHERE id=?').run(status, source, now(), agentId);
+      emit(agentId, 'activity.recorded', detail || `Statut ${status}`, source, true);
+      return one('SELECT * FROM agents WHERE id = ?', agentId, mapAgent);
+    },
+    listEvents: (agentId) => db.prepare('SELECT * FROM events WHERE agent_id = ? ORDER BY rowid DESC').all(agentId),
+    createMission({ title, requestedBy = null, assignedTo = null, requiresApproval = true }) {
+      if (!title?.trim()) throw new Error('Le titre de mission est obligatoire.');
+      const id = randomUUID(); db.prepare('INSERT INTO missions (id, title, requested_by, assigned_to, requires_approval, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(id, title.trim(), requestedBy, assignedTo, Number(requiresApproval), now());
+      if (assignedTo) emit(assignedTo, 'mission.assigned', title.trim(), 'manual', true);
+      return one('SELECT * FROM missions WHERE id = ?', id, mapMission);
+    },
+    listMissions: () => db.prepare('SELECT * FROM missions ORDER BY created_at DESC').all().map(mapMission),
+    sendMessage({ fromAgentId, toAgentId, missionId = null, body }) {
+      if (!body?.trim()) throw new Error('Le message est obligatoire.');
+      const id = randomUUID(); db.prepare('INSERT INTO messages (id, from_agent_id, to_agent_id, mission_id, body, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(id, fromAgentId, toAgentId, missionId, body.trim(), now());
+      emit(toAgentId, 'message.received', body.trim(), 'manual', true);
+      return one('SELECT * FROM messages WHERE id = ?', id, mapMessage);
+    },
+    listMessages: (missionId) => db.prepare('SELECT * FROM messages WHERE mission_id = ? ORDER BY created_at ASC').all(missionId).map(mapMessage),
+    listRecentMessages: ({ missionId = null, limit = 200 } = {}) => db.prepare('SELECT * FROM messages WHERE (? IS NULL OR mission_id = ?) ORDER BY created_at DESC, rowid DESC LIMIT ?').all(missionId, missionId, Math.min(Math.max(Number(limit) || 200, 1), 500)).map(mapMessage),
+    listAppearances: () => db.prepare('SELECT * FROM agent_appearance').all().map(mapAppearance),
+    setAppearance(agentId, look) {
+      requireAgent(agentId);
+      if (!isValidAppearance(look)) throw Object.assign(new Error('Apparence invalide.'), { status: 400 });
+      db.prepare(`INSERT INTO agent_appearance (agent_id, hair_style, hair_color, skin, eyes, outfit, top_color, accessory, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(agent_id) DO UPDATE SET hair_style = excluded.hair_style, hair_color = excluded.hair_color, skin = excluded.skin, eyes = excluded.eyes, outfit = excluded.outfit, top_color = excluded.top_color, accessory = excluded.accessory, updated_at = excluded.updated_at`)
+        .run(agentId, look.hairStyle, look.hairColor, look.skin, look.eyes, look.outfit, look.topColor, look.accessory, now());
+      emit(agentId, 'agent.appearance.updated', 'Apparence modifiée.', 'manual', true);
+      return one('SELECT * FROM agent_appearance WHERE agent_id = ?', agentId, mapAppearance);
+    },
+    clearAppearance(agentId) {
+      requireAgent(agentId);
+      db.prepare('DELETE FROM agent_appearance WHERE agent_id = ?').run(agentId);
+      emit(agentId, 'agent.appearance.reset', 'Apparence automatique rétablie.', 'manual', true);
+      return { agentId, reset: true };
+    },
+    listIslandStyles: () => db.prepare('SELECT * FROM island_styles').all().map(mapIslandStyle),
+    listIslandEvents: () => db.prepare("SELECT kind, detail, source FROM events WHERE agent_id IS NULL AND kind LIKE 'island.style.%' ORDER BY rowid DESC").all(),
+    setIslandStyle(departmentId, input) {
+      const dept = requireDepartment(departmentId);
+      if (!isValidIslandStyle(input)) throw Object.assign(new Error('Style d’île invalide.'), { status: 400 });
+      const s = normalizeIslandStyle(input);
+      db.prepare(`INSERT INTO island_styles (department_id, label, accent, floor, wall, emblem, tree, ground, lanterns, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(department_id) DO UPDATE SET label = excluded.label, accent = excluded.accent, floor = excluded.floor, wall = excluded.wall, emblem = excluded.emblem, tree = excluded.tree, ground = excluded.ground, lanterns = excluded.lanterns, updated_at = excluded.updated_at`)
+        .run(departmentId, s.label, s.accent, s.floor, s.wall, s.emblem, s.tree, s.ground, s.lanterns === null ? null : Number(s.lanterns), now());
+      emit(null, 'island.style.updated', `Style de l’île ${dept.name} modifié.`, 'manual', true);
+      return one('SELECT * FROM island_styles WHERE department_id = ?', departmentId, mapIslandStyle);
+    },
+    clearIslandStyle(departmentId) {
+      const dept = requireDepartment(departmentId);
+      db.prepare('DELETE FROM island_styles WHERE department_id = ?').run(departmentId);
+      emit(null, 'island.style.reset', `Identité d’origine de l’île ${dept.name} rétablie.`, 'manual', true);
+      return { departmentId, reset: true };
+    },
+    close: () => db.close()
+  };
+}
