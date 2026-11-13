@@ -139,3 +139,16 @@ test('a header line without key: value is unreadable', () => {
   const text = fiche().replace('role: Testeuse', 'pasdedeuxpoints');
   assert.match(parseAgentFile(text, 'ada.md').error, /ligne d'en-tête illisible/);
 });
+
+test('a path that is not a folder gives a warning instead of throwing', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'workeda-notdir-'));
+  try {
+    const file = join(dir, 'pas-un-dossier');
+    writeFileSync(file, 'x');
+    const r = loadAgentFiles(file);
+    assert.deepEqual(r.profiles, []);
+    assert.equal(r.warnings.length, 1);
+    assert.equal(r.warnings[0].file, '.claude/agents');
+    assert.match(r.warnings[0].reason, /^dossier illisible \(/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

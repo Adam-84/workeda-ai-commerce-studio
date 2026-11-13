@@ -139,6 +139,8 @@ export function createStudio(filename = 'data/workeda.db') {
     syncAgentFiles(profiles) {
       const result = { created: [], linked: [], warnings: [] };
       const link = db.prepare('INSERT INTO agent_files (agent_id, slug, linked_at) VALUES (?, ?, ?)');
+      db.exec('BEGIN');
+      try {
       for (const p of profiles) {
         if (one('SELECT slug FROM agent_files WHERE slug = ?', p.slug)) continue; // 1. déjà lié : rien ne change
         const wanted = p.displayName.toLocaleLowerCase('fr');
@@ -153,6 +155,8 @@ export function createStudio(filename = 'data/workeda.db') {
         emit(id, 'agent.hired', `recruté depuis .claude/agents/${p.slug}.md`, 'manual', true);
         result.created.push(p.slug);
       }
+      db.exec('COMMIT');
+      } catch (e) { db.exec('ROLLBACK'); throw e; }
       return result;
     },
     close: () => db.close()

@@ -1,11 +1,13 @@
 import { mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStudio } from './studio.js';
 import { createApp } from './app.js';
 import { loadAgentFiles } from './agent-files.js';
 
-await mkdir('data', { recursive: true });
-const studio = createStudio(process.env.WORKEDA_DB || 'data/workeda.db');
+const dbFile = process.env.WORKEDA_DB || 'data/workeda.db';
+await mkdir(dirname(dbFile), { recursive: true });
+const studio = createStudio(dbFile);
 
 // Fiches lues une seule fois : une modification demande de relancer npm start.
 const loaded = loadAgentFiles(fileURLToPath(new URL('../.claude/agents', import.meta.url)));

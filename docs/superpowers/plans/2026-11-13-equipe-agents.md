@@ -1315,26 +1315,33 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-test('the real server preloads the ten agents from .claude/agents', async () => {
+test('the real server preloads the ten agents from .claude/agents', { timeout: 20_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'workeda-start-'));
-  const child = spawn(process.execPath, [fileURLToPath(new URL('../src/server.js', import.meta.url))], { env: { ...process.env, PORT: '0', WORKEDA_DB: join(dir, 'essai.db') }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const root = fileURLToPath(new URL('..', import.meta.url));
+  const child = spawn(process.execPath, [fileURLToPath(new URL('../src/server.js', import.meta.url))], {
+    cwd: root, timeout: 15_000, signal: t.signal,
+    env: { ...process.env, PORT: '0', WORKEDA_DB: join(dir, 'essai.db') }, stdio: ['ignore', 'pipe', 'pipe']
+  });
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
   const exited = new Promise((r) => child.once('exit', r));
+  let out = '', err = '';
+  child.stderr.on('data', (chunk) => { err += chunk; });
   try {
     const port = await new Promise((resolve, reject) => {
-      let out = '';
+      child.once('error', reject);
       child.stdout.on('data', (chunk) => { out += chunk; const m = out.match(/http:\/\/localhost:(\d+)/); if (m) resolve(Number(m[1])); });
-      child.once('exit', (code) => reject(new Error(`serveur arrêté (code ${code}) : ${out}`)));
+      child.once('exit', (code) => reject(new Error(`serveur arrêté (code ${code}) : stdout=${out} stderr=${err}`)));
     });
-    const health = await (await fetch(`http://127.0.0.1:${port}/api/health`)).json();
+    const get = async (path) => (await fetch(`http://127.0.0.1:${port}${path}`, { signal: AbortSignal.timeout(5_000) })).json();
+    const health = await get('/api/health');
     assert.deepEqual(health.agentFiles, { loaded: 10, warnings: [] });
-    const agents = await (await fetch(`http://127.0.0.1:${port}/api/agents`)).json();
-    assert.equal(agents.length, 10);
-    const profiles = await (await fetch(`http://127.0.0.1:${port}/api/agent-profiles`)).json();
-    assert.equal(profiles.length, 10);
+    assert.equal((await get('/api/agents')).length, 10);
+    assert.equal((await get('/api/agent-profiles')).length, 10);
   } finally {
     child.kill();
     await exited;
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 ```
@@ -1350,13 +1357,15 @@ Remplacer tout le contenu de `src/server.js` par :
 
 ```js
 import { mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStudio } from './studio.js';
 import { createApp } from './app.js';
 import { loadAgentFiles } from './agent-files.js';
 
-await mkdir('data', { recursive: true });
-const studio = createStudio(process.env.WORKEDA_DB || 'data/workeda.db');
+const dbFile = process.env.WORKEDA_DB || 'data/workeda.db';
+await mkdir(dirname(dbFile), { recursive: true });
+const studio = createStudio(dbFile);
 
 // Fiches lues une seule fois : une modification demande de relancer npm start.
 const loaded = loadAgentFiles(fileURLToPath(new URL('../.claude/agents', import.meta.url)));
@@ -1369,6 +1378,8 @@ const port = Number(process.env.PORT || 4318);
 const server = createApp({ studio, publicDir: fileURLToPath(new URL('../public', import.meta.url)), agentFiles: { profiles: loaded.profiles, warnings } });
 server.listen(port, () => console.log(`Workeda AI Commerce Studio : http://localhost:${server.address().port}`));
 ```
+
+Même commit : `loadAgentFiles` renvoie un avertissement « dossier illisible » au lieu de lever une exception si `readdirSync` échoue (test dans `test/agent-files.test.js`), et `syncAgentFiles` s'exécute dans une transaction (`BEGIN`/`COMMIT`, `ROLLBACK` puis relance en cas d'erreur).
 
 - [ ] **Step 4 : vérifier que le test passe**
 

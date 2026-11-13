@@ -47,7 +47,9 @@ export function parseAgentFile(text, filename) {
 export function loadAgentFiles(dir) {
   if (!existsSync(dir)) return { profiles: [], warnings: [] };
   const profiles = [], warnings = [];
-  const files = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isFile() && e.name.toLowerCase().endsWith('.md')).map((e) => e.name).sort();
+  let files;
+  try { files = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isFile() && e.name.toLowerCase().endsWith('.md')).map((e) => e.name).sort(); }
+  catch (e) { return { profiles: [], warnings: [{ file: '.claude/agents', reason: `dossier illisible (${e.code})` }] }; }
   for (const file of files) {
     let text;
     try { text = readFileSync(join(dir, file), 'utf8'); } catch (e) { warnings.push({ file, reason: `fichier illisible (${e.code ?? e.message})` }); continue; }
