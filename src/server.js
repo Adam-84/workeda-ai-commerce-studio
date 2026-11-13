@@ -2,9 +2,18 @@ import { mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createStudio } from './studio.js';
 import { createApp } from './app.js';
+import { loadAgentFiles } from './agent-files.js';
 
 await mkdir('data', { recursive: true });
 const studio = createStudio(process.env.WORKEDA_DB || 'data/workeda.db');
+
+// Fiches lues une seule fois : une modification demande de relancer npm start.
+const loaded = loadAgentFiles(fileURLToPath(new URL('../.claude/agents', import.meta.url)));
+const synced = studio.syncAgentFiles(loaded.profiles);
+const warnings = [...loaded.warnings, ...synced.warnings];
+if (synced.created.length) console.log(`Agents recrutés depuis .claude/agents : ${synced.created.join(', ')}`);
+for (const w of warnings) console.warn(`Fiche ignorée : ${w.file} (${w.reason})`);
+
 const port = Number(process.env.PORT || 4318);
-createApp({ studio, publicDir: fileURLToPath(new URL('../public', import.meta.url)) })
-  .listen(port, () => console.log(`Workeda AI Commerce Studio : http://localhost:${port}`));
+const server = createApp({ studio, publicDir: fileURLToPath(new URL('../public', import.meta.url)), agentFiles: { profiles: loaded.profiles, warnings } });
+server.listen(port, () => console.log(`Workeda AI Commerce Studio : http://localhost:${server.address().port}`));
