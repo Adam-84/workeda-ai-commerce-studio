@@ -141,22 +141,22 @@ export function createStudio(filename = 'data/workeda.db') {
       const link = db.prepare('INSERT INTO agent_files (agent_id, slug, linked_at) VALUES (?, ?, ?)');
       db.exec('BEGIN');
       try {
-      for (const p of profiles) {
-        if (one('SELECT slug FROM agent_files WHERE slug = ?', p.slug)) continue; // 1. déjà lié : rien ne change
-        const wanted = p.displayName.toLocaleLowerCase('fr');
-        const free = db.prepare('SELECT id, name FROM agents WHERE id NOT IN (SELECT agent_id FROM agent_files) ORDER BY created_at').all();
-        const same = free.find((a) => a.name.toLocaleLowerCase('fr') === wanted);
-        if (same) { link.run(same.id, p.slug, now()); result.linked.push(p.slug); continue; } // 2. même prénom : liaison seule
-        const dept = one('SELECT id FROM departments WHERE name = ?', p.department);
-        if (!dept) { result.warnings.push({ file: `${p.slug}.md`, reason: `département inconnu : ${p.department}` }); continue; }
-        const id = randomUUID(), timestamp = now(); // 3. création
-        db.prepare('INSERT INTO agents (id, name, role, department_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(id, p.displayName, p.role, dept.id, timestamp, timestamp);
-        link.run(id, p.slug, timestamp);
-        emit(id, 'agent.hired', `recruté depuis .claude/agents/${p.slug}.md`, 'manual', true);
-        result.created.push(p.slug);
-      }
-      db.exec('COMMIT');
-      } catch (e) { db.exec('ROLLBACK'); throw e; }
+        for (const p of profiles) {
+          if (one('SELECT slug FROM agent_files WHERE slug = ?', p.slug)) continue; // 1. déjà lié : rien ne change
+          const wanted = p.displayName.toLocaleLowerCase('fr');
+          const free = db.prepare('SELECT id, name FROM agents WHERE id NOT IN (SELECT agent_id FROM agent_files) ORDER BY created_at').all();
+          const same = free.find((a) => a.name.toLocaleLowerCase('fr') === wanted);
+          if (same) { link.run(same.id, p.slug, now()); result.linked.push(p.slug); continue; } // 2. même prénom : liaison seule
+          const dept = one('SELECT id FROM departments WHERE name = ?', p.department);
+          if (!dept) { result.warnings.push({ file: `${p.slug}.md`, reason: `département inconnu : ${p.department}` }); continue; }
+          const id = randomUUID(), timestamp = now(); // 3. création
+          db.prepare('INSERT INTO agents (id, name, role, department_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(id, p.displayName, p.role, dept.id, timestamp, timestamp);
+          link.run(id, p.slug, timestamp);
+          emit(id, 'agent.hired', `recruté depuis .claude/agents/${p.slug}.md`, 'manual', true);
+          result.created.push(p.slug);
+        }
+        db.exec('COMMIT');
+      } catch (e) { if (db.isTransaction) db.exec('ROLLBACK'); throw e; }
       return result;
     },
     close: () => db.close()

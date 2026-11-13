@@ -250,9 +250,9 @@ export async function refresh() {
 }
 get('/api/health').then((v) => {
   state.health = v; const d = (x) => (x ? 'détecté' : 'non détecté'), warns = v.agentFiles?.warnings ?? [];
-  $('#connections').textContent = `Claude ${d(v.connectors.claudeCode)} · Codex ${d(v.connectors.codexCli)} · Shopify CLI ${d(v.connectors.shopifyCli)}${ignoredText(warns.length)}`;
+  $('#connections').title = $('#connections').textContent = `Claude ${d(v.connectors.claudeCode)} · Codex ${d(v.connectors.codexCli)} · Shopify CLI ${d(v.connectors.shopifyCli)}${ignoredText(warns.length)}`;
   showAgentWarnings(warns);
-}).catch(() => { $('#connections').textContent = 'Serveur local injoignable'; });
+}).catch(() => { $('#connections').title = $('#connections').textContent = 'Serveur local injoignable'; });
 function showAgentWarnings(warns) {
   const box = $('#agent-warnings'); box.hidden = !warns.length;
   box.replaceChildren(h('p', { class: 'note' }, 'Fiches d’agents ignorées :'), h('ul', {}, warns.map((w) => h('li', {}, `${w.file} : ${w.reason}`))));
@@ -463,6 +463,6 @@ $('#missionbar').addEventListener('submit', async (e) => {
 
 // ---------- démarrage ----------
 applyPhase();
-refresh().catch((e) => { $('#connections').textContent = e.message; });
+refresh().catch((e) => { $('#connections').title = $('#connections').textContent = e.message; });
 addEventListener('focus', () => { if (pop.hidden) refresh().catch(() => {}); });
 if (!reduce) requestAnimationFrame(frame);

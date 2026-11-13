@@ -25,6 +25,7 @@ export function parseAgentFile(text, filename) {
   const missing = REQUIRED.find((k) => !head[k]);
   if (missing) return { error: `clé obligatoire manquante : ${missing}` };
   const slug = filename.replace(/\.md$/i, '');
+  if (!/^[a-z][a-z0-9-]*$/.test(head.name)) return { error: 'nom invalide : minuscules, chiffres et tirets seulement' };
   if (head.name !== slug) return { error: `name « ${head.name} » différent du nom de fichier « ${slug} »` };
   if (!MODELS.includes(head.model)) return { error: `modèle inconnu : ${head.model}` };
   const parts = m[2].split(/^## +(.+?) *$/m); // [avant, titre 1, texte 1, titre 2, texte 2, …]
@@ -49,7 +50,7 @@ export function loadAgentFiles(dir) {
   const profiles = [], warnings = [];
   let files;
   try { files = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isFile() && e.name.toLowerCase().endsWith('.md')).map((e) => e.name).sort(); }
-  catch (e) { return { profiles: [], warnings: [{ file: '.claude/agents', reason: `dossier illisible (${e.code})` }] }; }
+  catch (e) { return { profiles: [], warnings: [{ file: '.claude/agents', reason: `dossier illisible (${e.code ?? e.message})` }] }; }
   for (const file of files) {
     let text;
     try { text = readFileSync(join(dir, file), 'utf8'); } catch (e) { warnings.push({ file, reason: `fichier illisible (${e.code ?? e.message})` }); continue; }

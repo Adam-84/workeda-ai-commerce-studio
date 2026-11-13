@@ -51,6 +51,11 @@ test('name must match the file name', () => {
   assert.match(parseAgentFile(fiche(), 'bob.md').error, /différent du nom de fichier/);
 });
 
+test('a name with capitals or accents is refused even if it matches the file name', () => {
+  for (const name of ['Emma', 'chloé', '1ada', 'ada_x']) assert.match(parseAgentFile(fiche({ head: { name } }), `${name}.md`).error, /nom invalide/);
+  assert.equal(parseAgentFile(fiche({ head: { name: 'ada-2' } }), 'ada-2.md').error, undefined);
+});
+
 test('an unknown model is refused', () => {
   assert.match(parseAgentFile(fiche({ head: { model: 'gpt' } }), 'ada.md').error, /modèle inconnu : gpt/);
 });

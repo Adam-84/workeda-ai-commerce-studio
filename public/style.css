@@ -19,7 +19,7 @@ option{background:var(--panel-solid);color:var(--text)}::placeholder{color:var(-
 .search-wrap{margin-left:auto;position:relative}#search{width:260px}
 #search-results{position:absolute;top:44px;left:0;width:300px;list-style:none;margin:0;padding:6px;max-height:300px;overflow:auto}
 #search-results button{width:100%;text-align:left;border:0}
-.chip{padding:6px 12px;border-radius:999px;border:1px solid var(--border);font-weight:600;font-size:13px;white-space:nowrap}.chip.accent{background:var(--accent);color:var(--on-accent);border-color:transparent}.chip.soft{color:var(--soft)}
+.chip{padding:6px 12px;border-radius:999px;border:1px solid var(--border);font-weight:600;font-size:13px;white-space:nowrap}.chip.accent{background:var(--accent);color:var(--on-accent);border-color:transparent}.chip.soft{color:var(--soft)}#connections{min-width:0;flex-shrink:1;overflow:hidden;text-overflow:ellipsis}
 .icon{width:36px;height:36px;padding:0}
 #settings{position:absolute;right:16px;top:76px;width:300px;padding:14px;display:grid;gap:10px;z-index:6}
 .legend{list-style:none;margin:0;padding:0;display:grid;gap:4px;font-size:13px}.dot{display:inline-block;width:10px;height:10px;border-radius:5px;margin-right:6px}
