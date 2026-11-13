@@ -29,7 +29,7 @@ test('a valid file gives a complete profile', () => {
 });
 
 test('CRLF line endings and a BOM are accepted', () => {
-  const { profile } = parseAgentFile('﻿' + fiche().replace(/\n/g, '\r\n'), 'ada.md');
+  const { profile } = parseAgentFile('\uFEFF' + fiche().replace(/\n/g, '\r\n'), 'ada.md');
   assert.equal(profile.sections.livrable, 'Texte de Livrable.');
 });
 

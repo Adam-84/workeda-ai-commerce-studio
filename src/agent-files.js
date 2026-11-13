@@ -8,7 +8,7 @@ export const MODELS = ['opus', 'sonnet', 'haiku'];
 const list = (value) => (value ?? '').split(',').map((x) => x.trim()).filter(Boolean);
 
 export function parseAgentFile(text, filename) {
-  const src = String(text).replace(/^﻿/, '').replace(/\r\n?/g, '\n');
+  const src = String(text).replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
   const m = src.match(/^---\n([\s\S]*?)\n---(?:\n|$)([\s\S]*)$/);
   if (!m) return { error: 'en-tête --- absent' };
   const head = {};
