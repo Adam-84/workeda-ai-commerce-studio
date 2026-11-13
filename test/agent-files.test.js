@@ -118,6 +118,7 @@ test('values that YAML reads badly are refused', () => {
   assert.match(parseAgentFile(fiche({ head: { description: 'Termine par deux-points:' } }), 'ada.md').error, /YAML/);
   assert.match(parseAgentFile(fiche({ head: { description: 'Un texte # commentaire' } }), 'ada.md').error, /YAML/);
   assert.match(parseAgentFile(fiche({ head: { description: '"entre guillemets"' } }), 'ada.md').error, /YAML/);
+  assert.match(parseAgentFile(fiche({ head: { description: '# commentaire' } }), 'ada.md').error, /YAML/);
 });
 
 test('an empty section is refused', () => {

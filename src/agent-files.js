@@ -19,7 +19,7 @@ export function parseAgentFile(text, filename) {
     const key = line.slice(0, i).trim(), value = line.slice(i + 1).trim();
     if (Object.hasOwn(head, key)) return { error: `clé en double : ${key}` };
     if (value.includes(': ')) return { error: `la valeur de « ${key} » contient un deux-points suivi d'une espace, que Claude Code ne sait pas lire` };
-    if (value.endsWith(':') || value.includes(' #') || /^["'[{>|&*!%@`]/.test(value)) return { error: `la valeur de « ${key} » contient une suite que Claude Code (YAML) lit mal` };
+    if (value.endsWith(':') || value.includes(' #') || /^["'#[{>|&*!%@`]/.test(value)) return { error: `la valeur de « ${key} » contient une suite que Claude Code (YAML) lit mal` };
     head[key] = value;
   }
   const missing = REQUIRED.find((k) => !head[k]);
