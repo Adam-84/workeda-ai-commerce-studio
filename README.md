@@ -11,6 +11,7 @@ Un tableau de bord local pour organiser les départements et agents IA de `worke
 - détection réelle (et affichée telle quelle) de Shopify CLI, Claude Code, Codex CLI et clink ;
 - carte Pixel Art **isométrique** d’îles flottantes (canvas, sans image ni asset externe), avec ciel selon l’heure ;
 - personnalisation des îles (nom affiché, couleurs, décor, emblème), voir ci-dessous.
+- 10 agents préchargés depuis `.claude/agents/`, chacun avec sa fiche de poste, utilisables aussi dans Claude Code (voir « Équipe d'agents »).
 
 ## Naviguer sur la carte
 
@@ -82,6 +83,29 @@ Toute l'interface (barres, fenêtres, pastilles) change de couleurs avec la phas
 Un choix manuel remplace l’automatique (mémorisé dans le navigateur, `localStorage`) ; « Automatique » revient à l’heure. Il n’y a aucune météo.
 
 Ce MVP ne se connecte pas à Shopify, ne modifie aucun thème, ne modifie aucun prix et ne passe aucune commande. Il ne contient ni clé API ni secret.
+
+## Équipe d'agents
+
+Au premier démarrage, dix agents sont recrutés à partir de leur fiche dans `.claude/agents/` :
+
+| Département | Agents |
+| --- | --- |
+| Direction | Alexander (directeur général IA), Olivia (coordination des missions) |
+| Laboratoire | Sophia (marché), Noah (veille concurrentielle) |
+| Catalogue | Lucas (catalogue Shopify), Isabella (prix et marges) |
+| Création | Chloe (design UX/UI), Ryan (développement Shopify) |
+| Opérations | Harper (contrôle qualité) |
+| Données | Benjamin (performances commerciales) |
+
+- **Dans l'app** : cliquez un personnage, onglet Profil. Vous y voyez son métier, son modèle, ses outils avec leur état réel, ses collègues (un clic vous emmène vers eux), le livrable attendu et la fiche complète.
+- **Dans Claude Code**, ouvert dans ce dossier : demandez par exemple « Sophia, analyse le marché des bougies parfumées » ou « Alexander, découpe cette demande ». Claude Code lit la même fiche.
+- Les agents restent « En attente — source : manual » : l'app ne fait encore travailler aucun agent.
+- États des outils : « détecté » ou « non détecté » (le programme est présent ou non sur l'ordinateur), « non connecté » (Shopify Admin, DSers, Playwright : aucun connecteur dans le projet), « dans Claude Code uniquement » (recherche web).
+- Une fiche se modifie dans son fichier, puis on relance `npm start`. Une fiche invalide est ignorée : la barre du haut l'indique et le panneau Réglages donne la raison.
+- Un agent déjà recruté à la main avec le même prénom est relié à sa fiche sans être modifié. Le nom, le rôle et le département changés dans l'app sont conservés. Aucun agent n'est jamais supprimé.
+- Route de lecture : `GET /api/agent-profiles`. `GET /api/health` indique aussi `agentFiles` (fiches chargées, fiches ignorées).
+
+Les fiches s'inspirent des agents du dépôt [msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents), sous licence MIT. Elles sont réécrites pour Workeda : aucun fichier n'est copié.
 
 ## Prérequis Windows
 
