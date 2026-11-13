@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { existsSync, statSync, realpathSync } from 'node:fs';
 import { join, extname, resolve, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { connectorState } from './agent-files.js';
 
 // Détection réelle d'un binaire dans le PATH (« détecté » ne veut pas dire « connecté »).
 export const cliPresent = (command, run = execFileSync) => {
@@ -18,10 +19,22 @@ const body = async (req) => {
   return raw ? JSON.parse(raw) : {};
 };
 
-export function createApp({ studio, publicDir, detect = cliPresent }) {
+export function createApp({ studio, publicDir, detect = cliPresent, agentFiles = { profiles: [], warnings: [] } }) {
   const root = resolve(publicDir), realRoot = realpathSync(root);
+  // Seules les fiches reliées à un agent de la base sont exposées.
+  const linked = () => { const ids = new Map(studio.listAgentFiles().map((l) => [l.slug, l.agentId])); return { ids, list: agentFiles.profiles.filter((p) => ids.has(p.slug)) }; };
   const routes = {
-    'GET /api/health': () => ({ node: process.version, connectors: { shopifyCli: detect('shopify'), claudeCode: detect('claude'), codexCli: detect('codex'), clink: detect('clink') }, mode: 'local-only' }),
+    'GET /api/health': () => ({ node: process.version, connectors: { shopifyCli: detect('shopify'), claudeCode: detect('claude'), codexCli: detect('codex'), clink: detect('clink') }, mode: 'local-only', agentFiles: { loaded: linked().list.length, warnings: agentFiles.warnings } }),
+    'GET /api/agent-profiles': () => {
+      const { ids, list } = linked();
+      return list.map((p) => ({
+        agentId: ids.get(p.slug), slug: p.slug, displayName: p.displayName, model: p.model, tools: p.tools,
+        connectors: p.connectors.map((id) => ({ id, state: connectorState(id, detect) })),
+        collaboratesAll: p.collaboratesAll,
+        collaborates: p.collaborates.map((slug) => ({ slug, agentId: ids.get(slug) ?? null })),
+        sections: p.sections
+      }));
+    },
     'GET /api/departments': () => studio.listDepartments(),
     'GET /api/agents': () => studio.listAgents(),
     'GET /api/missions': () => studio.listMissions(),
