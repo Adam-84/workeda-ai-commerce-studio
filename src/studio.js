@@ -28,6 +28,7 @@ export function createStudio(filename = 'data/workeda.db') {
     CREATE TABLE IF NOT EXISTS approvals (id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id), action TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL, decided_at TEXT);
     CREATE TABLE IF NOT EXISTS agent_appearance (agent_id TEXT PRIMARY KEY REFERENCES agents(id), hair_style TEXT NOT NULL, hair_color TEXT NOT NULL, skin TEXT NOT NULL, eyes TEXT NOT NULL, outfit TEXT NOT NULL, top_color TEXT NOT NULL, accessory TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS island_styles (department_id TEXT PRIMARY KEY REFERENCES departments(id), label TEXT, accent TEXT, floor TEXT, wall TEXT, emblem TEXT, tree TEXT, ground TEXT, lanterns INTEGER, updated_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS agent_files (agent_id TEXT PRIMARY KEY REFERENCES agents(id), slug TEXT NOT NULL UNIQUE, linked_at TEXT NOT NULL);
   `);
   const seeded = db.prepare('SELECT COUNT(*) AS count FROM departments').get().count;
   if (seeded === 0) {
@@ -132,6 +133,27 @@ export function createStudio(filename = 'data/workeda.db') {
       db.prepare('DELETE FROM island_styles WHERE department_id = ?').run(departmentId);
       emit(null, 'island.style.reset', `Identité d’origine de l’île ${dept.name} rétablie.`, 'manual', true);
       return { departmentId, reset: true };
+    },
+    listAgentFiles: () => db.prepare('SELECT agent_id, slug FROM agent_files ORDER BY slug').all().map((r) => ({ agentId: r.agent_id, slug: r.slug })),
+    // Relie chaque fiche .claude/agents/<slug>.md à un agent. Ne modifie ni ne supprime jamais un agent existant.
+    syncAgentFiles(profiles) {
+      const result = { created: [], linked: [], warnings: [] };
+      const link = db.prepare('INSERT INTO agent_files (agent_id, slug, linked_at) VALUES (?, ?, ?)');
+      for (const p of profiles) {
+        if (one('SELECT slug FROM agent_files WHERE slug = ?', p.slug)) continue; // 1. déjà lié : rien ne change
+        const wanted = p.displayName.toLocaleLowerCase('fr');
+        const free = db.prepare('SELECT id, name FROM agents WHERE id NOT IN (SELECT agent_id FROM agent_files) ORDER BY created_at').all();
+        const same = free.find((a) => a.name.toLocaleLowerCase('fr') === wanted);
+        if (same) { link.run(same.id, p.slug, now()); result.linked.push(p.slug); continue; } // 2. même prénom : liaison seule
+        const dept = one('SELECT id FROM departments WHERE name = ?', p.department);
+        if (!dept) { result.warnings.push({ file: `${p.slug}.md`, reason: `département inconnu : ${p.department}` }); continue; }
+        const id = randomUUID(), timestamp = now(); // 3. création
+        db.prepare('INSERT INTO agents (id, name, role, department_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(id, p.displayName, p.role, dept.id, timestamp, timestamp);
+        link.run(id, p.slug, timestamp);
+        emit(id, 'agent.hired', `recruté depuis .claude/agents/${p.slug}.md`, 'manual', true);
+        result.created.push(p.slug);
+      }
+      return result;
     },
     close: () => db.close()
   };
