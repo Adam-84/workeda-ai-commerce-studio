@@ -101,8 +101,8 @@ Au premier démarrage, dix agents sont recrutés à partir de leur fiche dans `.
 - **Dans Claude Code**, ouvert dans ce dossier : demandez par exemple « Sophia, analyse le marché des bougies parfumées » ou « Alexander, découpe cette demande ». Claude Code lit la même fiche.
 - Les agents restent « En attente — source : manual » : l'app ne fait encore travailler aucun agent.
 - États des outils : « détecté » ou « non détecté » (le programme est présent ou non sur l'ordinateur), « non connecté » (Shopify Admin, DSers, Playwright : aucun connecteur dans le projet), « dans Claude Code uniquement » (recherche web).
-- Une fiche se modifie dans son fichier, puis on relance `npm start`. Une fiche invalide est ignorée : la barre du haut l'indique et le panneau Réglages donne la raison.
-- Un agent déjà recruté à la main avec le même prénom est relié à sa fiche sans être modifié. Le nom, le rôle et le département changés dans l'app sont conservés. Aucun agent n'est jamais supprimé.
+- Une fiche se modifie dans son fichier, puis on relance `npm start`. Une fiche invalide est ignorée : la barre du haut l'indique et le panneau Réglages donne la raison. Les changements de `display_name`, `role` et `department` ne comptent que pour un agent pas encore recruté ; pour un agent déjà dans l'app, seuls les textes de l'onglet Profil sont mis à jour.
+- Un agent déjà recruté à la main avec le même prénom est relié à sa fiche sans être modifié : il garde son nom, son rôle et son département, et un redémarrage ne les écrase pas. Aucun agent n'est jamais supprimé.
 - Route de lecture : `GET /api/agent-profiles`. `GET /api/health` indique aussi `agentFiles` (fiches chargées, fiches ignorées).
 
 Les fiches s'inspirent des agents du dépôt [msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents), sous licence MIT. Elles sont réécrites pour Workeda : aucun fichier n'est copié.

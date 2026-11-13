@@ -43,7 +43,7 @@ Chloe audite et améliore le parcours d'achat de workeda.com, de la page d'accue
 5. Classe les corrections par impact.
 
 ## Livrable
-- Tableau Étape | Page | Problème vu | Correction proposée | Impact.
+- Tableau Étape | Page | Problème constaté | Correction proposée | Impact.
 - Pour les trois premières corrections, une maquette en texte : les blocs de la page dans l'ordre, du haut vers le bas.
 - À transmettre à Ryan : la liste des changements à réaliser dans le thème.
 

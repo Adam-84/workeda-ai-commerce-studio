@@ -7,7 +7,7 @@ display_name: Harper
 role: Responsable contrôle qualité
 department: Opérations
 collaborates: ryan, chloe, alexander
-connectors: shopify-cli, codex-cli, playwright
+connectors: shopify-cli, playwright
 ---
 
 ## Métier

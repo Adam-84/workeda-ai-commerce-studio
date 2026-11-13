@@ -24,7 +24,7 @@ const TEAM = {
   isabella: { department: 'Catalogue', role: 'Analyste des prix et marges', model: 'sonnet', tools: R, connectors: ['shopify-admin', 'dsers'], collaborates: ['noah', 'lucas', 'benjamin'], rule: ['formule'] },
   chloe: { department: 'Création', role: 'Designer UX/UI e-commerce', model: 'sonnet', tools: ['WebFetch', ...R], connectors: ['web', 'shopify-admin'], collaborates: ['sophia', 'ryan', 'harper'], rule: ["mobile d'abord"] },
   ryan: { department: 'Création', role: 'Développeur Shopify', model: 'opus', tools: ['Read', 'Edit', 'Write', 'Grep', 'Glob', 'Bash'], connectors: ['shopify-cli', 'codex-cli'], collaborates: ['chloe', 'harper', 'olivia'], rule: ['shopify theme push', 'shopify theme publish'] },
-  harper: { department: 'Opérations', role: 'Responsable contrôle qualité', model: 'sonnet', tools: [...R, 'Bash'], connectors: ['shopify-cli', 'codex-cli', 'playwright'], collaborates: ['ryan', 'chloe', 'alexander'], rule: ['« À corriger »'] },
+  harper: { department: 'Opérations', role: 'Responsable contrôle qualité', model: 'sonnet', tools: [...R, 'Bash'], connectors: ['shopify-cli', 'playwright'], collaborates: ['ryan', 'chloe', 'alexander'], rule: ['« À corriger »'] },
   benjamin: { department: 'Données', role: 'Analyste des performances commerciales', model: 'sonnet', tools: R, connectors: ['shopify-admin'], collaborates: ['alexander', 'lucas', 'isabella'], rule: ['période'] }
 };
 
@@ -69,6 +69,7 @@ test('Ryan has a command allowlist and Harper names her checks', () => {
   assert.ok(ryan.includes('Les seules commandes Shopify CLI que tu lances'));
   assert.ok(ryan.includes('codex exec --sandbox read-only'));
   assert.ok(readFileSync(join(DIR, 'harper.md'), 'utf8').includes('shopify theme check'));
+  assert.ok(readFileSync(join(DIR, 'harper.md'), 'utf8').includes('Les seules commandes que tu lances'));
 });
 
 test('the ten profiles sync into the default departments', () => {

@@ -55,6 +55,6 @@ Ryan réalise les changements du thème Shopify de workeda.com (Liquid, CSS, Jav
 - Planning et dépendances : Olivia.
 
 ## Réussite
-- Aucune commande « shopify theme push » ou « shopify theme publish » n'a été lancée.
+- Seules les commandes Shopify CLI « shopify theme pull » et « shopify theme check » ont été lancées : aucun push, aucune publication.
 - Chaque fichier modifié est listé.
 - Le résultat de la vérification est réel, ou son absence est dite.

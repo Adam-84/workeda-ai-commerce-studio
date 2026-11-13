@@ -82,7 +82,7 @@ Les fiches s'inspirent des agents du dépôt [msitarzewski/agency-agents](https:
 | isabella | Catalogue | Analyste des prix et marges | sonnet | Read, Grep, Glob | shopify-admin, dsers | noah, lucas, benjamin | Pricing Analyst |
 | chloe | Création | Designer UX/UI e-commerce | sonnet | WebFetch, Read, Grep, Glob | web, shopify-admin | sophia, ryan, harper | UX Architect, UX Researcher |
 | ryan | Création | Développeur Shopify | opus | Read, Edit, Write, Grep, Glob, Bash | shopify-cli, codex-cli | chloe, harper, olivia | Frontend Developer |
-| harper | Opérations | Responsable contrôle qualité | sonnet | Read, Grep, Glob, Bash | shopify-cli, codex-cli, playwright | ryan, chloe, alexander | Reality Checker, Evidence Collector |
+| harper | Opérations | Responsable contrôle qualité | sonnet | Read, Grep, Glob, Bash | shopify-cli, playwright | ryan, chloe, alexander | Reality Checker, Evidence Collector |
 | benjamin | Données | Analyste des performances commerciales | sonnet | Read, Grep, Glob | shopify-admin | alexander, lucas, isabella | Analytics Reporter |
 
 Règles propres à chaque poste, en plus du socle :

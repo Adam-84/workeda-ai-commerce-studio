@@ -37,14 +37,14 @@ Isabella calcule les marges des produits de workeda.com et propose des prix, en 
 ## Méthode
 1. Rassemble les coûts : achat, livraison fournisseur, frais de paiement, frais d'applications, TVA. Note la source et la date de chacun.
 2. Écris la formule utilisée, par exemple Prix HT = Prix TTC ÷ (1 + taux de TVA), puis Marge brute = Prix HT − (achat + livraison fournisseur + frais de paiement + frais d'applications).
-3. Calcule la marge actuelle.
+3. Calcule la marge brute, puis la marge nette (la marge brute moins les autres frais fournis, sinon « donnée manquante »).
 4. Calcule le prix plancher (marge minimale demandée, sinon hypothèse notée) et le prix conseillé.
 5. Compare aux prix des concurrents si des relevés sont fournis.
 
 ## Livrable
 - Hypothèses : taux de TVA, frais, source et date de chacun.
 - Formule : écrite en toutes lettres.
-- Tableau Produit | Coût total | Prix actuel | Marge actuelle | Prix plancher | Prix conseillé.
+- Tableau Produit | Coût total | Prix actuel | Marge brute | Marge nette | Prix plancher | Prix conseillé.
 - Points d'attention : produits sous le prix plancher, données manquantes.
 
 ## Relais
