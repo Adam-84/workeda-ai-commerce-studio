@@ -8,6 +8,7 @@ import { createViewport, toScreen, toWorld, centerOn, zoomAt, panBy, nextZoom, v
 import { computeWorld, placeAgents, drawIsland, drawHub, drawDesk, spriteCanvas, islandBounds, recruitSpot, pillSpot, doorSpot, styledIdentity } from './world.js';
 import { drawEmblem } from './emblems.js';
 import { OPTIONS as ISLAND_OPTIONS, LABELS_FR, LABEL_MAX, normalizeIslandStyle, isValidIslandStyle } from './island-style.js'; // OPTIONS de sprites.js = personnages : alias
+import { connectorText, modelLabel, colleagues, ignoredText, helpLine, FULL_SECTIONS } from './agent-profile.js';
 
 const $ = (s) => document.querySelector(s);
 const get = (p) => fetch(p).then(async (r) => { const d = await r.json(); if (!r.ok) throw new Error(d.error); return d; });
@@ -22,7 +23,7 @@ const ICONS = {
   blocked: '<svg viewBox="-8 -8 16 16" width="30" height="30"><circle r="7.5" fill="#fff" stroke="#e8853d"/><path d="M0-4.5L4.6 3.6H-4.6Z" fill="#e8853d"/><path d="M0-1.4v2.4" stroke="#fff" stroke-width="1.2" stroke-linecap="round"/><circle cy="2.4" r=".6" fill="#fff"/></svg>'
 }; // icônes : SVG statiques écrits ici, aucune donnée de la base
 
-export const state = { departments: [], agents: [], missions: [], messages: [], appearances: new Map(), styles: new Map(), health: null, world: null, placed: [] };
+export const state = { departments: [], agents: [], missions: [], messages: [], appearances: new Map(), styles: new Map(), profiles: new Map(), health: null, world: null, placed: [] };
 let override = loadOverride(), phase = resolveSkyPhase(new Date(), override), firstLoad = true;
 const seenExchanges = new Set(), knownAgents = new Set();
 const beamQueue = [], walkers = new Map();
@@ -232,8 +233,8 @@ $('#minimap-toggle').addEventListener('click', () => { const m = $('#minimap'); 
 
 // ---------- données ----------
 export async function refresh() {
-  const [departments, agents, missions, messages, appearances, styles] = await Promise.all([get('/api/departments'), get('/api/agents'), get('/api/missions'), get('/api/messages'), get('/api/appearances'), get('/api/island-styles')]);
-  Object.assign(state, { departments, agents, missions, messages, appearances: new Map(appearances.map((a) => [a.agentId, a])), styles: new Map(styles.map((s) => [s.departmentId, s])) });
+  const [departments, agents, missions, messages, appearances, styles, profiles] = await Promise.all([get('/api/departments'), get('/api/agents'), get('/api/missions'), get('/api/messages'), get('/api/appearances'), get('/api/island-styles'), get('/api/agent-profiles')]);
+  Object.assign(state, { departments, agents, missions, messages, appearances: new Map(appearances.map((a) => [a.agentId, a])), styles: new Map(styles.map((s) => [s.departmentId, s])), profiles: new Map(profiles.map((p) => [p.agentId, p])) });
   const prevW = state.world?.width;
   state.world = computeWorld(departments, agents, state.styles); state.placed = placeAgents(state.world, agents);
   if (prevW !== state.world.width) { Object.assign(vp, { worldW: state.world.width, worldH: state.world.height }); if (firstLoad) centerOn(vp, state.world.hub.x, state.world.hub.y); }
@@ -247,7 +248,15 @@ export async function refresh() {
   rebuildCaches(); buildOverlay();
   if (closeHook && liveDraft) previewIsland(liveDraft.id, liveDraft.get()); // garde l'aperçu du brouillon ouvert
 }
-get('/api/health').then((v) => { state.health = v; const d = (x) => (x ? 'détecté' : 'non détecté'); $('#connections').textContent = `Claude ${d(v.connectors.claudeCode)} · Codex ${d(v.connectors.codexCli)} · Shopify CLI ${d(v.connectors.shopifyCli)}`; }).catch(() => { $('#connections').textContent = 'Serveur local injoignable'; });
+get('/api/health').then((v) => {
+  state.health = v; const d = (x) => (x ? 'détecté' : 'non détecté'), warns = v.agentFiles?.warnings ?? [];
+  $('#connections').textContent = `Claude ${d(v.connectors.claudeCode)} · Codex ${d(v.connectors.codexCli)} · Shopify CLI ${d(v.connectors.shopifyCli)}${ignoredText(warns.length)}`;
+  showAgentWarnings(warns);
+}).catch(() => { $('#connections').textContent = 'Serveur local injoignable'; });
+function showAgentWarnings(warns) {
+  const box = $('#agent-warnings'); box.hidden = !warns.length;
+  box.replaceChildren(h('p', { class: 'note' }, 'Fiches d’agents ignorées :'), h('ul', {}, warns.map((w) => h('li', {}, `${w.file} : ${w.reason}`))));
+}
 loadUserSprites();
 { const logo = $('#logo').getContext('2d'); drawPixelText(logo, 'WORKEDA', 1, 0, getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#6c5ce7'); }
 
@@ -381,6 +390,19 @@ function islandEditor(id, back) {
   h('div', { class: 'row' }, save, cancel, resetBtn));
 }
 
+// Recentre la carte sur un agent puis ouvre sa fenêtre (recherche, boutons « Collabore avec »).
+function focusAgent(id) { const p = state.placed.find((x) => x.agent.id === id); if (p) centerOnWorld(p.x, p.y - 40); show('agent', id); }
+function profileBlock(p) {
+  const team = colleagues(p, state.agents);
+  return h('div', { class: 'profile' },
+    h('p', { class: 'metier' }, p.sections.metier),
+    h('span', { class: 'chip accent' }, `Modèle ${modelLabel(p.model)}`),
+    p.connectors.length > 0 && [h('h3', {}, 'Outils externes'), h('ul', {}, p.connectors.map((c) => h('li', {}, connectorText(c))))],
+    team.length > 0 && [h('h3', {}, 'Collabore avec'), h('div', { class: 'colleagues' }, team.map((c) => (c.agentId ? h('button', { type: 'button', onclick: () => focusAgent(c.agentId) }, c.label) : h('span', { class: 'chip soft' }, c.label))))],
+    h('h3', {}, 'Livrable attendu'), h('p', { class: 'pre' }, p.sections.livrable),
+    h('details', {}, h('summary', {}, 'Fiche complète'), FULL_SECTIONS.flatMap(([key, title]) => [h('h3', {}, title), h('p', { class: 'pre' }, p.sections[key])])),
+    h('p', { class: 'note' }, helpLine(p.displayName)));
+}
 function agentView(id, opts = {}) {
   const a = state.agents.find((x) => x.id === id), d = deptOf(a.department_id), names = Object.keys(TABS);
   const tabs = tabset(names.map((t) => ({ label: t, render: () => TABS[t](a) })), Math.max(0, names.indexOf(opts.tab)), undefined, 'Sections de l’agent');
@@ -390,6 +412,7 @@ const TABS = {
   Profil: (a) => h('div', {},
     h('div', { class: 'status' }, `${STATUS_LABELS[a.status] || a.status} · source : ${a.statusSource}`),
     a.statusSource === 'manual' && h('p', { style: 'margin-top:6px' }, 'Statut déclaré manuellement : aucun connecteur n’a vérifié d’activité.'),
+    state.profiles.has(a.id) && profileBlock(state.profiles.get(a.id)),
     h('h3', {}, 'Missions'), (() => { const m = state.missions.filter((x) => x.assigned_to === a.id || x.requested_by === a.id); return m.length ? h('ul', {}, m.map(missionLine)) : h('p', {}, 'Aucune mission.'); })()),
   Apparence: (a) => {
     const look = { ...lookOf(a) }, preview = h('canvas', { class: 'preview', width: 64, height: 64, 'aria-label': `Aperçu de ${a.name}`, role: 'img' });
@@ -425,7 +448,7 @@ $('#search').addEventListener('input', (e) => {
   for (const b of overlay.querySelectorAll('.hit.agent')) { const a = state.agents.find((x) => `agent:${x.id}` === b.dataset.key); b.classList.toggle('match', !!(q && a && (a.name.toLowerCase().includes(q) || a.role.toLowerCase().includes(q)))); }
   if (!q) { res.hidden = true; return; }
   const found = state.agents.filter((a) => a.name.toLowerCase().includes(q) || a.role.toLowerCase().includes(q)).slice(0, 8);
-  res.replaceChildren(...(found.length ? found.map((a) => h('li', {}, h('button', { type: 'button', onclick: () => { const p = state.placed.find((x) => x.agent.id === a.id); if (p) centerOnWorld(p.x, p.y - 40); res.hidden = true; show('agent', a.id); } }, `${a.name} — ${a.role} · ${deptOf(a.department_id)?.name ?? ''}`))) : [h('li', {}, 'Aucun agent trouvé.')]));
+  res.replaceChildren(...(found.length ? found.map((a) => h('li', {}, h('button', { type: 'button', onclick: () => { res.hidden = true; focusAgent(a.id); } }, `${a.name} — ${a.role} · ${deptOf(a.department_id)?.name ?? ''}`))) : [h('li', {}, 'Aucun agent trouvé.')]));
   res.hidden = false;
 });
 const toggleSettings = () => { const s = $('#settings'); s.hidden = !s.hidden; if (!s.hidden) $('#sky').focus(); };
