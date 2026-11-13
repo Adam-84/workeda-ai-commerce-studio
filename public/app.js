@@ -233,7 +233,7 @@ $('#minimap-toggle').addEventListener('click', () => { const m = $('#minimap'); 
 
 // ---------- données ----------
 export async function refresh() {
-  const [departments, agents, missions, messages, appearances, styles, profiles] = await Promise.all([get('/api/departments'), get('/api/agents'), get('/api/missions'), get('/api/messages'), get('/api/appearances'), get('/api/island-styles'), get('/api/agent-profiles')]);
+  const [departments, agents, missions, messages, appearances, styles, profiles] = await Promise.all([get('/api/departments'), get('/api/agents'), get('/api/missions'), get('/api/messages'), get('/api/appearances'), get('/api/island-styles'), get('/api/agent-profiles').catch(() => [])]);
   Object.assign(state, { departments, agents, missions, messages, appearances: new Map(appearances.map((a) => [a.agentId, a])), styles: new Map(styles.map((s) => [s.departmentId, s])), profiles: new Map(profiles.map((p) => [p.agentId, p])) });
   const prevW = state.world?.width;
   state.world = computeWorld(departments, agents, state.styles); state.placed = placeAgents(state.world, agents);
@@ -280,7 +280,7 @@ export function show(kind, id, opts = {}) {
   const key = opts.recruit ? `plot:${id}` : `${kind}:${id}`; current = { kind, id, key };
   const view = { island: islandView, agent: agentView, hub: hubView }[kind](id, opts);
   pop.replaceChildren(h('button', { class: 'x', type: 'button', 'aria-label': 'Fermer', onclick: () => close() }, '×'), view);
-  pop.hidden = false; positionPop(); pop.focus(); announce(`${pop.querySelector('h2')?.textContent ?? ''} ouvert`);
+  pop.scrollTop = 0; pop.hidden = false; positionPop(); pop.focus(); announce(`${pop.querySelector('h2')?.textContent ?? ''} ouvert`);
 }
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { close(); $('#settings').hidden = true; $('#search-results').hidden = true; } });
 document.addEventListener('pointerdown', (e) => { if (!pop.hidden && !pop.contains(e.target) && !e.target.closest('.hit')) close(false); if (!$('#settings').hidden && !e.target.closest('#settings, #settings-btn, #phase-pill')) $('#settings').hidden = true; });
@@ -398,7 +398,7 @@ function profileBlock(p) {
     h('p', { class: 'metier' }, p.sections.metier),
     h('span', { class: 'chip accent' }, `Modèle ${modelLabel(p.model)}`),
     p.connectors.length > 0 && [h('h3', {}, 'Outils externes'), h('ul', {}, p.connectors.map((c) => h('li', {}, connectorText(c))))],
-    team.length > 0 && [h('h3', {}, 'Collabore avec'), h('div', { class: 'colleagues' }, team.map((c) => (c.agentId ? h('button', { type: 'button', onclick: () => focusAgent(c.agentId) }, c.label) : h('span', { class: 'chip soft' }, c.label))))],
+    team.length > 0 && [h('h3', {}, 'Collabore avec'), h('div', { class: 'colleagues' }, team.map((c) => (c.agentId ? h('button', { type: 'button', 'aria-label': `Voir ${c.label}`, onclick: () => focusAgent(c.agentId) }, c.label) : h('span', { class: 'chip soft' }, c.label))))],
     h('h3', {}, 'Livrable attendu'), h('p', { class: 'pre' }, p.sections.livrable),
     h('details', {}, h('summary', {}, 'Fiche complète'), FULL_SECTIONS.flatMap(([key, title]) => [h('h3', {}, title), h('p', { class: 'pre' }, p.sections[key])])),
     h('p', { class: 'note' }, helpLine(p.displayName)));
