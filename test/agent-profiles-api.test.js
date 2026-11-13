@@ -64,3 +64,13 @@ test('without agent files the routes stay empty', () => withApp(async ({ call })
   assert.deepEqual(await call('/api/agent-profiles'), []);
   assert.deepEqual((await call('/api/health')).agentFiles, { loaded: 0, warnings: [] });
 }, { agentFiles: false }));
+
+test('CLI detection is cached across health and profile calls', () => {
+  const counts = {};
+  const detect = (c) => { counts[c] = (counts[c] ?? 0) + 1; return c === 'shopify'; };
+  return withApp(async ({ call }) => {
+    await call('/api/health'); await call('/api/agent-profiles');
+    await call('/api/health'); await call('/api/agent-profiles');
+    for (const c of ['shopify', 'claude', 'codex', 'clink']) assert.equal(counts[c], 1, c);
+  }, { detect });
+});

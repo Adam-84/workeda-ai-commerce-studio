@@ -19,12 +19,23 @@ const body = async (req) => {
   return raw ? JSON.parse(raw) : {};
 };
 
-export function createApp({ studio, publicDir, detect = cliPresent, agentFiles = { profiles: [], warnings: [] } }) {
+const DETECT_TTL_MS = 10_000;
+
+export function createApp({ studio, publicDir, detect: rawDetect = cliPresent, agentFiles: { profiles = [], warnings = [] } = {} }) {
+  // La détection lance un processus synchrone : on garde le résultat quelques secondes.
+  const seen = new Map();
+  const detect = (command) => {
+    const hit = seen.get(command);
+    if (hit && Date.now() - hit.at < DETECT_TTL_MS) return hit.value;
+    const value = rawDetect(command);
+    seen.set(command, { value, at: Date.now() });
+    return value;
+  };
   const root = resolve(publicDir), realRoot = realpathSync(root);
   // Seules les fiches reliées à un agent de la base sont exposées.
-  const linked = () => { const ids = new Map(studio.listAgentFiles().map((l) => [l.slug, l.agentId])); return { ids, list: agentFiles.profiles.filter((p) => ids.has(p.slug)) }; };
+  const linked = () => { const ids = new Map(studio.listAgentFiles().map((l) => [l.slug, l.agentId])); return { ids, list: profiles.filter((p) => ids.has(p.slug)) }; };
   const routes = {
-    'GET /api/health': () => ({ node: process.version, connectors: { shopifyCli: detect('shopify'), claudeCode: detect('claude'), codexCli: detect('codex'), clink: detect('clink') }, mode: 'local-only', agentFiles: { loaded: linked().list.length, warnings: agentFiles.warnings } }),
+    'GET /api/health': () => ({ node: process.version, connectors: { shopifyCli: detect('shopify'), claudeCode: detect('claude'), codexCli: detect('codex'), clink: detect('clink') }, mode: 'local-only', agentFiles: { loaded: linked().list.length, warnings } }),
     'GET /api/agent-profiles': () => {
       const { ids, list } = linked();
       return list.map((p) => ({
