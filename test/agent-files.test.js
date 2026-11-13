@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseAgentFile, loadAgentFiles, connectorState, SECTIONS, REQUIRED } from '../src/agent-files.js';
@@ -96,4 +96,45 @@ test('connector states never claim a connection', () => {
   assert.equal(connectorState('playwright', detect), 'not_connected');
   assert.equal(connectorState('web', detect), 'claude_code_only');
   assert.equal(connectorState('autre', detect), 'not_connected');
+});
+
+test('a directory named like a fiche is skipped and valid files still load', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'workeda-agents-'));
+  try {
+    mkdirSync(join(dir, 'x.md'));
+    writeFileSync(join(dir, 'ada.md'), fiche());
+    const { profiles, warnings } = loadAgentFiles(dir);
+    assert.deepEqual(profiles.map((p) => p.slug), ['ada']);
+    assert.deepEqual(warnings, []);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a duplicate header key is refused', () => {
+  const text = fiche().replace('role: Testeuse', 'role: Testeuse\nrole: Autre');
+  assert.match(parseAgentFile(text, 'ada.md').error, /clé en double : role/);
+});
+
+test('values that YAML reads badly are refused', () => {
+  assert.match(parseAgentFile(fiche({ head: { description: 'Termine par deux-points:' } }), 'ada.md').error, /YAML/);
+  assert.match(parseAgentFile(fiche({ head: { description: 'Un texte # commentaire' } }), 'ada.md').error, /YAML/);
+  assert.match(parseAgentFile(fiche({ head: { description: '"entre guillemets"' } }), 'ada.md').error, /YAML/);
+});
+
+test('an empty section is refused', () => {
+  const text = fiche().replace('## Relais\nTexte de Relais.', '## Relais\n   ');
+  assert.match(parseAgentFile(text, 'ada.md').error, /section vide : Relais/);
+});
+
+test('connectorState ignores inherited object keys', () => {
+  assert.equal(connectorState('constructor', () => true), 'not_connected');
+});
+
+test('an extra ## title after the eight is refused', () => {
+  const text = fiche() + '\n## Bonus\nEn plus.\n';
+  assert.match(parseAgentFile(text, 'ada.md').error, /sections attendues/);
+});
+
+test('a header line without key: value is unreadable', () => {
+  const text = fiche().replace('role: Testeuse', 'pasdedeuxpoints');
+  assert.match(parseAgentFile(text, 'ada.md').error, /ligne d'en-tête illisible/);
 });
