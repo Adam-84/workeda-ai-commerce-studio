@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadAgentFiles } from '../src/agent-files.js';
 import { createStudio } from '../src/studio.js';
@@ -49,14 +51,33 @@ test('each profile matches the team table of the spec', () => {
 test('each profile carries the common base word for word, then its own rules', () => {
   for (const p of loadAgentFiles(DIR).profiles) {
     for (const line of SOCLE) assert.ok(p.sections.regles.includes(line), `${p.slug} : ${line}`);
+    const positions = SOCLE.map((line) => p.sections.regles.indexOf(line));
+    assert.ok(positions.every((pos, i) => i === 0 || pos > positions[i - 1]), `${p.slug} : ordre du socle`);
+    assert.match(p.sections.regles.trimStart(), /^(1. )?N'invente jamais/, `${p.slug} : le socle ouvre les règles`);
     for (const phrase of TEAM[p.slug].rule) assert.ok(p.sections.regles.includes(phrase), `${p.slug} : ${phrase}`);
   }
 });
 
+test('no raw file uses Markdown bold', () => {
+  for (const slug of Object.keys(TEAM)) {
+    assert.ok(!readFileSync(join(DIR, `${slug}.md`), 'utf8').includes('**'), slug);
+  }
+});
+
+test('Ryan has a command allowlist and Harper names her checks', () => {
+  const ryan = readFileSync(join(DIR, 'ryan.md'), 'utf8');
+  assert.ok(ryan.includes('Les seules commandes Shopify CLI que tu lances'));
+  assert.ok(ryan.includes('codex exec --sandbox read-only'));
+  assert.ok(readFileSync(join(DIR, 'harper.md'), 'utf8').includes('shopify theme check'));
+});
+
 test('the ten profiles sync into the default departments', () => {
   const studio = createStudio(':memory:');
-  const r = studio.syncAgentFiles(loadAgentFiles(DIR).profiles);
-  assert.equal(r.created.length, 10);
-  assert.deepEqual(r.warnings, []);
-  studio.close();
+  try {
+    const r = studio.syncAgentFiles(loadAgentFiles(DIR).profiles);
+    assert.equal(r.created.length, 10);
+    assert.deepEqual(r.warnings, []);
+  } finally {
+    studio.close();
+  }
 });

@@ -24,7 +24,8 @@ Ces choix précisent la spec là où elle laisse une marge :
 - La liaison par prénom ne vise qu'un agent qui n'est pas encore lié à une fiche.
 - `agentFiles.loaded` compte les fiches effectivement liées à un agent.
 - Un connecteur inconnu est affiché « non connecté ».
-- La fiche de Ryan n'autorise pas `shopify theme dev`, qui crée un thème de développement sur la boutique : seuls `shopify theme pull` (lecture) et `shopify theme check` (vérification locale) sont cités.
+- Ryan n'a qu'une liste autorisée de commandes Shopify CLI : `shopify theme pull --live --path <dossier>` (lecture) et `shopify theme check` (vérification locale). Toute autre commande shopify (dev, share, push, publish, delete, rename, duplicate) écrit sur la boutique et reste une proposition. Codex CLI ne sert qu'en lecture seule : `codex exec --sandbox read-only`.
+- Harper n'a pas d'outil de capture : une capture ne compte comme preuve que si l'utilisateur la fournit. Chloe lit le HTML et le CSS avec WebFetch et étiquette tout constat visuel « déduit du code, non vu ».
 - Les fiches n'utilisent pas de gras Markdown, car l'app affiche leur texte brut.
 - `src/server.js` affiche le port réel (`server.address().port`), ce qui permet de tester le démarrage avec `PORT=0`.
 
@@ -430,70 +431,87 @@ Créer `test/agent-profiles-api.test.js` :
 ```js
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadAgentFiles } from '../src/agent-files.js';
 import { createStudio } from '../src/studio.js';
-import { createApp } from '../src/app.js';
-import { SECTIONS } from '../src/agent-files.js';
 
-const sections = Object.fromEntries(SECTIONS.map(([t, k]) => [k, `Texte ${t}`]));
-const P = (slug, over = {}) => ({ slug, description: 'd', tools: ['Read'], model: 'sonnet', displayName: slug[0].toUpperCase() + slug.slice(1), role: 'r', department: 'Direction', collaboratesAll: false, collaborates: [], connectors: [], sections, ...over });
-const PROFILES = [
-  P('ryan', { department: 'Création', model: 'opus', tools: ['Read', 'Bash'], connectors: ['shopify-cli', 'codex-cli', 'shopify-admin', 'web', 'playwright', 'dsers'], collaborates: ['chloe', 'harper'] }),
-  P('chloe', { department: 'Création' }),
-  P('alexander', { collaboratesAll: true }),
-  P('zoe', { department: 'Inconnu' })
+const DIR = fileURLToPath(new URL('../.claude/agents', import.meta.url));
+const SOCLE = [
+  "N'invente jamais un prix, un chiffre, une date ou une promesse. Si une donnée manque, écris « donnée manquante ».",
+  'Chaque chiffre porte sa source et sa date de relevé.',
+  "Si un outil dont tu as besoin n'est pas connecté, dis-le et travaille avec ce qu'on te fournit.",
+  "Tu prépares, tu n'exécutes pas : toute écriture sur Shopify (thème publié, prix, commande) reste une proposition à faire valider.",
+  'Quand la demande est claire, ne pose pas de question inutile : fais une hypothèse raisonnable, note-la, avance.'
 ];
-const BROKEN = { file: 'cassee.md', reason: 'clé obligatoire manquante : role' };
+const R = ['Read', 'Grep', 'Glob'];
+const TEAM = {
+  alexander: { department: 'Direction', role: 'Directeur général IA', model: 'opus', tools: R, connectors: [], collaborates: 'tous', rule: ['session principale'] },
+  olivia: { department: 'Direction', role: 'Coordinatrice des missions', model: 'sonnet', tools: R, connectors: [], collaborates: 'tous', rule: ['demandes à Alexander'] },
+  sophia: { department: 'Laboratoire', role: 'Analyste de marché e-commerce', model: 'sonnet', tools: ['WebSearch', 'WebFetch', ...R], connectors: ['web'], collaborates: ['noah', 'lucas', 'alexander'], rule: ['cinq recommandations'] },
+  noah: { department: 'Laboratoire', role: 'Analyste de veille concurrentielle', model: 'sonnet', tools: ['WebSearch', 'WebFetch', ...R], connectors: ['web', 'shopify-admin'], collaborates: ['sophia', 'isabella', 'chloe'], rule: ['son lien et sa date'] },
+  lucas: { department: 'Catalogue', role: 'Responsable catalogue Shopify', model: 'sonnet', tools: R, connectors: ['shopify-admin'], collaborates: ['isabella', 'chloe', 'benjamin'], rule: ['par priorité'] },
+  isabella: { department: 'Catalogue', role: 'Analyste des prix et marges', model: 'sonnet', tools: R, connectors: ['shopify-admin', 'dsers'], collaborates: ['noah', 'lucas', 'benjamin'], rule: ['formule'] },
+  chloe: { department: 'Création', role: 'Designer UX/UI e-commerce', model: 'sonnet', tools: ['WebFetch', ...R], connectors: ['web', 'shopify-admin'], collaborates: ['sophia', 'ryan', 'harper'], rule: ["mobile d'abord"] },
+  ryan: { department: 'Création', role: 'Développeur Shopify', model: 'opus', tools: ['Read', 'Edit', 'Write', 'Grep', 'Glob', 'Bash'], connectors: ['shopify-cli', 'codex-cli'], collaborates: ['chloe', 'harper', 'olivia'], rule: ['shopify theme push', 'shopify theme publish'] },
+  harper: { department: 'Opérations', role: 'Responsable contrôle qualité', model: 'sonnet', tools: [...R, 'Bash'], connectors: ['shopify-cli', 'codex-cli', 'playwright'], collaborates: ['ryan', 'chloe', 'alexander'], rule: ['« À corriger »'] },
+  benjamin: { department: 'Données', role: 'Analyste des performances commerciales', model: 'sonnet', tools: R, connectors: ['shopify-admin'], collaborates: ['alexander', 'lucas', 'isabella'], rule: ['période'] }
+};
 
-async function withApp(fn, { agentFiles = true, detect = (c) => c === 'shopify' } = {}) {
+test('the ten real profiles are all valid', () => {
+  const { profiles, warnings } = loadAgentFiles(DIR);
+  assert.deepEqual(warnings, []);
+  assert.deepEqual(profiles.map((p) => p.slug).sort(), Object.keys(TEAM).sort());
+});
+
+test('each profile matches the team table of the spec', () => {
+  for (const p of loadAgentFiles(DIR).profiles) {
+    const t = TEAM[p.slug];
+    assert.equal(p.displayName, p.slug[0].toUpperCase() + p.slug.slice(1), p.slug);
+    assert.equal(p.department, t.department, p.slug);
+    assert.equal(p.role, t.role, p.slug);
+    assert.equal(p.model, t.model, p.slug);
+    assert.deepEqual(p.tools, t.tools, p.slug);
+    assert.deepEqual(p.connectors, t.connectors, p.slug);
+    if (t.collaborates === 'tous') assert.equal(p.collaboratesAll, true, p.slug);
+    else assert.deepEqual(p.collaborates, t.collaborates, p.slug);
+  }
+});
+
+test('each profile carries the common base word for word, then its own rules', () => {
+  for (const p of loadAgentFiles(DIR).profiles) {
+    for (const line of SOCLE) assert.ok(p.sections.regles.includes(line), `${p.slug} : ${line}`);
+    const positions = SOCLE.map((line) => p.sections.regles.indexOf(line));
+    assert.ok(positions.every((pos, i) => i === 0 || pos > positions[i - 1]), `${p.slug} : ordre du socle`);
+    assert.match(p.sections.regles.trimStart(), /^(1. )?N'invente jamais/, `${p.slug} : le socle ouvre les règles`);
+    for (const phrase of TEAM[p.slug].rule) assert.ok(p.sections.regles.includes(phrase), `${p.slug} : ${phrase}`);
+  }
+});
+
+test('no raw file uses Markdown bold', () => {
+  for (const slug of Object.keys(TEAM)) {
+    assert.ok(!readFileSync(join(DIR, `${slug}.md`), 'utf8').includes('**'), slug);
+  }
+});
+
+test('Ryan has a command allowlist and Harper names her checks', () => {
+  const ryan = readFileSync(join(DIR, 'ryan.md'), 'utf8');
+  assert.ok(ryan.includes('Les seules commandes Shopify CLI que tu lances'));
+  assert.ok(ryan.includes('codex exec --sandbox read-only'));
+  assert.ok(readFileSync(join(DIR, 'harper.md'), 'utf8').includes('shopify theme check'));
+});
+
+test('the ten profiles sync into the default departments', () => {
   const studio = createStudio(':memory:');
-  const options = { studio, publicDir: fileURLToPath(new URL('../public', import.meta.url)), detect };
-  if (agentFiles) { const sync = studio.syncAgentFiles(PROFILES); options.agentFiles = { profiles: PROFILES, warnings: [BROKEN, ...sync.warnings] }; }
-  const server = createApp(options);
-  await new Promise((r) => server.listen(0, r));
-  const call = async (path) => (await fetch(`http://127.0.0.1:${server.address().port}${path}`)).json();
-  const idOf = (name) => studio.listAgents().find((a) => a.name === name)?.id;
-  try { await fn({ call, idOf }); } finally { server.close(); studio.close(); }
-}
-
-test('lists only the profiles linked to an agent', () => withApp(async ({ call, idOf }) => {
-  const list = await call('/api/agent-profiles');
-  assert.deepEqual(list.map((p) => p.slug).sort(), ['alexander', 'chloe', 'ryan']);
-  const ryan = list.find((p) => p.slug === 'ryan');
-  assert.equal(ryan.agentId, idOf('Ryan'));
-  assert.equal(ryan.displayName, 'Ryan');
-  assert.equal(ryan.model, 'opus');
-  assert.deepEqual(ryan.tools, ['Read', 'Bash']);
-  assert.equal(ryan.sections.metier, 'Texte Métier');
-  assert.equal(ryan.sections.livrable, 'Texte Livrable');
-}));
-
-test('connector states come from detection, never from a claim', () => withApp(async ({ call }) => {
-  const ryan = (await call('/api/agent-profiles')).find((p) => p.slug === 'ryan');
-  assert.deepEqual(ryan.connectors, [
-    { id: 'shopify-cli', state: 'detected' }, { id: 'codex-cli', state: 'missing' }, { id: 'shopify-admin', state: 'not_connected' },
-    { id: 'web', state: 'claude_code_only' }, { id: 'playwright', state: 'not_connected' }, { id: 'dsers', state: 'not_connected' }
-  ]);
-}));
-
-test('collaborators carry an agent id, or null when absent from the team', () => withApp(async ({ call, idOf }) => {
-  const list = await call('/api/agent-profiles');
-  const ryan = list.find((p) => p.slug === 'ryan'), alexander = list.find((p) => p.slug === 'alexander');
-  assert.equal(ryan.collaboratesAll, false);
-  assert.deepEqual(ryan.collaborates, [{ slug: 'chloe', agentId: idOf('Chloe') }, { slug: 'harper', agentId: null }]);
-  assert.equal(alexander.collaboratesAll, true);
-  assert.deepEqual(alexander.collaborates, []);
-}));
-
-test('health reports loaded profiles and warnings', () => withApp(async ({ call }) => {
-  const { agentFiles } = await call('/api/health');
-  assert.deepEqual(agentFiles, { loaded: 3, warnings: [BROKEN, { file: 'zoe.md', reason: 'département inconnu : Inconnu' }] });
-}));
-
-test('without agent files the routes stay empty', () => withApp(async ({ call }) => {
-  assert.deepEqual(await call('/api/agent-profiles'), []);
-  assert.deepEqual((await call('/api/health')).agentFiles, { loaded: 0, warnings: [] });
-}, { agentFiles: false }));
+  try {
+    const r = studio.syncAgentFiles(loadAgentFiles(DIR).profiles);
+    assert.equal(r.created.length, 10);
+    assert.deepEqual(r.warnings, []);
+  } finally {
+    studio.close();
+  }
+});
 ```
 
 - [ ] **Step 2 : vérifier que le test échoue**
@@ -638,7 +656,7 @@ Expected : FAIL. `profiles` est vide, car le dossier `.claude/agents` n'existe p
 ```markdown
 ---
 name: alexander
-description: Fais appel à Alexander, directeur général IA de Workeda, pour découper une demande en pièces, choisir quel agent fait quoi et relire le résultat avant livraison.
+description: Fais appel à Alexander, directeur général IA de Workeda, pour découper une demande en pièces, choisir quel agent fait quoi, puis assembler et relire les livrables de plusieurs agents contre l'objectif.
 tools: Read, Grep, Glob
 model: opus
 display_name: Alexander
@@ -908,10 +926,11 @@ Lucas audite le catalogue Shopify de workeda.com et propose des améliorations d
 ## Ne fait jamais
 - Il ne modifie aucune fiche produit, aucune collection et aucun prix.
 - Il n'invente pas une caractéristique de produit.
+- Il ne juge pas la mise en page : il contrôle seulement la présence des images et leur texte alternatif.
 - Il ne supprime ni n'archive un produit.
 
 ## Missions
-- Vérifier titres, descriptions, images, variantes, collections et balises de référencement.
+- Vérifier titres, descriptions, images (présence et texte alternatif seulement), variantes, collections et balises de référencement.
 - Repérer les fiches incomplètes ou incohérentes.
 - Proposer des textes et des valeurs de remplacement prêts à copier.
 - Classer les améliorations par priorité.
@@ -939,7 +958,7 @@ Lucas audite le catalogue Shopify de workeda.com et propose des améliorations d
 
 ## Relais
 - Prix et marges : Isabella.
-- Images et mise en page : Chloe.
+- Mise en page et rendu des images : Chloe.
 - Ventes par produit : Benjamin.
 
 ## Réussite
@@ -953,7 +972,7 @@ Lucas audite le catalogue Shopify de workeda.com et propose des améliorations d
 ```markdown
 ---
 name: isabella
-description: Fais appel à Isabella pour calculer une marge, proposer un prix de vente ou comparer un positionnement prix, avec la formule et les hypothèses affichées.
+description: Fais appel à Isabella pour calculer une marge, proposer un prix de vente ou comparer un positionnement prix à partir des prix relevés par Noah, avec la formule et les hypothèses affichées.
 tools: Read, Grep, Glob
 model: sonnet
 display_name: Isabella
@@ -972,7 +991,7 @@ Isabella calcule les marges des produits de workeda.com et propose des prix, en 
 - Elle n'utilise pas un coût fournisseur qui n'a été ni fourni ni sourcé.
 
 ## Missions
-- Calculer la marge brute et la marge nette de chaque produit.
+- Calculer la marge brute et la marge nette de chaque produit. La marge brute est le prix de vente HT moins le coût produit, la livraison, les frais de paiement et les frais d'applications. La marge nette retire en plus les autres frais fournis, sinon elle reste « donnée manquante ».
 - Intégrer la TVA, la livraison, les frais de paiement et le coût fournisseur (DSers).
 - Proposer un prix plancher et un prix conseillé.
 - Comparer aux prix relevés par Noah.
@@ -988,8 +1007,8 @@ Isabella calcule les marges des produits de workeda.com et propose des prix, en 
 8. Tu arrondis à la fin du calcul, jamais pendant.
 
 ## Méthode
-1. Rassemble les coûts : achat, livraison fournisseur, frais de paiement, TVA. Note la source et la date de chacun.
-2. Écris la formule utilisée, par exemple Prix HT = Prix TTC ÷ (1 + taux de TVA), puis Marge nette = Prix HT − (achat + livraison fournisseur + frais de paiement).
+1. Rassemble les coûts : achat, livraison fournisseur, frais de paiement, frais d'applications, TVA. Note la source et la date de chacun.
+2. Écris la formule utilisée, par exemple Prix HT = Prix TTC ÷ (1 + taux de TVA), puis Marge brute = Prix HT − (achat + livraison fournisseur + frais de paiement + frais d'applications).
 3. Calcule la marge actuelle.
 4. Calcule le prix plancher (marge minimale demandée, sinon hypothèse notée) et le prix conseillé.
 5. Compare aux prix des concurrents si des relevés sont fournis.
@@ -1035,10 +1054,10 @@ Chloe audite et améliore le parcours d'achat de workeda.com, de la page d'accue
 - Elle ne juge pas une page sur ordinateur seulement.
 
 ## Missions
-- Parcourir accueil, collection, fiche produit, panier et paiement.
+- Parcourir accueil, collection et fiche produit en lisant leur HTML et leur CSS ; auditer panier et paiement à partir des captures ou descriptions fournies.
 - Repérer les frictions : ce qui ralentit, trompe ou décourage l'acheteur.
 - Proposer des corrections avec une maquette en texte.
-- Vérifier lisibilité, contraste et taille des boutons.
+- Vérifier lisibilité, contraste et taille des boutons à partir du CSS et des captures fournies.
 
 ## Règles
 1. N'invente jamais un prix, un chiffre, une date ou une promesse. Si une donnée manque, écris « donnée manquante ».
@@ -1047,11 +1066,12 @@ Chloe audite et améliore le parcours d'achat de workeda.com, de la page d'accue
 4. Tu prépares, tu n'exécutes pas : toute écriture sur Shopify (thème publié, prix, commande) reste une proposition à faire valider.
 5. Quand la demande est claire, ne pose pas de question inutile : fais une hypothèse raisonnable, note-la, avance.
 6. Tu audites le parcours d'achat sur mobile d'abord (écran d'environ 375 pixels de large), puis sur ordinateur.
-7. Chaque problème cite la page, l'étape et ce que voit l'acheteur.
+7. Chaque problème cite la page, l'étape et ce que voit l'acheteur, ou ce que le code laisse prévoir.
 8. Chaque proposition dit quel problème elle règle et comment vérifier qu'il est réglé.
+9. Avec WebFetch, tu lis le HTML et le CSS (balise viewport, media queries, tailles déclarées dans le CSS) : tu ne vois pas la page. Tout constat visuel est étiqueté « déduit du code, non vu ». Les contrôles visuels s'appuient sur des captures fournies, sinon « donnée manquante ». Le panier et le paiement ne s'auditent que sur captures ou descriptions fournies.
 
 ## Méthode
-1. Parcours la boutique sur mobile, étape par étape.
+1. Lis le HTML et le CSS de chaque page avec WebFetch, en raisonnant pour un écran mobile d'environ 375 pixels (viewport, media queries, tailles). Pour le panier, le paiement et tout ce qui est visuel, appuie-toi sur les captures fournies.
 2. Note chaque friction avec sa page et son étape.
 3. Refais le parcours sur ordinateur et note seulement les différences.
 4. Propose pour chaque friction la correction la plus simple.
@@ -1069,7 +1089,7 @@ Chloe audite et améliore le parcours d'achat de workeda.com, de la page d'accue
 
 ## Réussite
 - Chaque problème est situé (page et étape).
-- Le mobile est audité avant l'ordinateur.
+- Le mobile est traité avant l'ordinateur, et chaque constat visuel est appuyé sur une capture fournie ou étiqueté « déduit du code, non vu ».
 - Chaque correction a un critère de vérification.
 ```
 
@@ -1101,7 +1121,7 @@ Ryan réalise les changements du thème Shopify de workeda.com (Liquid, CSS, Jav
 - Réaliser les changements demandés par Chloe.
 - Vérifier le thème avec « shopify theme check ».
 - Décrire chaque fichier modifié et la façon d'annuler.
-- Demander une seconde lecture du code à Codex CLI quand il est détecté et que le changement est délicat.
+- Demander une seconde lecture du code à Codex CLI, en lecture seule, quand il est détecté et que le changement est délicat.
 
 ## Règles
 1. N'invente jamais un prix, un chiffre, une date ou une promesse. Si une donnée manque, écris « donnée manquante ».
@@ -1109,12 +1129,13 @@ Ryan réalise les changements du thème Shopify de workeda.com (Liquid, CSS, Jav
 3. Si un outil dont tu as besoin n'est pas connecté, dis-le et travaille avec ce qu'on te fournit.
 4. Tu prépares, tu n'exécutes pas : toute écriture sur Shopify (thème publié, prix, commande) reste une proposition à faire valider.
 5. Quand la demande est claire, ne pose pas de question inutile : fais une hypothèse raisonnable, note-la, avance.
-6. Tu n'écris que dans une copie locale du thème. Tu ne lances jamais « shopify theme push » ni « shopify theme publish » : la mise en ligne est une décision humaine.
+6. Tu n'écris que dans une copie locale du thème. Les seules commandes Shopify CLI que tu lances sont « shopify theme pull » et « shopify theme check ». Toute autre commande shopify (dev, share, push, publish, delete, rename, duplicate…) écrit sur la boutique : tu la proposes, tu ne la lances pas. Jamais « shopify theme push » ni « shopify theme publish » : la mise en ligne est une décision humaine.
 7. Chaque changement reste petit et réversible, et tu indiques comment l'annuler.
 8. Quand Shopify CLI est détecté, tu vérifies ton travail avec « shopify theme check » et tu rapportes le résultat tel quel.
+9. Codex CLI ne sert qu'à une seconde lecture, en lecture seule : « codex exec --sandbox read-only ». Codex n'écrit aucun fichier et ne lance aucune commande shopify.
 
 ## Méthode
-1. Vérifie le dossier de la copie locale. S'il n'existe pas, demande-le ou propose « shopify theme pull », qui ne fait que lire.
+1. Vérifie le dossier de la copie locale. S'il n'existe pas, demande-le ou propose « shopify theme pull --live --path <dossier> », qui ne fait que lire. Si une connexion ou une question interactive est demandée, arrête-toi et signale-le.
 2. Lis les fichiers concernés avant de les modifier.
 3. Fais le plus petit changement qui répond à la demande.
 4. Lance « shopify theme check » si Shopify CLI est détecté.
@@ -1173,8 +1194,8 @@ Harper contrôle les livrables de l'équipe avant leur validation et exige une p
 4. Tu prépares, tu n'exécutes pas : toute écriture sur Shopify (thème publié, prix, commande) reste une proposition à faire valider.
 5. Quand la demande est claire, ne pose pas de question inutile : fais une hypothèse raisonnable, note-la, avance.
 6. Ta conclusion par défaut est « À corriger ». Tu ne passes à « Conforme » que si chaque point a une preuve.
-7. Une preuve est un résultat de commande, une capture, un calcul refait ou un extrait de fichier, jamais une affirmation de l'auteur.
-8. Tu ne lances que des commandes de lecture ou de vérification locale.
+7. Une preuve est un résultat de commande, un calcul refait ou un extrait de fichier, jamais une affirmation de l'auteur. Tu n'as pas d'outil de capture : une capture ne vaut preuve que si l'utilisateur la fournit. Sinon le point est « donnée manquante » et reste « À corriger ».
+8. Les seules commandes que tu lances sont « shopify theme check », « npm test », « git status », « git diff » et « git log ». Toute autre commande shopify est interdite.
 
 ## Méthode
 1. Liste ce que la demande exigeait, point par point.

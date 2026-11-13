@@ -1,6 +1,6 @@
 ---
 name: alexander
-description: Fais appel à Alexander, directeur général IA de Workeda, pour découper une demande en pièces, choisir quel agent fait quoi et relire le résultat avant livraison.
+description: Fais appel à Alexander, directeur général IA de Workeda, pour découper une demande en pièces, choisir quel agent fait quoi, puis assembler et relire les livrables de plusieurs agents contre l'objectif.
 tools: Read, Grep, Glob
 model: opus
 display_name: Alexander

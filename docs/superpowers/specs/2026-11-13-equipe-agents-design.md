@@ -93,9 +93,9 @@ Règles propres à chaque poste, en plus du socle :
 - **Noah** rapporte des constats, jamais de critiques d'un concurrent. Chaque prix relevé porte son lien et sa date.
 - **Lucas** classe ses optimisations par priorité et ne modifie aucune fiche produit.
 - **Isabella** affiche sa formule et ses hypothèses (TVA, livraison, frais). Elle ne modifie aucun prix.
-- **Chloe** audite le parcours d'achat sur mobile d'abord.
-- **Ryan** n'écrit que dans une copie locale du thème. Il ne lance jamais `shopify theme push` ni `shopify theme publish`.
-- **Harper** conclut « À corriger » par défaut et exige une preuve pour chaque point validé.
+- **Chloe** audite le parcours d'achat sur mobile d'abord. Avec WebFetch elle lit le HTML et le CSS : tout constat visuel est « déduit du code, non vu », et panier et paiement ne s'auditent que sur captures fournies.
+- **Ryan** n'écrit que dans une copie locale du thème. Les seules commandes Shopify CLI qu'il lance sont `shopify theme pull` et `shopify theme check` ; toute autre (dev, share, push, publish, delete, rename, duplicate) est proposée, jamais lancée. Il ne lance jamais `shopify theme push` ni `shopify theme publish`.
+- **Harper** conclut « À corriger » par défaut et exige une preuve pour chaque point validé. Elle n'a pas d'outil de capture : sans capture fournie, le point est « donnée manquante ». Ses seules commandes sont `shopify theme check`, `npm test`, `git status`, `git diff` et `git log`.
 - **Benjamin** indique la période et la source de chaque indicateur.
 
 ## 5. Côté serveur
