@@ -28,6 +28,11 @@ export function createStudio(filename = 'data/workeda.db') {
     CREATE TABLE IF NOT EXISTS approvals (id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id), action TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL, decided_at TEXT);
     CREATE TABLE IF NOT EXISTS agent_appearance (agent_id TEXT PRIMARY KEY REFERENCES agents(id), hair_style TEXT NOT NULL, hair_color TEXT NOT NULL, skin TEXT NOT NULL, eyes TEXT NOT NULL, outfit TEXT NOT NULL, top_color TEXT NOT NULL, accessory TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS island_styles (department_id TEXT PRIMARY KEY REFERENCES departments(id), label TEXT, accent TEXT, floor TEXT, wall TEXT, emblem TEXT, tree TEXT, ground TEXT, lanterns INTEGER, updated_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS agent_files (agent_id TEXT PRIMARY KEY REFERENCES agents(id), slug TEXT NOT NULL UNIQUE, linked_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS user_messages (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), body TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS user_messages_agent_time ON user_messages(agent_id, created_at, id);
+    CREATE TABLE IF NOT EXISTS agent_replies (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), body TEXT NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS agent_replies_agent_time ON agent_replies(agent_id, created_at, id);
   `);
   const seeded = db.prepare('SELECT COUNT(*) AS count FROM departments').get().count;
   if (seeded === 0) {
@@ -99,6 +104,46 @@ export function createStudio(filename = 'data/workeda.db') {
     },
     listMessages: (missionId) => db.prepare('SELECT * FROM messages WHERE mission_id = ? ORDER BY created_at ASC').all(missionId).map(mapMessage),
     listRecentMessages: ({ missionId = null, limit = 200 } = {}) => db.prepare('SELECT * FROM messages WHERE (? IS NULL OR mission_id = ?) ORDER BY created_at DESC, rowid DESC LIMIT ?').all(missionId, missionId, Math.min(Math.max(Number(limit) || 200, 1), 500)).map(mapMessage),
+    sendUserMessage(agentId, { body }) {
+      requireAgent(agentId);
+      if (typeof body !== 'string' || !body.trim()) throw new Error('Écrivez un message avant de l’envoyer.');
+      const id = randomUUID(), created_at = now();
+      db.prepare('INSERT INTO user_messages (id, agent_id, body, created_at) VALUES (?, ?, ?, ?)').run(id, agentId, body.trim(), created_at);
+      return { id: `user:${id}`, body: body.trim(), created_at, senderType: 'user', fromAgentId: null, toAgentId: agentId };
+    },
+    // Réponse réellement produite par un modèle : appelée par le serveur seulement, jamais depuis une route client.
+    saveAgentReply(agentId, body, source) {
+      requireAgent(agentId);
+      const id = randomUUID(), created_at = now();
+      db.prepare('INSERT INTO agent_replies (id, agent_id, body, source, created_at) VALUES (?, ?, ?, ?, ?)').run(id, agentId, body, source, created_at);
+      emit(agentId, 'reply.sent', 'Réponse à l’utilisateur', source, true);
+      return { id: `assistant:${id}`, body, created_at, senderType: 'assistant', fromAgentId: agentId, toAgentId: null };
+    },
+    listConversation(agentId, before = null) {
+      requireAgent(agentId);
+      let date = null, key = null;
+      if (before !== null) {
+        try {
+          if (typeof before !== 'string' || before.length > 512 || !/^[\w-]+$/.test(before)) throw new Error();
+          const cursor = JSON.parse(Buffer.from(before, 'base64url').toString('utf8'));
+          if (typeof cursor.createdAt !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(cursor.createdAt) || !Number.isFinite(Date.parse(cursor.createdAt)) || typeof cursor.id !== 'string' || !/^(user|agent|assistant):[\da-f-]{36}$/.test(cursor.id)) throw new Error();
+          date = cursor.createdAt; key = cursor.id;
+        } catch { throw new Error('Historique invalide. Rouvrez la discussion.'); }
+      }
+      const rows = db.prepare(`SELECT * FROM (
+        SELECT 'agent:' || id AS id, body, created_at, 'agent' AS senderType, from_agent_id AS fromAgentId, to_agent_id AS toAgentId
+        FROM messages WHERE from_agent_id = ? OR to_agent_id = ?
+        UNION ALL
+        SELECT 'user:' || id, body, created_at, 'user', NULL, agent_id FROM user_messages WHERE agent_id = ?
+        UNION ALL
+        SELECT 'assistant:' || id, body, created_at, 'assistant', agent_id, NULL FROM agent_replies WHERE agent_id = ?
+      ) WHERE (? IS NULL OR created_at < ? OR (created_at = ? AND id < ?))
+      ORDER BY created_at DESC, id DESC LIMIT 51`).all(agentId, agentId, agentId, agentId, date, date, date, key);
+      const items = rows.slice(0, 50).map((r) => ({ ...r }));
+      const last = items.at(-1);
+      const nextCursor = rows.length > 50 ? Buffer.from(JSON.stringify({ createdAt: last.created_at, id: last.id })).toString('base64url') : null;
+      return { items, nextCursor };
+    },
     listAppearances: () => db.prepare('SELECT * FROM agent_appearance').all().map(mapAppearance),
     setAppearance(agentId, look) {
       requireAgent(agentId);
@@ -132,6 +177,31 @@ export function createStudio(filename = 'data/workeda.db') {
       db.prepare('DELETE FROM island_styles WHERE department_id = ?').run(departmentId);
       emit(null, 'island.style.reset', `Identité d’origine de l’île ${dept.name} rétablie.`, 'manual', true);
       return { departmentId, reset: true };
+    },
+    listAgentFiles: () => db.prepare('SELECT agent_id, slug FROM agent_files ORDER BY slug').all().map((r) => ({ agentId: r.agent_id, slug: r.slug })),
+    // Relie chaque fiche .claude/agents/<slug>.md à un agent. Ne modifie ni ne supprime jamais un agent existant.
+    syncAgentFiles(profiles) {
+      const result = { created: [], linked: [], warnings: [] };
+      const link = db.prepare('INSERT INTO agent_files (agent_id, slug, linked_at) VALUES (?, ?, ?)');
+      db.exec('BEGIN');
+      try {
+        for (const p of profiles) {
+          if (one('SELECT slug FROM agent_files WHERE slug = ?', p.slug)) continue; // 1. déjà lié : rien ne change
+          const wanted = p.displayName.toLocaleLowerCase('fr');
+          const free = db.prepare('SELECT id, name FROM agents WHERE id NOT IN (SELECT agent_id FROM agent_files) ORDER BY created_at').all();
+          const same = free.find((a) => a.name.toLocaleLowerCase('fr') === wanted);
+          if (same) { link.run(same.id, p.slug, now()); result.linked.push(p.slug); continue; } // 2. même prénom : liaison seule
+          const dept = one('SELECT id FROM departments WHERE name = ?', p.department);
+          if (!dept) { result.warnings.push({ file: `${p.slug}.md`, reason: `département inconnu : ${p.department}` }); continue; }
+          const id = randomUUID(), timestamp = now(); // 3. création
+          db.prepare('INSERT INTO agents (id, name, role, department_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(id, p.displayName, p.role, dept.id, timestamp, timestamp);
+          link.run(id, p.slug, timestamp);
+          emit(id, 'agent.hired', `recruté depuis .claude/agents/${p.slug}.md`, 'manual', true);
+          result.created.push(p.slug);
+        }
+        db.exec('COMMIT');
+      } catch (e) { if (db.isTransaction) db.exec('ROLLBACK'); throw e; }
+      return result;
     },
     close: () => db.close()
   };

@@ -4,10 +4,12 @@ import { tinter, mix } from './iso.js';
 import { appearanceFor, expressionFor, spriteGrid, OPTIONS, hashStr } from './sprites.js';
 import { drawPixelText } from './pixelfont.js';
 import { computeBeams } from './beams.js';
-import { createViewport, toScreen, toWorld, centerOn, zoomAt, panBy, nextZoom, visibleRect } from './viewport.js';
+import { createViewport, toScreen, toWorld, centerOn, zoomAt, panBy, nextZoom, visibleRect, lerpView } from './viewport.js';
 import { computeWorld, placeAgents, drawIsland, drawHub, drawDesk, spriteCanvas, islandBounds, recruitSpot, pillSpot, doorSpot, styledIdentity } from './world.js';
 import { drawEmblem } from './emblems.js';
 import { OPTIONS as ISLAND_OPTIONS, LABELS_FR, LABEL_MAX, normalizeIslandStyle, isValidIslandStyle } from './island-style.js'; // OPTIONS de sprites.js = personnages : alias
+import { connectorText, modelLabel, colleagues, ignoredText, helpLine, FULL_SECTIONS } from './agent-profile.js';
+import { createConversation } from './conversation.js';
 
 const $ = (s) => document.querySelector(s);
 const get = (p) => fetch(p).then(async (r) => { const d = await r.json(); if (!r.ok) throw new Error(d.error); return d; });
@@ -22,7 +24,7 @@ const ICONS = {
   blocked: '<svg viewBox="-8 -8 16 16" width="30" height="30"><circle r="7.5" fill="#fff" stroke="#e8853d"/><path d="M0-4.5L4.6 3.6H-4.6Z" fill="#e8853d"/><path d="M0-1.4v2.4" stroke="#fff" stroke-width="1.2" stroke-linecap="round"/><circle cy="2.4" r=".6" fill="#fff"/></svg>'
 }; // icônes : SVG statiques écrits ici, aucune donnée de la base
 
-export const state = { departments: [], agents: [], missions: [], messages: [], appearances: new Map(), styles: new Map(), health: null, world: null, placed: [] };
+export const state = { departments: [], agents: [], missions: [], messages: [], appearances: new Map(), styles: new Map(), profiles: new Map(), health: null, world: null, placed: [] };
 let override = loadOverride(), phase = resolveSkyPhase(new Date(), override), firstLoad = true;
 const seenExchanges = new Set(), knownAgents = new Set();
 const beamQueue = [], walkers = new Map();
@@ -142,8 +144,7 @@ function drawBeams(t) {
     if (Math.abs(age - dur / 2) < 0.3) { ctx.globalAlpha = 0.35; ctx.fillStyle = color; ctx.fillRect(crystal[0] - 10, crystal[1] - 600, 20, 600); ctx.globalAlpha = 1; } // éclair vertical au passage du cristal
   }
 }
-let last = 0;
-function frame(ts) { if (ts - last >= 40) { last = ts; draw(ts / 1000); } requestAnimationFrame(frame); }
+function frame(ts) { stepCamera(ts); draw(ts / 1000); requestAnimationFrame(frame); } // chaque image : carte et boutons HTML restent synchrones
 
 // ---------- superposition HTML (boutons, pastilles, icônes) ----------
 const overlayNodes = [];
@@ -204,17 +205,30 @@ function positionOverlay() {
 }
 
 // ---------- déplacement et zoom ----------
-let drag = null;
-canvas.addEventListener('pointerdown', (e) => { drag = { x: e.clientX, y: e.clientY }; canvas.classList.add('dragging'); canvas.setPointerCapture(e.pointerId); });
+let drag = null, cam = null; // cam : transition de caméra en cours { from, to, start }
+// applique fn (centerOn, zoomAt, panBy…) à une copie de la vue visée, puis y glisse en ~350 ms (saut direct si mouvement réduit)
+function moveView(fn) {
+  const to = fn({ ...(cam?.to ?? vp) });
+  if (reduce) { Object.assign(vp, { x: to.x, y: to.y, zoom: to.zoom }); return afterView(); }
+  cam = { from: { x: vp.x, y: vp.y, zoom: vp.zoom }, to, start: performance.now() };
+}
+function stepCamera(now) {
+  if (!cam) return;
+  const k = Math.min(1, (now - cam.start) / 350);
+  Object.assign(vp, k < 1 ? lerpView(cam.from, cam.to, 1 - (1 - k) ** 3) : { x: cam.to.x, y: cam.to.y, zoom: cam.to.zoom });
+  if (k >= 1) cam = null;
+  afterView();
+}
+canvas.addEventListener('pointerdown', (e) => { if (cam?.from.zoom !== cam?.to.zoom) stepCamera(Infinity); cam = null; drag = { x: e.clientX, y: e.clientY }; canvas.classList.add('dragging'); canvas.setPointerCapture(e.pointerId); });
 canvas.addEventListener('pointermove', (e) => { if (!drag) return; panBy(vp, e.clientX - drag.x, e.clientY - drag.y); drag = { x: e.clientX, y: e.clientY }; afterView(); });
 canvas.addEventListener('pointerup', () => { drag = null; canvas.classList.remove('dragging'); });
-canvas.addEventListener('wheel', (e) => { e.preventDefault(); zoomAt(vp, nextZoom(vp.zoom, e.deltaY < 0 ? 1 : -1), e.clientX, e.clientY); afterView(); }, { passive: false });
-canvas.addEventListener('keydown', (e) => { const s = 60, m = { ArrowLeft: [s, 0], ArrowRight: [-s, 0], ArrowUp: [0, s], ArrowDown: [0, -s] }[e.key]; if (m) { e.preventDefault(); panBy(vp, ...m); afterView(); } });
-$('#zoom-in').addEventListener('click', () => { zoomAt(vp, nextZoom(vp.zoom, 1), innerWidth / 2, innerHeight / 2); afterView(); });
-$('#zoom-out').addEventListener('click', () => { zoomAt(vp, nextZoom(vp.zoom, -1), innerWidth / 2, innerHeight / 2); afterView(); });
-function afterView() { $('#zoom-label').textContent = `${vp.zoom * 100} %`; positionOverlay(); updateMinimap(); if (reduce) draw(0); }
-export function centerOnWorld(x, y) { centerOn(vp, x, y); afterView(); }
-addEventListener('resize', () => { Object.assign(vp, { viewW: innerWidth, viewH: innerHeight }); centerOn(vp, ...toWorld(vp, innerWidth / 2, innerHeight / 2)); afterView(); });
+canvas.addEventListener('wheel', (e) => { e.preventDefault(); moveView((v) => zoomAt(v, nextZoom(v.zoom, e.deltaY < 0 ? 1 : -1), e.clientX, e.clientY)); }, { passive: false });
+canvas.addEventListener('keydown', (e) => { const s = 60, m = { ArrowLeft: [s, 0], ArrowRight: [-s, 0], ArrowUp: [0, s], ArrowDown: [0, -s] }[e.key]; if (m) { e.preventDefault(); moveView((v) => panBy(v, ...m)); } });
+$('#zoom-in').addEventListener('click', () => moveView((v) => zoomAt(v, nextZoom(v.zoom, 1), innerWidth / 2, innerHeight / 2)));
+$('#zoom-out').addEventListener('click', () => moveView((v) => zoomAt(v, nextZoom(v.zoom, -1), innerWidth / 2, innerHeight / 2)));
+function afterView() { $('#zoom-label').textContent = `${Math.round(vp.zoom * 100)} %`; positionOverlay(); updateMinimap(); if (reduce) draw(0); }
+export function centerOnWorld(x, y) { moveView((v) => centerOn(v, x, y)); }
+addEventListener('resize', () => { stepCamera(Infinity); Object.assign(vp, { viewW: innerWidth, viewH: innerHeight }); centerOn(vp, ...toWorld(vp, innerWidth / 2, innerHeight / 2)); afterView(); });
 
 // ---------- mini-plan ----------
 function updateMinimap() {
@@ -232,8 +246,8 @@ $('#minimap-toggle').addEventListener('click', () => { const m = $('#minimap'); 
 
 // ---------- données ----------
 export async function refresh() {
-  const [departments, agents, missions, messages, appearances, styles] = await Promise.all([get('/api/departments'), get('/api/agents'), get('/api/missions'), get('/api/messages'), get('/api/appearances'), get('/api/island-styles')]);
-  Object.assign(state, { departments, agents, missions, messages, appearances: new Map(appearances.map((a) => [a.agentId, a])), styles: new Map(styles.map((s) => [s.departmentId, s])) });
+  const [departments, agents, missions, messages, appearances, styles, profiles] = await Promise.all([get('/api/departments'), get('/api/agents'), get('/api/missions'), get('/api/messages'), get('/api/appearances'), get('/api/island-styles'), get('/api/agent-profiles').catch(() => [])]);
+  Object.assign(state, { departments, agents, missions, messages, appearances: new Map(appearances.map((a) => [a.agentId, a])), styles: new Map(styles.map((s) => [s.departmentId, s])), profiles: new Map(profiles.map((p) => [p.agentId, p])) });
   const prevW = state.world?.width;
   state.world = computeWorld(departments, agents, state.styles); state.placed = placeAgents(state.world, agents);
   if (prevW !== state.world.width) { Object.assign(vp, { worldW: state.world.width, worldH: state.world.height }); if (firstLoad) centerOn(vp, state.world.hub.x, state.world.hub.y); }
@@ -243,11 +257,19 @@ export async function refresh() {
   for (const a of agents) { if (!firstLoad && !knownAgents.has(a.id) && !reduce) { const isl = islandOf(a.department_id); if (isl) walkers.set(a.id, { from: doorSpot(isl), start: performance.now() / 1000, duration: 2 }); } knownAgents.add(a.id); }
   firstLoad = false;
   $('#missions-count').textContent = (() => { const n = missions.filter((m) => !['done', 'cancelled'].includes(m.state)).length; return `${n} mission${n > 1 ? 's' : ''} ouverte${n > 1 ? 's' : ''}`; })();
-  const sel = $('#missionbar select'); sel.replaceChildren(h('option', { value: '' }, 'Sans agent'), agents.map((a) => h('option', { value: a.id }, a.name)));
+  const sel = $('#missionbar select'); sel.replaceChildren(h('option', { value: '' }, 'Sans agent'), ...agents.map((a) => h('option', { value: a.id }, a.name)));
   rebuildCaches(); buildOverlay();
   if (closeHook && liveDraft) previewIsland(liveDraft.id, liveDraft.get()); // garde l'aperçu du brouillon ouvert
 }
-get('/api/health').then((v) => { state.health = v; const d = (x) => (x ? 'détecté' : 'non détecté'); $('#connections').textContent = `Claude ${d(v.connectors.claudeCode)} · Codex ${d(v.connectors.codexCli)} · Shopify CLI ${d(v.connectors.shopifyCli)}`; }).catch(() => { $('#connections').textContent = 'Serveur local injoignable'; });
+get('/api/health').then((v) => {
+  state.health = v; const d = (x) => (x ? 'détecté' : 'non détecté'), warns = v.agentFiles?.warnings ?? [];
+  $('#connections').title = $('#connections').textContent = `Claude ${d(v.connectors.claudeCode)} · Codex ${d(v.connectors.codexCli)} · Shopify CLI ${d(v.connectors.shopifyCli)}${ignoredText(warns.length)}`;
+  showAgentWarnings(warns);
+}).catch(() => { $('#connections').title = $('#connections').textContent = 'Serveur local injoignable'; });
+function showAgentWarnings(warns) {
+  const box = $('#agent-warnings'); box.hidden = !warns.length;
+  box.replaceChildren(h('p', { class: 'note' }, 'Fiches d’agents ignorées :'), h('ul', {}, warns.map((w) => h('li', {}, `${w.file} : ${w.reason}`))));
+}
 loadUserSprites();
 { const logo = $('#logo').getContext('2d'); drawPixelText(logo, 'WORKEDA', 1, 0, getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#6c5ce7'); }
 
@@ -255,6 +277,7 @@ loadUserSprites();
 const pop = $('#pop'); let current = null;
 const anchorEl = () => current && overlay.querySelector(`[data-key="${current.key}"]`);
 function positionPop() {
+  if (current?.kind === 'agent') { pop.style.left = pop.style.top = ''; return; }
   if (matchMedia('(max-width: 700px)').matches) { pop.style.left = pop.style.top = ''; return; }
   const a = anchorEl(); if (!a) return;
   const r = a.getBoundingClientRect(), w = pop.offsetWidth, hh = pop.offsetHeight;
@@ -269,9 +292,10 @@ export function close(restore = true) { runCloseHook(); if (pop.hidden) return; 
 export function show(kind, id, opts = {}) {
   runCloseHook();
   const key = opts.recruit ? `plot:${id}` : `${kind}:${id}`; current = { kind, id, key };
+  pop.classList.toggle('agent-panel', kind === 'agent');
   const view = { island: islandView, agent: agentView, hub: hubView }[kind](id, opts);
   pop.replaceChildren(h('button', { class: 'x', type: 'button', 'aria-label': 'Fermer', onclick: () => close() }, '×'), view);
-  pop.hidden = false; positionPop(); pop.focus(); announce(`${pop.querySelector('h2')?.textContent ?? ''} ouvert`);
+  pop.scrollTop = 0; pop.hidden = false; positionPop(); pop.focus(); announce(`${pop.querySelector('h2')?.textContent ?? ''} ouvert`);
 }
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { close(); $('#settings').hidden = true; $('#search-results').hidden = true; } });
 document.addEventListener('pointerdown', (e) => { if (!pop.hidden && !pop.contains(e.target) && !e.target.closest('.hit')) close(false); if (!$('#settings').hidden && !e.target.closest('#settings, #settings-btn, #phase-pill')) $('#settings').hidden = true; });
@@ -306,7 +330,7 @@ function tabset(defs, initial = 0, onChange = () => {}, ariaLabel = '') {
   const btns = defs.map((d, k) => h('button', { class: 'tab', type: 'button', role: 'tab', id: `tb-${uid}-${k}`, 'aria-controls': `tp-${uid}`, 'aria-selected': 'false', tabindex: '-1', onclick: () => select(k, true) }, d.label));
   const list = h('div', { class: 'tabs', role: 'tablist', 'aria-label': ariaLabel || false, onkeydown: (e) => { const i = btns.indexOf(document.activeElement); const n = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: btns.length - 1 }[e.key]; if (n !== undefined && i >= 0) { e.preventDefault(); select((n + btns.length) % btns.length, true); } } }, btns);
   let cur = -1;
-  function select(k, focus) { if (k === cur) { if (focus) btns[k].focus(); return; } cur = k; btns.forEach((b, j) => { b.setAttribute('aria-selected', String(j === k)); b.tabIndex = j === k ? 0 : -1; }); panel.setAttribute('aria-labelledby', `tb-${uid}-${k}`); panel.replaceChildren(defs[k].render()); if (!$('#pop').hidden) positionPop(); if (focus) btns[k].focus(); onChange(k); }
+  function select(k, focus) { if (k === cur) { if (focus) btns[k].focus(); return; } if (cur >= 0) defs[cur].leave?.(); cur = k; btns.forEach((b, j) => { b.setAttribute('aria-selected', String(j === k)); b.tabIndex = j === k ? 0 : -1; }); panel.setAttribute('aria-labelledby', `tb-${uid}-${k}`); panel.replaceChildren(defs[k].render()); if (!$('#pop').hidden) positionPop(); if (focus) btns[k].focus(); onChange(k); }
   select(initial, false);
   return { el: h('div', {}, list, panel), select };
 }
@@ -381,16 +405,48 @@ function islandEditor(id, back) {
   h('div', { class: 'row' }, save, cancel, resetBtn));
 }
 
+// Recentre la carte sur un agent puis ouvre sa fenêtre (recherche, boutons « Collabore avec »).
+function focusAgent(id) { const p = state.placed.find((x) => x.agent.id === id); if (p) centerOnWorld(p.x, p.y - 40); show('agent', id); }
+function profileBlock(p) {
+  const team = colleagues(p, state.agents);
+  return h('div', { class: 'profile' },
+    h('p', { class: 'metier' }, p.sections.metier),
+    h('span', { class: 'chip accent' }, `Modèle ${modelLabel(p.model)}`),
+    p.connectors.length > 0 && [h('h3', {}, 'Outils externes'), h('ul', {}, p.connectors.map((c) => h('li', {}, connectorText(c))))],
+    team.length > 0 && [h('h3', {}, 'Collabore avec'), h('div', { class: 'colleagues' }, team.map((c) => (c.agentId ? h('button', { type: 'button', 'aria-label': `Voir ${c.label}`, onclick: () => focusAgent(c.agentId) }, c.label) : h('span', { class: 'chip soft' }, c.label))))],
+    h('h3', {}, 'Livrable attendu'), h('p', { class: 'pre' }, p.sections.livrable),
+    h('details', {}, h('summary', {}, 'Fiche complète'), FULL_SECTIONS.flatMap(([key, title]) => [h('h3', {}, title), h('p', { class: 'pre' }, p.sections[key])])),
+    h('p', { class: 'note' }, helpLine(p.displayName)));
+}
 function agentView(id, opts = {}) {
-  const a = state.agents.find((x) => x.id === id), d = deptOf(a.department_id), names = Object.keys(TABS);
-  const tabs = tabset(names.map((t) => ({ label: t, render: () => TABS[t](a) })), Math.max(0, names.indexOf(opts.tab)), undefined, 'Sections de l’agent');
-  return h('div', {}, h('h2', {}, a.name), h('p', {}, `${a.role} · ${d?.name ?? ''}${a.enabled ? '' : ' · désactivé'}`), tabs.el);
+  const a = state.agents.find((x) => x.id === id), d = deptOf(a.department_id);
+  let conversation = null;
+  const leave = () => { conversation?.destroy(); conversation = null; };
+  closeHook = leave;
+  const defs = [
+    { label: 'Discussion', render: () => { conversation = createConversation({ agent: a, agents: state.agents, get, send, announce, replies: Boolean(state.profiles.get(a.id)?.replies) }); return conversation.el; }, leave },
+    { label: 'Missions', render: () => {
+      const missions = state.missions.filter((m) => m.assigned_to === a.id || m.requested_by === a.id);
+      return h('div', {}, h('h3', {}, 'Missions de ' + a.name), missions.length ? h('ul', {}, missions.map(missionLine)) : h('p', {}, 'Aucune mission pour le moment.'),
+        h('button', { type: 'button', class: 'primary', onclick: () => { close(false); const select = $('#missionbar select'); select.value = a.id; $('#missionbar input').focus(); } }, 'Donner une mission'));
+    } },
+    ...['Profil', 'Apparence'].map((label) => ({ label, render: () => TABS[label](a) })),
+    { label: 'Activité', render: () => TABS.Journal(a) }
+  ];
+  const selected = opts.tab === 'Messages' ? 'Discussion' : opts.tab === 'Journal' ? 'Activité' : opts.tab;
+  const tabs = tabset(defs, Math.max(0, defs.findIndex((d) => d.label === selected)), undefined, 'Sections de l’agent');
+  const portrait = h('canvas', { class: 'agent-portrait', width: 64, height: 64, 'aria-hidden': 'true' });
+  queueMicrotask(() => portrait.getContext('2d').drawImage(spriteFor(a), 0, 0));
+  return h('div', { class: 'agent-detail' }, h('header', { class: 'agent-heading' }, portrait,
+    h('div', {}, h('h2', {}, a.name), h('p', {}, a.role), h('p', { class: 'agent-department' }, d?.name ?? ''))),
+    h('p', { class: 'agent-state' }, `${STATUS_LABELS[a.status] || a.status} · ${a.statusSource === 'manual' ? 'statut manuel' : a.statusSource}${a.enabled ? '' : ' · désactivé'}`), tabs.el);
 }
 const TABS = {
   Profil: (a) => h('div', {},
     h('div', { class: 'status' }, `${STATUS_LABELS[a.status] || a.status} · source : ${a.statusSource}`),
     a.statusSource === 'manual' && h('p', { style: 'margin-top:6px' }, 'Statut déclaré manuellement : aucun connecteur n’a vérifié d’activité.'),
-    h('h3', {}, 'Missions'), (() => { const m = state.missions.filter((x) => x.assigned_to === a.id || x.requested_by === a.id); return m.length ? h('ul', {}, m.map(missionLine)) : h('p', {}, 'Aucune mission.'); })()),
+    state.profiles.has(a.id) && profileBlock(state.profiles.get(a.id)),
+    ),
   Apparence: (a) => {
     const look = { ...lookOf(a) }, preview = h('canvas', { class: 'preview', width: 64, height: 64, 'aria-label': `Aperçu de ${a.name}`, role: 'img' });
     const paint = () => { const g = preview.getContext('2d'); g.clearRect(0, 0, 64, 64); g.drawImage(spriteFor(a, { look }), 0, 0); };
@@ -403,12 +459,6 @@ const TABS = {
       h('button', { type: 'button', onclick: async () => { try { await send('DELETE', `/api/agents/${encodeURIComponent(a.id)}/appearance`); await refresh(); show('agent', a.id, { tab: 'Apparence' }); announce('Apparence automatique rétablie'); } catch (x) { err.textContent = x.message; } } }, 'Revenir à l’automatique'), err));
   },
   Journal: (a) => { const ul = h('ul', {}, h('li', {}, 'Chargement…')); get(`/api/events?agentId=${encodeURIComponent(a.id)}`).then((ev) => ul.replaceChildren(...ev.slice(0, 8).map((e) => h('li', {}, `${new Date(e.created_at).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })} · ${e.kind} · ${e.detail} (source : ${e.source})`)))).catch((x) => ul.replaceChildren(h('li', { class: 'err' }, x.message))); return ul; },
-  Messages: (a) => {
-    const talk = state.messages.filter((m) => m.from_agent_id === a.id || m.to_agent_id === a.id).slice(0, 8), others = state.agents.filter((o) => o.id !== a.id), name = (id) => state.agents.find((x) => x.id === id)?.name ?? '?';
-    return h('div', {}, talk.length ? h('ul', {}, talk.map((m) => h('li', {}, `${name(m.from_agent_id)} → ${name(m.to_agent_id)} : ${m.body}`))) : h('p', {}, 'Aucun message.'),
-      others.length ? form([field('De', h('select', { name: 'fromAgentId' }, others.map((o) => h('option', { value: o.id }, o.name)))), field('Message', h('textarea', { name: 'body', required: true, maxlength: 500 }))], 'Envoyer', async (data) => { await send('POST', '/api/messages', { ...data, toAgentId: a.id }); await refresh(); show('agent', a.id, { tab: 'Messages' }); announce('Message enregistré'); }) : h('p', {}, 'Recrutez un second agent pour échanger des messages.'),
-      h('p', { class: 'note' }, 'Un message est seulement enregistré dans la base locale : aucun modèle ne le reçoit.'));
-  }
 };
 function hubView() {
   const d = (x) => (x ? 'détecté' : 'non détecté'), c = state.health?.connectors;
@@ -425,7 +475,7 @@ $('#search').addEventListener('input', (e) => {
   for (const b of overlay.querySelectorAll('.hit.agent')) { const a = state.agents.find((x) => `agent:${x.id}` === b.dataset.key); b.classList.toggle('match', !!(q && a && (a.name.toLowerCase().includes(q) || a.role.toLowerCase().includes(q)))); }
   if (!q) { res.hidden = true; return; }
   const found = state.agents.filter((a) => a.name.toLowerCase().includes(q) || a.role.toLowerCase().includes(q)).slice(0, 8);
-  res.replaceChildren(...(found.length ? found.map((a) => h('li', {}, h('button', { type: 'button', onclick: () => { const p = state.placed.find((x) => x.agent.id === a.id); if (p) centerOnWorld(p.x, p.y - 40); res.hidden = true; show('agent', a.id); } }, `${a.name} — ${a.role} · ${deptOf(a.department_id)?.name ?? ''}`))) : [h('li', {}, 'Aucun agent trouvé.')]));
+  res.replaceChildren(...(found.length ? found.map((a) => h('li', {}, h('button', { type: 'button', onclick: () => { res.hidden = true; focusAgent(a.id); } }, `${a.name} — ${a.role} · ${deptOf(a.department_id)?.name ?? ''}`))) : [h('li', {}, 'Aucun agent trouvé.')]));
   res.hidden = false;
 });
 const toggleSettings = () => { const s = $('#settings'); s.hidden = !s.hidden; if (!s.hidden) $('#sky').focus(); };
@@ -440,6 +490,6 @@ $('#missionbar').addEventListener('submit', async (e) => {
 
 // ---------- démarrage ----------
 applyPhase();
-refresh().catch((e) => { $('#connections').textContent = e.message; });
+refresh().catch((e) => { $('#connections').title = $('#connections').textContent = e.message; });
 addEventListener('focus', () => { if (pop.hidden) refresh().catch(() => {}); });
 if (!reduce) requestAnimationFrame(frame);
