@@ -33,7 +33,10 @@ export function createConversation({ agent, agents, get, send, announce, replies
   const retry = node('button', { type: 'button', class: 'chat-retry', onclick: () => askReply() }, `Demander la réponse de ${agent.name}`);
   retry.hidden = true;
   let disposed = false, loading = false, nextCursor = null, loaded = false, historyError = '';
-  const messages = new Map();
+  // fresh : id → moment d'arrivée (panneau ouvert). L'apparition continue là où elle en est si la liste est reconstruite.
+  const messages = new Map(), fresh = new Map();
+  let pendingSince = 0;
+  const appear = (t) => { const age = performance.now() - t; return age < 300 ? { cls: ' chat-in', style: `--age:${-Math.round(age)}ms` } : { cls: '' }; };
   const name = (id) => agents.find((a) => a.id === id)?.name ?? 'Agent';
   const list = node('ol', { class: 'chat-list', 'aria-label': `Messages avec ${agent.name}` });
   const scroll = node('div', { class: 'chat-scroll', tabindex: '0', 'aria-label': 'Historique de la discussion' });
@@ -67,6 +70,8 @@ export function createConversation({ agent, agents, get, send, announce, replies
     status.classList.toggle('err', Boolean(error));
     status.textContent = error || (reply.busy ? `${agent.name} rédige sa réponse…` : draft.saved ? 'Enregistré dans ce Studio.' : '');
     const bottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 60;
+    // la réponse finale remplace la bulle « en cours » déjà visible : pas de seconde apparition
+    if (message && !messages.has(message.id) && !(shownPending && message.senderType === 'assistant')) fresh.set(message.id, performance.now());
     if (message) messages.set(message.id, message);
     if (message || shownPending !== reply.busy) render();
     else if (pendingText) { pendingText.textContent = reply.text; pendingText.parentElement.classList.toggle('chat-typing', !reply.text); }
@@ -87,14 +92,17 @@ export function createConversation({ agent, agents, get, send, announce, replies
       if (label !== day) { elements.push(node('li', { class: 'chat-day' }, label)); day = label; }
       const own = message.senderType === 'user';
       const author = own ? 'Vous' : message.senderType === 'assistant' ? agent.name : `${name(message.fromAgentId)} → ${name(message.toAgentId)}`;
-      elements.push(node('li', { class: `chat-message ${own ? 'chat-own' : 'chat-agent'}` },
+      const a = fresh.has(message.id) ? appear(fresh.get(message.id)) : { cls: '' };
+      elements.push(node('li', { class: `chat-message ${own ? 'chat-own' : 'chat-agent'}${a.cls}`, ...(a.style && { style: a.style }) },
         node('div', { class: 'chat-bubble' }, node('span', { class: 'chat-author' }, author), node('p', {}, message.body),
           node('time', { datetime: message.created_at, title: date.toLocaleString('fr-FR') }, date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })))));
     }
+    if (reply.busy && !shownPending) pendingSince = performance.now();
     pendingText = null; shownPending = reply.busy;
     if (reply.busy) {
       pendingText = node('p', {}, reply.text);
-      elements.push(node('li', { class: 'chat-message chat-agent', 'aria-busy': 'true' },
+      const a = appear(pendingSince);
+      elements.push(node('li', { class: `chat-message chat-agent${a.cls}`, ...(a.style && { style: a.style }), 'aria-busy': 'true' },
         node('div', { class: `chat-bubble chat-pending${reply.text ? '' : ' chat-typing'}` },
           node('span', { class: 'chat-author' }, agent.name),
           node('span', { class: 'chat-dots', role: 'img', 'aria-label': `${agent.name} écrit` }, node('i'), node('i'), node('i')), pendingText)));

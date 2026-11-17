@@ -125,6 +125,9 @@ select,fieldset{color:var(--text)}
 .chat-dots i:nth-child(2){animation-delay:.15s}.chat-dots i:nth-child(3){animation-delay:.3s}
 @keyframes chat-dot{0%,80%,100%{opacity:.3;transform:translateY(0)}40%{opacity:1;transform:translateY(-3px)}}
 @media(prefers-reduced-motion:reduce){.chat-dots i{animation:none}}
+.chat-in .chat-bubble{animation:chat-in .28s cubic-bezier(.2,.8,.2,1) var(--age,0s);transform-origin:bottom left}
+.chat-own.chat-in .chat-bubble{transform-origin:bottom right}
+@keyframes chat-in{from{opacity:0;transform:translateY(8px) scale(.94)}}
 .chat-retry{display:block;margin:12px 0 0 auto;font-size:12px}
 .chat-retry[hidden]{display:none}
 .agent-panel ::selection{background:var(--accent);color:var(--on-accent)}
