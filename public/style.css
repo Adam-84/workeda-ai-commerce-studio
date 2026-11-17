@@ -67,3 +67,57 @@ select,fieldset{color:var(--text)}
 .profile .colleagues{display:flex;gap:6px;flex-wrap:wrap}
 #pop details{margin-top:12px}#pop summary{cursor:pointer;font-weight:600}
 #agent-warnings ul{margin:4px 0 0;padding-left:18px;font-size:12px}
+
+/* Le panneau personnage est un espace de travail ; les îles restent des fenêtres ancrées. */
+#pop.agent-panel{position:fixed;inset:84px 16px 16px auto;width:min(520px,calc(100vw - 32px));max-height:none;overflow:hidden;padding:22px;background:var(--panel-solid);backdrop-filter:none;box-shadow:none}
+#pop.agent-panel::before{display:none}
+#pop.agent-panel>.x{width:36px;height:36px;display:grid;place-items:center;top:12px;right:12px;font-size:22px}
+.agent-detail{display:flex;flex-direction:column;height:100%;min-height:0}
+.agent-heading{display:flex;gap:14px;align-items:center;padding-right:24px;flex:none}
+.agent-portrait{width:64px;height:64px;image-rendering:pixelated;flex:none}
+#pop .agent-heading h2{font-size:24px;line-height:1.15;margin:0 0 5px;letter-spacing:-.02em}
+#pop .agent-heading p{line-height:1.4}
+#pop .agent-heading .agent-department{color:var(--soft);font-size:12px;margin-top:3px}
+#pop .agent-state{margin:14px 0 8px;font-size:12px;color:var(--soft);flex:none}
+.agent-detail>div:last-child{display:flex;flex-direction:column;min-height:0;flex:1}
+.agent-panel .tabs{flex:none;flex-wrap:nowrap;overflow-x:auto;gap:3px;padding:4px 0 10px;margin:0;border-bottom:1px solid color-mix(in srgb,var(--text) 15%,transparent)}
+.agent-panel .tab{padding:8px 10px;border:0;white-space:nowrap;flex:none;font-size:12px}
+.agent-panel [role=tabpanel]{min-height:0;flex:1;overflow:auto;padding:16px 2px 2px}
+.agent-panel [role=tabpanel]:has(.conversation){display:flex;overflow:hidden;padding:0}
+.conversation{display:flex;flex-direction:column;min-height:0;width:100%;flex:1}
+#pop .chat-note{color:var(--soft);font-size:12px;line-height:1.5;padding:12px 0;flex:none}
+.chat-scroll{min-height:0;flex:1;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--soft) transparent;padding:8px 4px 16px}
+#pop .chat-list{display:flex;flex-direction:column;gap:12px;margin:0;padding:0;list-style:none}
+#pop .chat-day{align-self:center;margin:8px 0;color:var(--soft);font-size:11px}
+#pop .chat-message{display:flex;width:100%;margin:0}
+.chat-own{justify-content:flex-end}
+.chat-agent{justify-content:flex-start}
+.chat-bubble{max-width:88%;min-width:90px;padding:11px 14px;border-radius:15px 15px 15px 4px;background:color-mix(in srgb,var(--text) 8%,var(--panel-solid));overflow-wrap:anywhere}
+.chat-own .chat-bubble{background:var(--accent);color:var(--on-accent);border-radius:15px 15px 4px 15px}
+.chat-author{display:block;font-size:11px;font-weight:650;margin-bottom:5px}
+#pop .chat-bubble p{white-space:pre-wrap;font-size:14px;line-height:1.55}
+.chat-bubble time{display:block;text-align:right;font-size:10px;margin-top:7px;font-variant-numeric:tabular-nums}
+#pop .chat-history-status{color:var(--soft);text-align:center;font-size:13px;line-height:1.6;margin:12px auto;max-width:30ch}
+.chat-history-status:empty{display:none}
+.chat-older{display:block;margin:0 auto 12px;font-size:12px;border-color:color-mix(in srgb,var(--text) 25%,transparent)}
+.chat-older[hidden]{display:none}
+#pop form.chat-composer{display:flex;flex-direction:column;flex:none;gap:8px;margin:0;padding-top:12px;border-top:1px solid color-mix(in srgb,var(--text) 15%,transparent)}
+.chat-composer textarea{width:100%;min-height:78px;max-height:22vh;resize:vertical;background:var(--panel-solid);border-color:color-mix(in srgb,var(--text) 30%,transparent);padding:12px;font-size:14px;line-height:1.5;caret-color:var(--accent)}
+.chat-composer-actions{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.chat-composer-actions button{padding:10px 18px;min-height:42px;flex:none}
+.chat-key-hint{font-size:10px;color:var(--soft);max-width:25ch}
+#pop .chat-send-status{font-size:11px;color:var(--soft);line-height:1.4}
+#pop .chat-send-status.err{color:var(--err)}
+.chat-send-status:empty{display:none}
+.chat-composer button:disabled{opacity:.55;cursor:default}
+.agent-panel ::selection{background:var(--accent);color:var(--on-accent)}
+@media(max-width:700px){
+  #pop.agent-panel{inset:0!important;width:100%;height:100dvh;max-height:none;border-radius:0;padding:16px 16px max(16px,env(safe-area-inset-bottom))}
+  #pop.agent-panel>.x{width:44px;height:44px;top:6px;right:6px}
+  .agent-panel .tabs{margin-top:4px}
+  .agent-panel .tab{min-height:44px;padding:8px}
+  .chat-bubble{max-width:92%}
+  .chat-composer textarea{font-size:16px;min-height:80px}
+  .chat-key-hint{display:none}
+  .chat-composer-actions{justify-content:flex-end}
+}

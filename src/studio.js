@@ -29,6 +29,8 @@ export function createStudio(filename = 'data/workeda.db') {
     CREATE TABLE IF NOT EXISTS agent_appearance (agent_id TEXT PRIMARY KEY REFERENCES agents(id), hair_style TEXT NOT NULL, hair_color TEXT NOT NULL, skin TEXT NOT NULL, eyes TEXT NOT NULL, outfit TEXT NOT NULL, top_color TEXT NOT NULL, accessory TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS island_styles (department_id TEXT PRIMARY KEY REFERENCES departments(id), label TEXT, accent TEXT, floor TEXT, wall TEXT, emblem TEXT, tree TEXT, ground TEXT, lanterns INTEGER, updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS agent_files (agent_id TEXT PRIMARY KEY REFERENCES agents(id), slug TEXT NOT NULL UNIQUE, linked_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS user_messages (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), body TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS user_messages_agent_time ON user_messages(agent_id, created_at, id);
   `);
   const seeded = db.prepare('SELECT COUNT(*) AS count FROM departments').get().count;
   if (seeded === 0) {
@@ -100,6 +102,36 @@ export function createStudio(filename = 'data/workeda.db') {
     },
     listMessages: (missionId) => db.prepare('SELECT * FROM messages WHERE mission_id = ? ORDER BY created_at ASC').all(missionId).map(mapMessage),
     listRecentMessages: ({ missionId = null, limit = 200 } = {}) => db.prepare('SELECT * FROM messages WHERE (? IS NULL OR mission_id = ?) ORDER BY created_at DESC, rowid DESC LIMIT ?').all(missionId, missionId, Math.min(Math.max(Number(limit) || 200, 1), 500)).map(mapMessage),
+    sendUserMessage(agentId, { body }) {
+      requireAgent(agentId);
+      if (typeof body !== 'string' || !body.trim()) throw new Error('Écrivez un message avant de l’envoyer.');
+      const id = randomUUID(), created_at = now();
+      db.prepare('INSERT INTO user_messages (id, agent_id, body, created_at) VALUES (?, ?, ?, ?)').run(id, agentId, body.trim(), created_at);
+      return { id: `user:${id}`, body: body.trim(), created_at, senderType: 'user', fromAgentId: null, toAgentId: agentId };
+    },
+    listConversation(agentId, before = null) {
+      requireAgent(agentId);
+      let date = null, key = null;
+      if (before !== null) {
+        try {
+          if (typeof before !== 'string' || before.length > 512 || !/^[\w-]+$/.test(before)) throw new Error();
+          const cursor = JSON.parse(Buffer.from(before, 'base64url').toString('utf8'));
+          if (typeof cursor.createdAt !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(cursor.createdAt) || !Number.isFinite(Date.parse(cursor.createdAt)) || typeof cursor.id !== 'string' || !/^(user|agent):[\da-f-]{36}$/.test(cursor.id)) throw new Error();
+          date = cursor.createdAt; key = cursor.id;
+        } catch { throw new Error('Historique invalide. Rouvrez la discussion.'); }
+      }
+      const rows = db.prepare(`SELECT * FROM (
+        SELECT 'agent:' || id AS id, body, created_at, 'agent' AS senderType, from_agent_id AS fromAgentId, to_agent_id AS toAgentId
+        FROM messages WHERE from_agent_id = ? OR to_agent_id = ?
+        UNION ALL
+        SELECT 'user:' || id, body, created_at, 'user', NULL, agent_id FROM user_messages WHERE agent_id = ?
+      ) WHERE (? IS NULL OR created_at < ? OR (created_at = ? AND id < ?))
+      ORDER BY created_at DESC, id DESC LIMIT 51`).all(agentId, agentId, agentId, date, date, date, key);
+      const items = rows.slice(0, 50).map((r) => ({ ...r }));
+      const last = items.at(-1);
+      const nextCursor = rows.length > 50 ? Buffer.from(JSON.stringify({ createdAt: last.created_at, id: last.id })).toString('base64url') : null;
+      return { items, nextCursor };
+    },
     listAppearances: () => db.prepare('SELECT * FROM agent_appearance').all().map(mapAppearance),
     setAppearance(agentId, look) {
       requireAgent(agentId);

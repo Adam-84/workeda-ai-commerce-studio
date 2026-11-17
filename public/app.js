@@ -9,6 +9,7 @@ import { computeWorld, placeAgents, drawIsland, drawHub, drawDesk, spriteCanvas,
 import { drawEmblem } from './emblems.js';
 import { OPTIONS as ISLAND_OPTIONS, LABELS_FR, LABEL_MAX, normalizeIslandStyle, isValidIslandStyle } from './island-style.js'; // OPTIONS de sprites.js = personnages : alias
 import { connectorText, modelLabel, colleagues, ignoredText, helpLine, FULL_SECTIONS } from './agent-profile.js';
+import { createConversation } from './conversation.js';
 
 const $ = (s) => document.querySelector(s);
 const get = (p) => fetch(p).then(async (r) => { const d = await r.json(); if (!r.ok) throw new Error(d.error); return d; });
@@ -244,7 +245,7 @@ export async function refresh() {
   for (const a of agents) { if (!firstLoad && !knownAgents.has(a.id) && !reduce) { const isl = islandOf(a.department_id); if (isl) walkers.set(a.id, { from: doorSpot(isl), start: performance.now() / 1000, duration: 2 }); } knownAgents.add(a.id); }
   firstLoad = false;
   $('#missions-count').textContent = (() => { const n = missions.filter((m) => !['done', 'cancelled'].includes(m.state)).length; return `${n} mission${n > 1 ? 's' : ''} ouverte${n > 1 ? 's' : ''}`; })();
-  const sel = $('#missionbar select'); sel.replaceChildren(h('option', { value: '' }, 'Sans agent'), agents.map((a) => h('option', { value: a.id }, a.name)));
+  const sel = $('#missionbar select'); sel.replaceChildren(h('option', { value: '' }, 'Sans agent'), ...agents.map((a) => h('option', { value: a.id }, a.name)));
   rebuildCaches(); buildOverlay();
   if (closeHook && liveDraft) previewIsland(liveDraft.id, liveDraft.get()); // garde l'aperçu du brouillon ouvert
 }
@@ -264,6 +265,7 @@ loadUserSprites();
 const pop = $('#pop'); let current = null;
 const anchorEl = () => current && overlay.querySelector(`[data-key="${current.key}"]`);
 function positionPop() {
+  if (current?.kind === 'agent') { pop.style.left = pop.style.top = ''; return; }
   if (matchMedia('(max-width: 700px)').matches) { pop.style.left = pop.style.top = ''; return; }
   const a = anchorEl(); if (!a) return;
   const r = a.getBoundingClientRect(), w = pop.offsetWidth, hh = pop.offsetHeight;
@@ -278,6 +280,7 @@ export function close(restore = true) { runCloseHook(); if (pop.hidden) return; 
 export function show(kind, id, opts = {}) {
   runCloseHook();
   const key = opts.recruit ? `plot:${id}` : `${kind}:${id}`; current = { kind, id, key };
+  pop.classList.toggle('agent-panel', kind === 'agent');
   const view = { island: islandView, agent: agentView, hub: hubView }[kind](id, opts);
   pop.replaceChildren(h('button', { class: 'x', type: 'button', 'aria-label': 'Fermer', onclick: () => close() }, '×'), view);
   pop.scrollTop = 0; pop.hidden = false; positionPop(); pop.focus(); announce(`${pop.querySelector('h2')?.textContent ?? ''} ouvert`);
@@ -315,7 +318,7 @@ function tabset(defs, initial = 0, onChange = () => {}, ariaLabel = '') {
   const btns = defs.map((d, k) => h('button', { class: 'tab', type: 'button', role: 'tab', id: `tb-${uid}-${k}`, 'aria-controls': `tp-${uid}`, 'aria-selected': 'false', tabindex: '-1', onclick: () => select(k, true) }, d.label));
   const list = h('div', { class: 'tabs', role: 'tablist', 'aria-label': ariaLabel || false, onkeydown: (e) => { const i = btns.indexOf(document.activeElement); const n = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: btns.length - 1 }[e.key]; if (n !== undefined && i >= 0) { e.preventDefault(); select((n + btns.length) % btns.length, true); } } }, btns);
   let cur = -1;
-  function select(k, focus) { if (k === cur) { if (focus) btns[k].focus(); return; } cur = k; btns.forEach((b, j) => { b.setAttribute('aria-selected', String(j === k)); b.tabIndex = j === k ? 0 : -1; }); panel.setAttribute('aria-labelledby', `tb-${uid}-${k}`); panel.replaceChildren(defs[k].render()); if (!$('#pop').hidden) positionPop(); if (focus) btns[k].focus(); onChange(k); }
+  function select(k, focus) { if (k === cur) { if (focus) btns[k].focus(); return; } if (cur >= 0) defs[cur].leave?.(); cur = k; btns.forEach((b, j) => { b.setAttribute('aria-selected', String(j === k)); b.tabIndex = j === k ? 0 : -1; }); panel.setAttribute('aria-labelledby', `tb-${uid}-${k}`); panel.replaceChildren(defs[k].render()); if (!$('#pop').hidden) positionPop(); if (focus) btns[k].focus(); onChange(k); }
   select(initial, false);
   return { el: h('div', {}, list, panel), select };
 }
@@ -404,16 +407,34 @@ function profileBlock(p) {
     h('p', { class: 'note' }, helpLine(p.displayName)));
 }
 function agentView(id, opts = {}) {
-  const a = state.agents.find((x) => x.id === id), d = deptOf(a.department_id), names = Object.keys(TABS);
-  const tabs = tabset(names.map((t) => ({ label: t, render: () => TABS[t](a) })), Math.max(0, names.indexOf(opts.tab)), undefined, 'Sections de l’agent');
-  return h('div', {}, h('h2', {}, a.name), h('p', {}, `${a.role} · ${d?.name ?? ''}${a.enabled ? '' : ' · désactivé'}`), tabs.el);
+  const a = state.agents.find((x) => x.id === id), d = deptOf(a.department_id);
+  let conversation = null;
+  const leave = () => { conversation?.destroy(); conversation = null; };
+  closeHook = leave;
+  const defs = [
+    { label: 'Discussion', render: () => { conversation = createConversation({ agent: a, agents: state.agents, get, send, announce }); return conversation.el; }, leave },
+    { label: 'Missions', render: () => {
+      const missions = state.missions.filter((m) => m.assigned_to === a.id || m.requested_by === a.id);
+      return h('div', {}, h('h3', {}, 'Missions de ' + a.name), missions.length ? h('ul', {}, missions.map(missionLine)) : h('p', {}, 'Aucune mission pour le moment.'),
+        h('button', { type: 'button', class: 'primary', onclick: () => { close(false); const select = $('#missionbar select'); select.value = a.id; $('#missionbar input').focus(); } }, 'Donner une mission'));
+    } },
+    ...['Profil', 'Apparence'].map((label) => ({ label, render: () => TABS[label](a) })),
+    { label: 'Activité', render: () => TABS.Journal(a) }
+  ];
+  const selected = opts.tab === 'Messages' ? 'Discussion' : opts.tab === 'Journal' ? 'Activité' : opts.tab;
+  const tabs = tabset(defs, Math.max(0, defs.findIndex((d) => d.label === selected)), undefined, 'Sections de l’agent');
+  const portrait = h('canvas', { class: 'agent-portrait', width: 64, height: 64, 'aria-hidden': 'true' });
+  queueMicrotask(() => portrait.getContext('2d').drawImage(spriteFor(a), 0, 0));
+  return h('div', { class: 'agent-detail' }, h('header', { class: 'agent-heading' }, portrait,
+    h('div', {}, h('h2', {}, a.name), h('p', {}, a.role), h('p', { class: 'agent-department' }, d?.name ?? ''))),
+    h('p', { class: 'agent-state' }, `${STATUS_LABELS[a.status] || a.status} · ${a.statusSource === 'manual' ? 'statut manuel' : a.statusSource}${a.enabled ? '' : ' · désactivé'}`), tabs.el);
 }
 const TABS = {
   Profil: (a) => h('div', {},
     h('div', { class: 'status' }, `${STATUS_LABELS[a.status] || a.status} · source : ${a.statusSource}`),
     a.statusSource === 'manual' && h('p', { style: 'margin-top:6px' }, 'Statut déclaré manuellement : aucun connecteur n’a vérifié d’activité.'),
     state.profiles.has(a.id) && profileBlock(state.profiles.get(a.id)),
-    h('h3', {}, 'Missions'), (() => { const m = state.missions.filter((x) => x.assigned_to === a.id || x.requested_by === a.id); return m.length ? h('ul', {}, m.map(missionLine)) : h('p', {}, 'Aucune mission.'); })()),
+    ),
   Apparence: (a) => {
     const look = { ...lookOf(a) }, preview = h('canvas', { class: 'preview', width: 64, height: 64, 'aria-label': `Aperçu de ${a.name}`, role: 'img' });
     const paint = () => { const g = preview.getContext('2d'); g.clearRect(0, 0, 64, 64); g.drawImage(spriteFor(a, { look }), 0, 0); };
@@ -426,12 +447,6 @@ const TABS = {
       h('button', { type: 'button', onclick: async () => { try { await send('DELETE', `/api/agents/${encodeURIComponent(a.id)}/appearance`); await refresh(); show('agent', a.id, { tab: 'Apparence' }); announce('Apparence automatique rétablie'); } catch (x) { err.textContent = x.message; } } }, 'Revenir à l’automatique'), err));
   },
   Journal: (a) => { const ul = h('ul', {}, h('li', {}, 'Chargement…')); get(`/api/events?agentId=${encodeURIComponent(a.id)}`).then((ev) => ul.replaceChildren(...ev.slice(0, 8).map((e) => h('li', {}, `${new Date(e.created_at).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })} · ${e.kind} · ${e.detail} (source : ${e.source})`)))).catch((x) => ul.replaceChildren(h('li', { class: 'err' }, x.message))); return ul; },
-  Messages: (a) => {
-    const talk = state.messages.filter((m) => m.from_agent_id === a.id || m.to_agent_id === a.id).slice(0, 8), others = state.agents.filter((o) => o.id !== a.id), name = (id) => state.agents.find((x) => x.id === id)?.name ?? '?';
-    return h('div', {}, talk.length ? h('ul', {}, talk.map((m) => h('li', {}, `${name(m.from_agent_id)} → ${name(m.to_agent_id)} : ${m.body}`))) : h('p', {}, 'Aucun message.'),
-      others.length ? form([field('De', h('select', { name: 'fromAgentId' }, others.map((o) => h('option', { value: o.id }, o.name)))), field('Message', h('textarea', { name: 'body', required: true, maxlength: 500 }))], 'Envoyer', async (data) => { await send('POST', '/api/messages', { ...data, toAgentId: a.id }); await refresh(); show('agent', a.id, { tab: 'Messages' }); announce('Message enregistré'); }) : h('p', {}, 'Recrutez un second agent pour échanger des messages.'),
-      h('p', { class: 'note' }, 'Un message est seulement enregistré dans la base locale : aucun modèle ne le reçoit.'));
-  }
 };
 function hubView() {
   const d = (x) => (x ? 'détecté' : 'non détecté'), c = state.health?.connectors;

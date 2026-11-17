@@ -65,6 +65,8 @@ export function createApp({ studio, publicDir, detect: rawDetect = cliPresent, a
     }
   };
   const paramRoutes = [
+    ['GET', /^\/api\/agents\/([^/]+)\/conversation$/, (m, _, q) => studio.listConversation(decodeURIComponent(m[1]), q.get('before'))],
+    ['POST', /^\/api\/agents\/([^/]+)\/conversation$/, (m, data) => studio.sendUserMessage(decodeURIComponent(m[1]), data)],
     ['PUT', /^\/api\/agents\/([^/]+)\/appearance$/, (m, data) => studio.setAppearance(decodeURIComponent(m[1]), data)],
     ['DELETE', /^\/api\/agents\/([^/]+)\/appearance$/, (m) => studio.clearAppearance(decodeURIComponent(m[1]))],
     ['PUT', /^\/api\/departments\/([^/]+)\/style$/, (m, data) => studio.setIslandStyle(decodeURIComponent(m[1]), data)],
@@ -76,7 +78,7 @@ export function createApp({ studio, publicDir, detect: rawDetect = cliPresent, a
       const key = `${req.method} ${url.pathname}`;
       const hasBody = req.method === 'POST' || req.method === 'PUT';
       if (routes[key]) return send(res, 200, await routes[key](hasBody ? await body(req) : undefined, url.searchParams));
-      for (const [method, re, fn] of paramRoutes) { const m = req.method === method && url.pathname.match(re); if (m) return send(res, 200, await fn(m, hasBody ? await body(req) : undefined)); }
+      for (const [method, re, fn] of paramRoutes) { const m = req.method === method && url.pathname.match(re); if (m) return send(res, 200, await fn(m, hasBody ? await body(req) : undefined, url.searchParams)); }
       const file = resolve(join(root, key === 'GET /' ? 'index.html' : decodeURIComponent(url.pathname)));
       if (req.method !== 'GET' || !file.startsWith(root + sep) || !existsSync(file) || !statSync(file).isFile()) return send(res, 404, { error: 'Introuvable' });
       const real = realpathSync(file); // un lien symbolique ou une jonction ne doit pas sortir de public/
