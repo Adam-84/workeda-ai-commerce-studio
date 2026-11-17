@@ -8,7 +8,7 @@ body{background:var(--sky);transition:background var(--t)}
 #stage{position:fixed;inset:0}#map{position:absolute;inset:0;width:100%;height:100%;image-rendering:pixelated;cursor:grab;outline:none}#map.dragging{cursor:grabbing}
 #map:focus-visible{outline:3px solid var(--accent);outline-offset:-3px}
 #overlay{position:absolute;inset:0;pointer-events:none}#overlay>*{pointer-events:auto}
-.panel{background:var(--panel-solid);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);color:var(--text);transition:background var(--t),color var(--t),border-color var(--t)}
+.panel{background:var(--panel-solid);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);color:var(--text);transition:background var(--t),color var(--t),border-color var(--t),opacity .2s ease,transform .22s cubic-bezier(.2,.8,.2,1),display .22s allow-discrete}
 @supports (backdrop-filter:blur(1px)){.panel{background:var(--panel);backdrop-filter:blur(14px)}}
 button,input,select,textarea{font:inherit;color:inherit;background:transparent;border:1px solid var(--border);border-radius:10px;padding:6px 10px}
 button{cursor:pointer}button.primary{background:var(--accent);color:var(--on-accent);border-color:transparent;font-weight:700}
@@ -38,7 +38,14 @@ option{background:var(--panel-solid);color:var(--text)}::placeholder{color:var(-
 .pill .ini{display:flex;margin-left:auto}.pill .ini span{width:20px;height:20px;margin-left:-6px;border-radius:10px;border:2px solid #fff;background:#ffd58a;color:#2a2a3a;font:700 10px var(--font);display:grid;place-items:center}
 .status-icon{position:absolute;width:30px;height:30px;transform:translate(-50%,-100%);pointer-events:none}
 #pop{position:absolute;z-index:5;width:340px;max-height:calc(100vh - 160px);overflow:auto;padding:16px}
-#pop[hidden],#settings[hidden],#search-results[hidden]{display:none}
+#pop[hidden],#settings[hidden],#search-results[hidden]{display:none;opacity:0;transform:var(--from);pointer-events:none}
+/* ouverture : part de --from ; fermeture : y retourne avant display:none (allow-discrete) */
+@starting-style{#pop,#settings,#search-results{opacity:0;transform:var(--from)}}
+#pop{--from:translateY(6px) scale(.98)}#settings,#search-results{--from:translateY(-6px)}
+#pop>:last-child,[role=tabpanel]>*{animation:fade-up .22s ease}
+@keyframes fade-up{from{opacity:0;transform:translateY(4px)}}
+.tab{transition:background-color .18s,color .18s,border-color .18s}
+.tab:not([aria-selected=true]):hover,#search-results button:hover{background:color-mix(in srgb,var(--text) 8%,transparent)}
 #pop h2{margin:0 28px 4px 0;font-size:18px}#pop h3{margin:14px 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--soft)}
 #pop p,#pop li{margin:0;font-size:13px}#pop ul{margin:0;padding:0;list-style:none;display:grid;gap:4px}
 #pop .x{position:absolute;right:10px;top:10px;border:0}#pop form{display:grid;gap:8px;margin-top:8px}#pop label{display:grid;gap:3px;font-size:12px;color:var(--soft)}
@@ -54,7 +61,7 @@ option{background:var(--panel-solid);color:var(--text)}::placeholder{color:var(-
   #settings{width:calc(100vw - 16px);right:8px;box-sizing:border-box}
   #pop{left:0!important;right:0;top:auto!important;bottom:0;width:auto;max-height:70vh;border-radius:16px 16px 0 0}#pop::before{display:none}
   #minimap{width:150px}#minimap-grid{height:100px}#missionbar{bottom:8px}}
-@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 .emblem{width:18px;height:18px;image-rendering:pixelated;flex:none}
 fieldset{border:1px solid var(--border);border-radius:10px;padding:8px 10px;margin:8px 0;display:grid;gap:8px;min-width:0}
 legend{font-size:12px;color:var(--soft);padding:0 4px}
@@ -71,6 +78,8 @@ select,fieldset{color:var(--text)}
 /* Le panneau personnage est un espace de travail ; les îles restent des fenêtres ancrées. */
 #pop.agent-panel{position:fixed;inset:84px 16px 16px auto;width:min(520px,calc(100vw - 32px));max-height:none;overflow:hidden;padding:22px;background:var(--panel-solid);backdrop-filter:none;box-shadow:none}
 #pop.agent-panel::before{display:none}
+#pop.agent-panel{--from:translateX(32px)}
+@media(max-width:700px){#pop,#pop.agent-panel{--from:translateY(40px)}}
 #pop.agent-panel>.x{width:36px;height:36px;display:grid;place-items:center;top:12px;right:12px;font-size:22px}
 .agent-detail{display:flex;flex-direction:column;height:100%;min-height:0}
 .agent-heading{display:flex;gap:14px;align-items:center;padding-right:24px;flex:none}
