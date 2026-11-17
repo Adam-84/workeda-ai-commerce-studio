@@ -412,7 +412,7 @@ function agentView(id, opts = {}) {
   const leave = () => { conversation?.destroy(); conversation = null; };
   closeHook = leave;
   const defs = [
-    { label: 'Discussion', render: () => { conversation = createConversation({ agent: a, agents: state.agents, get, send, announce }); return conversation.el; }, leave },
+    { label: 'Discussion', render: () => { conversation = createConversation({ agent: a, agents: state.agents, get, send, announce, replies: Boolean(state.profiles.get(a.id)?.replies) }); return conversation.el; }, leave },
     { label: 'Missions', render: () => {
       const missions = state.missions.filter((m) => m.assigned_to === a.id || m.requested_by === a.id);
       return h('div', {}, h('h3', {}, 'Missions de ' + a.name), missions.length ? h('ul', {}, missions.map(missionLine)) : h('p', {}, 'Aucune mission pour le moment.'),

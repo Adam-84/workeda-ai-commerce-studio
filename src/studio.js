@@ -31,6 +31,8 @@ export function createStudio(filename = 'data/workeda.db') {
     CREATE TABLE IF NOT EXISTS agent_files (agent_id TEXT PRIMARY KEY REFERENCES agents(id), slug TEXT NOT NULL UNIQUE, linked_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS user_messages (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), body TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS user_messages_agent_time ON user_messages(agent_id, created_at, id);
+    CREATE TABLE IF NOT EXISTS agent_replies (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), body TEXT NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS agent_replies_agent_time ON agent_replies(agent_id, created_at, id);
   `);
   const seeded = db.prepare('SELECT COUNT(*) AS count FROM departments').get().count;
   if (seeded === 0) {
@@ -109,6 +111,14 @@ export function createStudio(filename = 'data/workeda.db') {
       db.prepare('INSERT INTO user_messages (id, agent_id, body, created_at) VALUES (?, ?, ?, ?)').run(id, agentId, body.trim(), created_at);
       return { id: `user:${id}`, body: body.trim(), created_at, senderType: 'user', fromAgentId: null, toAgentId: agentId };
     },
+    // Réponse réellement produite par un modèle : appelée par le serveur seulement, jamais depuis une route client.
+    saveAgentReply(agentId, body, source) {
+      requireAgent(agentId);
+      const id = randomUUID(), created_at = now();
+      db.prepare('INSERT INTO agent_replies (id, agent_id, body, source, created_at) VALUES (?, ?, ?, ?, ?)').run(id, agentId, body, source, created_at);
+      emit(agentId, 'reply.sent', 'Réponse à l’utilisateur', source, true);
+      return { id: `assistant:${id}`, body, created_at, senderType: 'assistant', fromAgentId: agentId, toAgentId: null };
+    },
     listConversation(agentId, before = null) {
       requireAgent(agentId);
       let date = null, key = null;
@@ -116,7 +126,7 @@ export function createStudio(filename = 'data/workeda.db') {
         try {
           if (typeof before !== 'string' || before.length > 512 || !/^[\w-]+$/.test(before)) throw new Error();
           const cursor = JSON.parse(Buffer.from(before, 'base64url').toString('utf8'));
-          if (typeof cursor.createdAt !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(cursor.createdAt) || !Number.isFinite(Date.parse(cursor.createdAt)) || typeof cursor.id !== 'string' || !/^(user|agent):[\da-f-]{36}$/.test(cursor.id)) throw new Error();
+          if (typeof cursor.createdAt !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(cursor.createdAt) || !Number.isFinite(Date.parse(cursor.createdAt)) || typeof cursor.id !== 'string' || !/^(user|agent|assistant):[\da-f-]{36}$/.test(cursor.id)) throw new Error();
           date = cursor.createdAt; key = cursor.id;
         } catch { throw new Error('Historique invalide. Rouvrez la discussion.'); }
       }
@@ -125,8 +135,10 @@ export function createStudio(filename = 'data/workeda.db') {
         FROM messages WHERE from_agent_id = ? OR to_agent_id = ?
         UNION ALL
         SELECT 'user:' || id, body, created_at, 'user', NULL, agent_id FROM user_messages WHERE agent_id = ?
+        UNION ALL
+        SELECT 'assistant:' || id, body, created_at, 'assistant', agent_id, NULL FROM agent_replies WHERE agent_id = ?
       ) WHERE (? IS NULL OR created_at < ? OR (created_at = ? AND id < ?))
-      ORDER BY created_at DESC, id DESC LIMIT 51`).all(agentId, agentId, agentId, date, date, date, key);
+      ORDER BY created_at DESC, id DESC LIMIT 51`).all(agentId, agentId, agentId, agentId, date, date, date, key);
       const items = rows.slice(0, 50).map((r) => ({ ...r }));
       const last = items.at(-1);
       const nextCursor = rows.length > 50 ? Buffer.from(JSON.stringify({ createdAt: last.created_at, id: last.id })).toString('base64url') : null;

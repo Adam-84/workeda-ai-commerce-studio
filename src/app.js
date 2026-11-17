@@ -4,6 +4,7 @@ import { existsSync, statSync, realpathSync } from 'node:fs';
 import { join, extname, resolve, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { connectorState } from './agent-files.js';
+import { REPLY_AGENTS, runClaude as realClaude, systemPrompt, conversationPrompt } from './claude-reply.js';
 
 // Détection réelle d'un binaire dans le PATH (« détecté » ne veut pas dire « connecté »).
 export const cliPresent = (command, run = execFileSync) => {
@@ -21,7 +22,7 @@ const body = async (req) => {
 
 const DETECT_TTL_MS = 10_000;
 
-export function createApp({ studio, publicDir, detect: rawDetect = cliPresent, agentFiles: { profiles = [], warnings = [] } = {} }) {
+export function createApp({ studio, publicDir, detect: rawDetect = cliPresent, runClaude = realClaude, agentFiles: { profiles = [], warnings = [] } = {} }) {
   // La détection lance un processus synchrone : on garde le résultat quelques secondes.
   const seen = new Map();
   const detect = (command) => {
@@ -41,7 +42,7 @@ export function createApp({ studio, publicDir, detect: rawDetect = cliPresent, a
       return list.map((p) => ({
         agentId: ids.get(p.slug), slug: p.slug, displayName: p.displayName, model: p.model, tools: p.tools,
         connectors: p.connectors.map((id) => ({ id, state: connectorState(id, detect) })),
-        collaboratesAll: p.collaboratesAll,
+        collaboratesAll: p.collaboratesAll, replies: REPLY_AGENTS.has(p.slug),
         collaborates: p.collaborates.map((slug) => ({ slug, agentId: ids.get(slug) ?? null })),
         sections: p.sections
       }));
@@ -72,10 +73,31 @@ export function createApp({ studio, publicDir, detect: rawDetect = cliPresent, a
     ['PUT', /^\/api\/departments\/([^/]+)\/style$/, (m, data) => studio.setIslandStyle(decodeURIComponent(m[1]), data)],
     ['DELETE', /^\/api\/departments\/([^/]+)\/style$/, (m) => studio.clearIslandStyle(decodeURIComponent(m[1]))]
   ];
+  // Réponse IA diffusée en NDJSON : {type:'text'} au fil de l'eau, puis {type:'done', message} ou {type:'error', error}.
+  const replying = new Set();
+  async function reply(agentId, res) {
+    const { ids, list } = linked();
+    const profile = list.find((p) => ids.get(p.slug) === agentId);
+    if (!profile || !REPLY_AGENTS.has(profile.slug)) throw Object.assign(new Error('Les réponses IA ne sont activées que pour Lucas pour le moment.'), { status: 403 });
+    if (replying.has(agentId)) throw Object.assign(new Error(`${profile.displayName} répond déjà à un message.`), { status: 409 });
+    const items = studio.listConversation(agentId).items.reverse(); // ponytail: contexte = 50 derniers messages, résumé si les échanges s'allongent
+    if (items.at(-1)?.senderType !== 'user') throw Object.assign(new Error('Aucun message en attente de réponse.'), { status: 400 });
+    const names = new Map(studio.listAgents().map((a) => [a.id, a.name]));
+    replying.add(agentId);
+    res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store' });
+    const line = (data) => { if (!res.writableEnded) res.write(JSON.stringify(data) + '\n'); };
+    try {
+      const text = await runClaude({ model: profile.model, system: systemPrompt(profile), prompt: conversationPrompt(items, (id) => names.get(id) ?? 'Agent', profile.displayName), onText: (t) => line({ type: 'text', text: t }) });
+      line({ type: 'done', message: studio.saveAgentReply(agentId, text, 'claude') }); // enregistré même si le panneau a été fermé
+    } catch (error) { line({ type: 'error', error: error.message }); }
+    finally { replying.delete(agentId); res.end(); }
+  }
   return createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://localhost');
       const key = `${req.method} ${url.pathname}`;
+      const replyMatch = req.method === 'POST' && url.pathname.match(/^\/api\/agents\/([^/]+)\/reply$/);
+      if (replyMatch) return await reply(decodeURIComponent(replyMatch[1]), res);
       const hasBody = req.method === 'POST' || req.method === 'PUT';
       if (routes[key]) return send(res, 200, await routes[key](hasBody ? await body(req) : undefined, url.searchParams));
       for (const [method, re, fn] of paramRoutes) { const m = req.method === method && url.pathname.match(re); if (m) return send(res, 200, await fn(m, hasBody ? await body(req) : undefined, url.searchParams)); }

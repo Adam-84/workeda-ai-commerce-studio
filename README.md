@@ -92,7 +92,9 @@ Un clic sur un personnage ouvre un panneau avec Discussion, Missions, Profil, Ap
 
 Dans Discussion, vous écrivez en tant que **Vous**, avec des bulles et un horodatage. Les anciens messages entre agents restent visibles avec leur expéditeur et leur destinataire. Les messages utilisateur sont conservés dans la nouvelle table `user_messages` ; aucune table existante n'est réécrite.
 
-Cette messagerie **enregistre seulement les messages dans la base du Studio** : aucun modèle IA n'est appelé et aucune réponse n'est simulée. Une base propre à chaque PC reste une base séparée.
+Les messages sont enregistrés dans la base du Studio. **Lucas répond réellement** : à chaque envoi, le serveur lance `claude -p` avec la fiche `.claude/agents/lucas.md` comme consigne et les 50 derniers messages de la discussion comme contexte. Sa réponse s'affiche au fil de l'eau, puis est conservée dans la table `agent_replies`. Les autres agents enregistrent seulement vos messages pour l'instant ; aucune réponse n'est simulée.
+
+Pour ces réponses, Claude tourne sans aucun outil (`--tools ""`), sans serveur MCP (`--strict-mcp-config`), sans hooks, plugins ni CLAUDE.md (`--safe-mode`), sans enregistrer de session, dans le dossier temporaire du système : pas d'accès aux fichiers, aux commandes ni à Shopify. La connexion Claude Code déjà ouverte sur le PC est utilisée telle quelle ; le Studio ne lit aucun jeton. Si l'appel échoue (Claude absent, déconnecté, limite atteinte), votre message reste enregistré, l'erreur s'affiche et un bouton permet de redemander la réponse. Une base propre à chaque PC reste une base séparée.
 
 Le champ accepte les messages de plus de 500 caractères. L'historique n'est plus tronqué à huit messages : « Messages précédents » charge les échanges par pages de 50, sans plafond sur le nombre total consultable. La protection serveur sur la taille des requêtes reste active (environ 1 Mo de texte JSON). Un refus garde le brouillon pour permettre de le corriger.
 
