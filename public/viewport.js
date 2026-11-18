@@ -21,3 +21,10 @@ export function zoomAt(vp, zoom, sx, sy) {
 }
 export function panBy(vp, dsx, dsy) { vp.x -= dsx / vp.zoom; vp.y -= dsy / vp.zoom; return clampView(vp); }
 export const nextZoom = (zoom, dir) => ZOOMS[Math.max(0, Math.min(ZOOMS.length - 1, ZOOMS.indexOf(zoom) + dir))];
+// vue intermédiaire entre a et b (e de 0 à 1) : zoom géométrique, le point de l'écran qui ne bouge pas entre a et b reste fixe
+export function lerpView(a, b, e) {
+  if (a.zoom === b.zoom) return { zoom: a.zoom, x: a.x + (b.x - a.x) * e, y: a.y + (b.y - a.y) * e };
+  const zoom = a.zoom * (b.zoom / a.zoom) ** e, d = 1 / a.zoom - 1 / b.zoom;
+  const at = (p, q) => { const s = (q - p) / d; return p + s / a.zoom - s / zoom; };
+  return { zoom, x: at(a.x, b.x), y: at(a.y, b.y) };
+}

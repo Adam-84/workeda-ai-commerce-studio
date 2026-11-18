@@ -4,13 +4,15 @@ import { tinter, mix } from './iso.js';
 import { appearanceFor, expressionFor, spriteGrid, OPTIONS, hashStr } from './sprites.js';
 import { drawPixelText } from './pixelfont.js';
 import { computeBeams } from './beams.js';
-import { createViewport, toScreen, toWorld, centerOn, zoomAt, panBy, nextZoom, visibleRect } from './viewport.js';
+import { createViewport, toScreen, toWorld, centerOn, zoomAt, panBy, nextZoom, visibleRect, lerpView } from './viewport.js';
 import { computeWorld, placeAgents, drawIsland, drawHub, drawDesk, spriteCanvas, islandBounds, recruitSpot, pillSpot, doorSpot, styledIdentity } from './world.js';
 import { drawEmblem } from './emblems.js';
 import { OPTIONS as ISLAND_OPTIONS, LABELS_FR, LABEL_MAX, normalizeIslandStyle, isValidIslandStyle } from './island-style.js'; // OPTIONS de sprites.js = personnages : alias
 import { connectorText, modelLabel, colleagues, ignoredText, helpLine, FULL_SECTIONS } from './agent-profile.js';
 import { createConversation } from './conversation.js';
 import { agentSkillsTab, skillsCenter } from './skills-ui.js';
+import { missionsTab } from './missions.js';
+import { instructionsBlock } from './instructions.js';
 
 const $ = (s) => document.querySelector(s);
 const get = (p) => fetch(p).then(async (r) => { const d = await r.json(); if (!r.ok) throw new Error(d.error); return d; });
@@ -145,7 +147,7 @@ function drawBeams(t) {
     if (Math.abs(age - dur / 2) < 0.3) { ctx.globalAlpha = 0.35; ctx.fillStyle = color; ctx.fillRect(crystal[0] - 10, crystal[1] - 600, 20, 600); ctx.globalAlpha = 1; } // éclair vertical au passage du cristal
   }
 }
-function frame(ts) { draw(ts / 1000); requestAnimationFrame(frame); } // une image par rafraîchissement d'écran (60 fps sur un écran 60 Hz)
+function frame(ts) { stepCamera(ts); draw(ts / 1000); requestAnimationFrame(frame); } // chaque image : carte et boutons HTML restent synchrones
 
 // ---------- superposition HTML (boutons, pastilles, icônes) ----------
 const overlayNodes = [];
@@ -206,17 +208,30 @@ function positionOverlay() {
 }
 
 // ---------- déplacement et zoom ----------
-let drag = null;
-canvas.addEventListener('pointerdown', (e) => { drag = { x: e.clientX, y: e.clientY }; canvas.classList.add('dragging'); canvas.setPointerCapture(e.pointerId); });
+let drag = null, cam = null; // cam : transition de caméra en cours { from, to, start }
+// applique fn (centerOn, zoomAt, panBy…) à une copie de la vue visée, puis y glisse en ~350 ms (saut direct si mouvement réduit)
+function moveView(fn) {
+  const to = fn({ ...(cam?.to ?? vp) });
+  if (reduce) { Object.assign(vp, { x: to.x, y: to.y, zoom: to.zoom }); return afterView(); }
+  cam = { from: { x: vp.x, y: vp.y, zoom: vp.zoom }, to, start: performance.now() };
+}
+function stepCamera(now) {
+  if (!cam) return;
+  const k = Math.min(1, (now - cam.start) / 350);
+  Object.assign(vp, k < 1 ? lerpView(cam.from, cam.to, 1 - (1 - k) ** 3) : { x: cam.to.x, y: cam.to.y, zoom: cam.to.zoom });
+  if (k >= 1) cam = null;
+  afterView();
+}
+canvas.addEventListener('pointerdown', (e) => { if (cam?.from.zoom !== cam?.to.zoom) stepCamera(Infinity); cam = null; drag = { x: e.clientX, y: e.clientY }; canvas.classList.add('dragging'); canvas.setPointerCapture(e.pointerId); });
 canvas.addEventListener('pointermove', (e) => { if (!drag) return; panBy(vp, e.clientX - drag.x, e.clientY - drag.y); drag = { x: e.clientX, y: e.clientY }; afterView(); });
 canvas.addEventListener('pointerup', () => { drag = null; canvas.classList.remove('dragging'); });
-canvas.addEventListener('wheel', (e) => { e.preventDefault(); zoomAt(vp, nextZoom(vp.zoom, e.deltaY < 0 ? 1 : -1), e.clientX, e.clientY); afterView(); }, { passive: false });
-canvas.addEventListener('keydown', (e) => { const s = 60, m = { ArrowLeft: [s, 0], ArrowRight: [-s, 0], ArrowUp: [0, s], ArrowDown: [0, -s] }[e.key]; if (m) { e.preventDefault(); panBy(vp, ...m); afterView(); } });
-$('#zoom-in').addEventListener('click', () => { zoomAt(vp, nextZoom(vp.zoom, 1), innerWidth / 2, innerHeight / 2); afterView(); });
-$('#zoom-out').addEventListener('click', () => { zoomAt(vp, nextZoom(vp.zoom, -1), innerWidth / 2, innerHeight / 2); afterView(); });
-function afterView() { $('#zoom-label').textContent = `${vp.zoom * 100} %`; positionOverlay(); updateMinimap(); if (reduce) draw(0); }
-export function centerOnWorld(x, y) { centerOn(vp, x, y); afterView(); }
-addEventListener('resize', () => { Object.assign(vp, { viewW: innerWidth, viewH: innerHeight }); centerOn(vp, ...toWorld(vp, innerWidth / 2, innerHeight / 2)); afterView(); });
+canvas.addEventListener('wheel', (e) => { e.preventDefault(); moveView((v) => zoomAt(v, nextZoom(v.zoom, e.deltaY < 0 ? 1 : -1), e.clientX, e.clientY)); }, { passive: false });
+canvas.addEventListener('keydown', (e) => { const s = 60, m = { ArrowLeft: [s, 0], ArrowRight: [-s, 0], ArrowUp: [0, s], ArrowDown: [0, -s] }[e.key]; if (m) { e.preventDefault(); moveView((v) => panBy(v, ...m)); } });
+$('#zoom-in').addEventListener('click', () => moveView((v) => zoomAt(v, nextZoom(v.zoom, 1), innerWidth / 2, innerHeight / 2)));
+$('#zoom-out').addEventListener('click', () => moveView((v) => zoomAt(v, nextZoom(v.zoom, -1), innerWidth / 2, innerHeight / 2)));
+function afterView() { $('#zoom-label').textContent = `${Math.round(vp.zoom * 100)} %`; positionOverlay(); updateMinimap(); if (reduce) draw(0); }
+export function centerOnWorld(x, y) { moveView((v) => centerOn(v, x, y)); }
+addEventListener('resize', () => { stepCamera(Infinity); Object.assign(vp, { viewW: innerWidth, viewH: innerHeight }); centerOn(vp, ...toWorld(vp, innerWidth / 2, innerHeight / 2)); afterView(); });
 
 // ---------- mini-plan ----------
 function updateMinimap() {
@@ -412,12 +427,9 @@ function agentView(id, opts = {}) {
   const leave = () => { conversation?.destroy(); conversation = null; };
   closeHook = leave;
   const defs = [
-    { label: 'Discussion', render: () => { conversation = createConversation({ agent: a, agents: state.agents, get, send, announce }); return conversation.el; }, leave },
-    { label: 'Missions', render: () => {
-      const missions = state.missions.filter((m) => m.assigned_to === a.id || m.requested_by === a.id);
-      return h('div', {}, h('h3', {}, 'Missions de ' + a.name), missions.length ? h('ul', {}, missions.map(missionLine)) : h('p', {}, 'Aucune mission pour le moment.'),
-        h('button', { type: 'button', class: 'primary', onclick: () => { close(false); const select = $('#missionbar select'); select.value = a.id; $('#missionbar input').focus(); } }, 'Donner une mission'));
-    } },
+    { label: 'Discussion', render: () => { conversation = createConversation({ agent: a, agents: state.agents, get, send, announce, replies: state.profiles.has(a.id) }); return conversation.el; }, leave },
+    { label: 'Missions', render: () => missionsTab({ agent: a, agents: state.agents, missions: () => state.missions, announce, h, get, send, canReply: (id) => state.profiles.has(id),
+      save: async (method, path, data) => { const saved = await send(method, path, data); await refresh(); return saved; } }) },
     ...['Profil', 'Apparence'].map((label) => ({ label, render: () => TABS[label](a) })),
     { label: 'Skills', render: () => agentSkillsTab({ ui: UI, agent: a, openSkill: (name) => show('skills', 'library', { skill: name }) }) },
     { label: 'Activité', render: () => TABS.Journal(a) }
@@ -434,6 +446,7 @@ const TABS = {
   Profil: (a) => h('div', {},
     h('div', { class: 'status' }, `${STATUS_LABELS[a.status] || a.status} · source : ${a.statusSource}`),
     a.statusSource === 'manual' && h('p', { style: 'margin-top:6px' }, 'Statut déclaré manuellement : aucun connecteur n’a vérifié d’activité.'),
+    instructionsBlock({ agent: a, replies: state.profiles.has(a.id), get, send, announce, h }),
     state.profiles.has(a.id) && profileBlock(state.profiles.get(a.id)),
     ),
   Apparence: (a) => {

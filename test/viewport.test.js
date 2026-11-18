@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createViewport, toScreen, toWorld, centerOn, zoomAt, panBy, nextZoom, ZOOMS } from '../public/viewport.js';
+import { createViewport, toScreen, toWorld, centerOn, zoomAt, panBy, nextZoom, lerpView, ZOOMS } from '../public/viewport.js';
+
+test('camera interpolation hits both ends and keeps the zoom anchor still', () => {
+  const a = centerOn(createViewport(2400, 1600, 1440, 900), 1200, 800), b = zoomAt({ ...a }, 2, 300, 200);
+  for (const v of [a, b]) { const r = lerpView(a, b, v === a ? 0 : 1); assert.ok(Math.abs(r.x - v.x) < 1e-9 && Math.abs(r.y - v.y) < 1e-9 && r.zoom === v.zoom); }
+  const before = toWorld(a, 300, 200), mid = lerpView(a, b, 0.5), after = toWorld(mid, 300, 200);
+  assert.ok(mid.zoom > 1 && mid.zoom < 2 && Math.abs(before[0] - after[0]) < 1 && Math.abs(before[1] - after[1]) < 1);
+  const c = centerOn({ ...a }, 600, 400), half = lerpView(a, c, 0.5);
+  assert.equal(half.x, (a.x + c.x) / 2); assert.equal(half.zoom, 1);
+});
 
 test('screen ↔ world conversion is reversible at every zoom', () => {
   for (const z of ZOOMS) {

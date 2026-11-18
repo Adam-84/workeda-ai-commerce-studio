@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Personnages v3</title>
+<style>
+  :root { --bg:#f4f1ea; --ink:#1d1b22; --mute:#6b6670; --line:#d9d3c7; --card:#fffdf8; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#16151a; --ink:#ece8df; --mute:#9a95a0; --line:#2e2c35; --card:#1e1d24; } }
+  :root[data-theme="dark"] { --bg:#16151a; --ink:#ece8df; --mute:#9a95a0; --line:#2e2c35; --card:#1e1d24; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--ink); font:14px/1.45 ui-sans-serif, system-ui, "Segoe UI", sans-serif; }
+  h1 { font-size:18px; margin:0 0 4px; } h2 { font-size:15px; margin:0 0 4px; }
+  p { margin:0 0 10px; color:var(--mute); max-width:72ch; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:6px; padding:14px; margin:14px 0; }
+  canvas { image-rendering:pixelated; display:block; max-width:100%; }
+  .row { display:flex; flex-wrap:wrap; gap:16px; align-items:flex-end; }
+  .cap { font-size:12px; color:var(--mute); margin-top:4px; text-align:center; }
+  .scroll { overflow-x:auto; }
+</style>
+</head>
+<body>
+<h1>À quoi ressembleront les personnages</h1>
+<p>Chaque agent garde une seule apparence (coiffure, couleur de cheveux, peau, tenue, couleur du haut, accessoire), déclinée à deux tailles.</p>
+
+<section>
+  <h2>1. Sur la carte : mini-passants (6 × 11 px, nouveau)</h2>
+  <p>Ils sortent du bâtiment et marchent sur les chemins. À cette taille, pas de visage : on reconnaît l'agent à ses cheveux, sa tenue, sa couleur et son accessoire (casque, casquette, blouse…). Ci-dessous au zoom 1 (×3) puis au zoom 2 (×6).</p>
+  <div class="scroll"><canvas id="mapX3"></canvas></div>
+  <div class="cap">Zoom 1 (×3)</div>
+  <div class="scroll" style="margin-top:12px"><canvas id="mapX6"></canvas></div>
+  <div class="cap">Zoom 2 (×6)</div>
+  <div class="row" id="minis" style="margin-top:14px"></div>
+</section>
+
+<section>
+  <h2>2. Fenêtres, fiche agent, apparence : personnages 64 × 64 actuels (inchangés)</h2>
+  <p>Ceux que tu connais déjà, avec leurs expressions selon le statut. Ce sont les mêmes agents que les mini-passants ci-dessus.</p>
+  <div class="row" id="chibis"></div>
+</section>
+
+<section>
+  <h2>3. À l'intérieur des bâtiments : à décider au chantier C</h2>
+  <p>Deux pistes : réutiliser ces personnages 64 × 64 dans une vue intérieure dessinée plus grande, ou créer une taille intermédiaire en pixel art assortie aux bâtiments. On tranchera avec des maquettes de pièces.</p>
+</section>
+
+<script>
+(() => {
+  const DK = '#2a2033';
+  const h2r = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  const shade = (c, f) => '#' + h2r(c).map((v) => Math.round(f > 0 ? v + (255 - v) * f : v * (1 + f))).map((v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, '0')).join('');
+
+  const AGENTS = [
+    { name: 'Camille', dept: 'Direction', look: { hairStyle: 'short', hairColor: '#2b2230', skin: '#eebc94', eyes: '#3a7fd0', outfit: 'blazer', topColor: '#f2c14e', accessory: 'none' }, expr: 'calm' },
+    { name: 'Inès', dept: 'Service client', look: { hairStyle: 'bob', hairColor: '#6a3d22', skin: '#cf9468', eyes: '#8a5a2a', outfit: 'sweater', topColor: '#2fb39a', accessory: 'headset' }, expr: 'focused' },
+    { name: 'Léo', dept: 'Laboratoire', look: { hairStyle: 'bun', hairColor: '#d79a4a', skin: '#f8d6b8', eyes: '#3a9a6a', outfit: 'labcoat', topColor: '#8ac23a', accessory: 'glasses' }, expr: 'questioning' },
+    { name: 'Noah', dept: 'Données', look: { hairStyle: 'spiky', hairColor: '#3a5a9a', skin: '#8f5a3a', eyes: '#7a4ab0', outfit: 'hoodie', topColor: '#3b9be0', accessory: 'none' }, expr: 'calm' },
+    { name: 'Sami', dept: 'Opérations', look: { hairStyle: 'ponytail', hairColor: '#7a3a6a', skin: '#eebc94', eyes: '#3a7fd0', outfit: 'apron', topColor: '#e8853d', accessory: 'cap' }, expr: 'worried' }
+  ];
+
+  // ---------- mini-passant 6 × 11 (+ contour) ----------
+  function miniGrid(look, { dir = 'down', frame = 0 } = {}) {
+    const W = 8, H = 13, g = Array.from({ length: H }, () => Array(W).fill(null));
+    const set = (x, y, c) => { if (x >= 0 && x < W && y >= 0 && y < H) g[y][x] = c; };
+    const R = (x, y, w, h, c) => { for (let j = y; j < y + h; j++) for (let i = x; i < x + w; i++) set(i, j, c); };
+    const back = dir === 'up', sk = look.skin, hair = look.hairColor, hairD = shade(hair, -0.25);
+    const top = look.outfit === 'labcoat' ? '#f2f4f6' : look.topColor, topD = shade(top, -0.22), acc = look.outfit === 'labcoat' ? look.topColor : shade(look.topColor, 0.35);
+    const pan = '#2f3550', shoes = '#3a2a22', b = frame ? -1 : 0;
+    // jambes
+    const upL = frame === 1 ? 1 : 0, upR = frame === 2 ? 1 : 0;
+    R(2, 8, 2, 2 - upL, pan); R(4, 8, 2, 2 - upR, shade(pan, -0.2)); R(2, 10 - upL, 2, 1, shoes); R(4, 10 - upR, 2, 1, shoes);
+    // buste et bras
+    R(2, 4 + b, 4, 4, top); R(5, 4 + b, 1, 4, topD); const sw = frame === 1 ? -1 : frame === 2 ? 1 : 0;
+    R(1, 4 + b + Math.max(0, sw), 1, 3, top); R(6, 4 + b + Math.max(0, -sw), 1, 3, topD); set(1, 7 + b + Math.max(0, sw), sk); set(6, 7 + b + Math.max(0, -sw), shade(sk, -0.15));
+    if (look.outfit === 'labcoat') { R(2, 8, 4, 1, top); set(3, 4 + b, acc); }
+    if (!back) {
+      if (look.outfit === 'blazer') R(3, 4 + b, 2, 2, '#f4f4f0');
+      if (look.outfit === 'apron') R(3, 5 + b, 2, 3, acc);
+      if (look.outfit === 'hoodie') R(2, 4 + b, 4, 1, topD);
+      if (look.outfit === 'jacket') R(4, 4 + b, 1, 4, DK);
+      if (look.outfit === 'sweater') R(2, 6 + b, 4, 1, acc);
+    }
+    // tête
+    R(2, 1 + b, 4, 3, sk); set(5, 2 + b, shade(sk, -0.15)); set(5, 3 + b, shade(sk, -0.15));
+    R(2, 1 + b, 4, 1, hair); set(2, 2 + b, hair);
+    if (back) R(2, 1 + b, 4, 3, hair);
+    const hs = look.hairStyle;
+    if (hs === 'long' || hs === 'bob') { set(2, 3 + b, hair); set(5, 2 + b, hairD); set(5, 3 + b, hairD); if (hs === 'long') { set(2, 4 + b, hair); set(5, 4 + b, hairD); } }
+    if (hs === 'spiky') { set(2, b, hair); set(4, b, hair); }
+    if (hs === 'bun') R(3, b, 2, 1, hair);
+    if (hs === 'ponytail') { set(6, 2 + b, hairD); set(6, 3 + b, hairD); }
+    const a = look.accessory;
+    if (a === 'headset') { R(2, b, 4, 1, '#3a3f55'); set(2, 2 + b, '#3a3f55'); set(5, 2 + b, '#3a3f55'); }
+    if (a === 'cap') { R(2, b, 4, 2, look.topColor); if (!back) set(6, 1 + b, shade(look.topColor, -0.25)); }
+    if (a === 'glasses' && !back) R(3, 2 + b, 3, 1, DK);
+    if (a === 'scarf') R(2, 4 + b, 4, 1, acc);
+    const out = g.map((r) => r.slice());
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (!g[y][x] && [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => g[y + dy]?.[x + dx])) out[y][x] = DK;
+    return out;
+  }
+
+  // ---------- personnage 64 × 64 (copie conforme de public/sprites.js) ----------
+  function spriteGrid(look, { expr = 'calm', dir = 'down', frame = 0 } = {}) {
+    const g = Array.from({ length: 64 }, () => Array(64).fill(null));
+    const set = (x, y, c) => { if (x >= 0 && x < 64 && y >= 0 && y < 64) g[y][x] = c; };
+    const R = (x, y, w, h, c) => { for (let j = y; j < y + h; j++) for (let i = x; i < x + w; i++) set(i, j, c); };
+    const E = (cx, cy, rx, ry, c, cond) => { for (let j = Math.floor(cy - ry - 1); j <= cy + ry + 1; j++) for (let i = Math.floor(cx - rx - 1); i <= cx + rx + 1; i++) { const dx = (i + 0.5 - cx) / rx, dy = (j + 0.5 - cy) / ry; if (dx * dx + dy * dy <= 1 && (!cond || cond(i, j))) set(i, j, c); } };
+    const front = true, typingPose = expr === 'focused', walk = 0, b = 0;
+    const sk = look.skin, skD = shade(sk, -0.15);
+    const top = look.outfit === 'labcoat' ? '#f2f4f6' : look.topColor, topD = shade(top, -0.22);
+    const acc = look.outfit === 'labcoat' ? look.topColor : shade(look.topColor, 0.35);
+    const pan = '#2f3550', panD = shade(pan, -0.25), shoes = '#3a2a22';
+    const hair = look.hairColor, hairD = shade(hair, -0.25), hairL = shade(hair, 0.3), long = look.outfit === 'labcoat';
+    R(25, 46, 6, 13, pan); R(33, 46, 6, 13, pan); R(29, 46, 2, 13, panD); R(37, 46, 2, 13, panD); R(24, 58, 8, 4, shoes); R(32, 58, 8, 4, shoes);
+    R(22, 30 + b, 20, long ? 24 : 17, top); R(38, 31 + b, 4, long ? 23 : 16, topD); set(22, 30 + b, null); set(41, 30 + b, null);
+    const typing = typingPose ? (frame % 2 ? -2 : 0) : 0, rightTyp = typingPose ? (typing ? 0 : -2) : 0;
+    R(18, 31, 4, 14, top); R(42, 31, 4, 14, topD); R(18, 45 + typing, 4, 3, sk); R(42, 45 + rightTyp, 4, 3, skD);
+    const o = look.outfit;
+    if (o === 'blazer') { R(29, 30, 6, 17, '#f4f4f0'); for (let k = 0; k < 7; k++) { set(28 + Math.floor(k / 2), 30 + k, topD); set(35 - Math.floor(k / 2), 30 + k, topD); } R(31, 31, 2, 9, acc); }
+    if (o === 'hoodie') { R(25, 29, 14, 3, topD); R(26, 40, 12, 4, topD); R(29, 32, 1, 2, '#ffffff'); R(34, 32, 1, 2, '#ffffff'); }
+    if (o === 'sweater') { R(22, 36, 20, 2, acc); R(22, 41, 20, 2, acc); R(27, 30, 10, 2, topD); }
+    if (o === 'jacket') { R(31, 30, 2, 17, DK); R(26, 29, 12, 2, topD); R(23, 39, 4, 1, topD); R(37, 39, 4, 1, topD); R(29, 30, 2, 3, acc); }
+    if (o === 'labcoat') { R(29, 30, 6, 8, acc); R(24, 44, 5, 1, shade(top, -0.3)); R(35, 44, 5, 1, shade(top, -0.3)); R(31, 38, 1, 16, shade(top, -0.2)); }
+    if (o === 'apron') { R(25, 35, 14, 15, acc); R(26, 30, 2, 5, acc); R(36, 30, 2, 5, acc); R(29, 40, 6, 4, shade(acc, -0.25)); }
+    R(29, 27, 6, 4, skD); E(32, 17, 11, 11, sk); R(20, 16, 2, 5, sk); R(44, 16, 2, 5, skD);
+    const eyes = () => { for (const x0 of [26, 35]) { R(x0, 17, 3, 1, DK); R(x0, 18, 3, 2, look.eyes); set(x0, 18, '#ffffff'); } };
+    if (expr === 'focused') { R(26, 18, 3, 1, DK); R(35, 18, 3, 1, DK); R(26, 19, 3, 1, look.eyes); R(35, 19, 3, 1, look.eyes); R(25, 15, 4, 1, hairD); R(35, 15, 4, 1, hairD); R(30, 24, 4, 1, DK); }
+    else if (expr === 'questioning') { eyes(); R(25, 14, 4, 1, hairD); R(35, 15, 4, 1, hairD); R(31, 24, 2, 2, DK); }
+    else if (expr === 'worried') { eyes(); for (const [x, y] of [[25, 15], [26, 15], [27, 14], [28, 14], [38, 15], [37, 15], [36, 14], [35, 14]]) set(x, y, hairD); for (const [x, y] of [[30, 25], [31, 24], [32, 24], [33, 25]]) set(x, y, DK); R(44, 12, 1, 2, '#7fd0ff'); }
+    else { eyes(); for (const [x, y] of [[30, 24], [31, 25], [32, 25], [33, 24]]) set(x, y, DK); }
+    R(25, 22, 2, 1, '#f3a0a0'); R(37, 22, 2, 1, '#f3a0a0');
+    E(32, 12, 12, 9, hair, (i, j) => j <= 14); for (let i = 21; i <= 42; i += 3) R(i, 14, 2, 2, hair); R(24, 6, 10, 1, hairL); R(23, 7, 4, 1, hairL);
+    const hs = look.hairStyle;
+    if (hs === 'long') { R(19, 11, 4, 22, hair); R(41, 11, 4, 22, hairD); }
+    if (hs === 'spiky') for (const [x, y] of [[23, 3], [28, 1], [33, 0], [38, 2], [42, 5]]) { R(x, y, 3, 3, hair); set(x + 1, y - 1, hair); }
+    if (hs === 'bun') E(32, 2, 5, 3.5, hair);
+    if (hs === 'ponytail') E(46, 14, 3, 8, hairD);
+    if (hs === 'bob') { R(20, 11, 4, 13, hair); R(40, 11, 4, 13, hairD); }
+    const a = look.accessory;
+    if (a === 'glasses') { for (const x0 of [25, 34]) { R(x0, 16, 5, 1, DK); R(x0, 21, 5, 1, DK); R(x0, 16, 1, 6, DK); R(x0 + 4, 16, 1, 6, DK); } R(30, 18, 4, 1, DK); }
+    if (a === 'headset') { R(21, 3, 22, 2, '#3a3f55'); R(19, 14, 3, 8, '#3a3f55'); R(42, 14, 3, 8, '#3a3f55'); R(40, 23, 5, 1, '#3a3f55'); }
+    if (a === 'cap') { E(32, 8, 12, 6, look.topColor, (i, j) => j <= 10); R(32, 10, 15, 2, shade(look.topColor, -0.25)); }
+    if (a === 'scarf') { R(24, 28, 16, 4, acc); R(34, 32, 4, 7, shade(acc, -0.2)); }
+    const out = g.map((row) => row.slice());
+    for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) if (!g[y][x] && [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => g[y + dy]?.[x + dx])) out[y][x] = DK;
+    return out;
+  }
+
+  const paint = (ctx, grid, ox, oy, s = 1) => { for (let y = 0; y < grid.length; y++) for (let x = 0; x < grid[0].length; x++) { const c = grid[y][x]; if (c) { ctx.fillStyle = c; ctx.fillRect((ox + x) * s, (oy + y) * s, s, s); } } };
+
+  // ---------- planche des mini-passants (face, dos, deux pas) ----------
+  const minis = document.getElementById('minis');
+  for (const a of AGENTS) {
+    const c = document.createElement('canvas'), S = 6; c.width = 4 * 9 * S; c.height = 13 * S; const x = c.getContext('2d');
+    [['down', 0], ['down', 1], ['down', 2], ['up', 0]].forEach(([dir, frame], k) => paint(x, miniGrid(a.look, { dir, frame }), k * 9, 0, S));
+    const w = document.createElement('div'); w.append(c); const cap = document.createElement('div'); cap.className = 'cap'; cap.textContent = `${a.name} · ${a.dept}`; w.append(cap); minis.append(w);
+  }
+  // ---------- personnages 64 × 64 ----------
+  const chibis = document.getElementById('chibis');
+  for (const a of AGENTS) {
+    const c = document.createElement('canvas'); c.width = 128; c.height = 128; const x = c.getContext('2d'); paint(x, spriteGrid(a.look, { expr: a.expr }), 0, 0, 2);
+    const w = document.createElement('div'); w.append(c); const cap = document.createElement('div'); cap.className = 'cap'; cap.textContent = `${a.name} · ${{ calm: 'au repos', focused: 'en cours', questioning: 'en attente', worried: 'bloqué' }[a.expr]}`; w.append(cap); chibis.append(w);
+  }
+
+  // ---------- extrait de carte animé (taille de dessin 150 × 70) ----------
+  const NW = 150, NH = 70, base = document.createElement('canvas'); base.width = NW; base.height = NH; const g = base.getContext('2d');
+  const R = (x, y, w, h, c) => { g.fillStyle = c; g.fillRect(x, y, w, h); };
+  let s = 7; const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647);
+  R(0, 0, NW, NH, '#5fb04a'); for (let i = 0; i < 420; i++) R(Math.floor(rnd() * NW), Math.floor(rnd() * NH), 1, 1, rnd() < .5 ? '#8bd162' : '#3d8a3c');
+  // façade (face droite d'un bâtiment) avec porte
+  for (let k = 0; k < 70; k++) { const y0 = 34 - Math.floor(k / 2); R(k, 0, 1, Math.max(0, y0), k === 0 ? '#2a2033' : '#c9cdd6'); if (y0 > 0) R(k, y0 - 1, 1, 1, '#2a2033'); }
+  for (let k = 4; k < 66; k += 7) { const y0 = 34 - Math.floor(k / 2); if (y0 > 16) R(k, y0 - 14, 4, 5, '#6390ad'); }
+  for (let k = 28; k < 36; k++) { const y0 = 34 - Math.floor(k / 2); R(k, y0 - 12, 1, 12, k === 28 || k === 35 ? '#3a3540' : '#5a3a2a'); }
+  // chemin pavé depuis la porte, vers le bas à droite
+  for (let k = -6; k < 120; k++) { const cx = 32 + k, cy = 18 + Math.floor((k) / 2); R(cx - 1, cy + 2, 2, 7, '#c9bea6'); R(cx, cy + 3, 1, 5, '#e4d8bf'); }
+  const walkers = AGENTS.map((a, i) => ({ a, o: i * 1.7, v: 9 + (i % 3) * 2 }));
+  const outs = [['mapX3', 3], ['mapX6', 6]].map(([id, S]) => { const c = document.getElementById(id); c.width = NW * S; c.height = NH * S; const x = c.getContext('2d'); x.imageSmoothingEnabled = false; return { x, S }; });
+  const frameCanvas = document.createElement('canvas'); frameCanvas.width = NW; frameCanvas.height = NH; const f = frameCanvas.getContext('2d');
+  function tick(ts) {
+    const t = ts / 1000; f.drawImage(base, 0, 0);
+    const pos = walkers.map((w) => { const L = 100, T = 2 * L / w.v + 2, u = (t + w.o) % T, d = u < L / w.v ? u * w.v : u < L / w.v + 1 ? L : u < 2 * L / w.v + 1 ? L - (u - L / w.v - 1) * w.v : 0; const goingOut = u < L / w.v; const moving = (u < L / w.v) || (u > L / w.v + 1 && u < 2 * L / w.v + 1);
+      return { w, x: 30 + d, y: 26 + d / 2, dir: goingOut ? 'down' : 'up', frame: moving ? 1 + (Math.floor(t * 6 + w.o) % 2) : 0 }; }).sort((p, q) => p.y - q.y);
+    for (const p of pos) { f.fillStyle = 'rgba(42,32,51,.25)'; f.fillRect(Math.round(p.x) - 2, Math.round(p.y) + 1, 6, 1); const gr = miniGrid(p.w.a.look, { dir: p.dir, frame: p.frame }); for (let y = 0; y < gr.length; y++) for (let x = 0; x < gr[0].length; x++) if (gr[y][x]) { f.fillStyle = gr[y][x]; f.fillRect(Math.round(p.x) - 4 + x, Math.round(p.y) - 11 + y, 1, 1); } }
+    for (const o of outs) o.x.drawImage(frameCanvas, 0, 0, NW * o.S, NH * o.S);
+    if (!matchMedia('(prefers-reduced-motion: reduce)').matches) setTimeout(() => requestAnimationFrame(tick), 70);
+  }
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
