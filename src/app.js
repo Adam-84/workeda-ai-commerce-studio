@@ -4,7 +4,7 @@ import { existsSync, statSync, realpathSync } from 'node:fs';
 import { join, extname, resolve, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { connectorState, MAX_PRELOADED } from './agent-files.js';
-import { runClaude as realClaude, systemPrompt, conversationPrompt, missionsPrompt, teamPrompt, planRequestPrompt, parsePlan } from './claude-reply.js';
+import { runClaude as realClaude, systemPrompt, conversationPrompt, missionsPrompt, teamPrompt, planRequestPrompt, parsePlan, memoryPrompt, memoryProposalPrompt, parseMemoryProposals } from './claude-reply.js';
 
 // Détection réelle d'un binaire dans le PATH (« détecté » ne veut pas dire « connecté »).
 export const cliPresent = (command, run = execFileSync) => {
@@ -27,12 +27,17 @@ const DETECT_TTL_MS = 10_000;
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 const SKILL_PATH = /^\/api\/(?:skills(?:\/|$)|agents\/[^/]+\/skills)/;
-function assertLocalWrite(req) {
-  const deny = (why) => Object.assign(new Error(`Modification refusée : ${why}.`), { status: 403 });
+// La mémoire est lue par les agents comme une référence : seule cette machine peut l'écrire, valider ou supprimer.
+// Y compris les anciennes notes de mission (« /memory »), que les agents relisent aussi.
+const MEMORY_PATH = /^\/api\/(?:memory(?:\/|$)|missions\/[^/]+\/(?:memory-proposals$|memory(?:\/|$)))/;
+// Lecture : la mémoire contient le savoir de l'entreprise — réservée à cette machine (même contrôle, sans l'origine).
+function assertLocalWrite(req, { checkOrigin = true } = {}) {
+  const deny = (why) => Object.assign(new Error(`${checkOrigin ? 'Modification' : 'Lecture'} refusée : ${why}.`), { status: 403 });
   if (!LOOPBACK.has(req.socket.remoteAddress)) throw deny('connexion non locale');
   let host;
   try { host = new URL(`http://${req.headers.host}`); } catch { throw deny('en-tête Host invalide'); }
   if (!LOCAL_HOSTS.has(host.hostname)) throw deny('nom d’hôte non local');
+  if (!checkOrigin) return;
   const { origin } = req.headers; // absent pour un appel sans navigateur ; présent et différent pour une autre page web
   if (origin !== undefined) {
     let from = null;
@@ -95,7 +100,33 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
     'POST /api/skills/import': (data) => skills.importSkill(data),
     'POST /api/skills/sync': () => skills.sync()
   });
+  const memory = studio.memory;
+  if (memory) Object.assign(routes, {
+    'GET /api/memory': (_, q) => memory.list({
+      level: q.get('level') || undefined, kind: q.get('kind') || undefined, nature: q.get('nature') || undefined, state: q.get('state') || undefined,
+      owner: q.get('owner') || undefined, department: q.get('department') || undefined, missionId: q.get('missionId') || undefined,
+      tag: q.get('tag') || undefined, q: q.get('q') || undefined, visibleTo: q.get('visibleTo') || undefined,
+      includeExpired: q.get('expired') !== '0', limit: q.get('limit') ?? 200
+    }),
+    'GET /api/memory/stats': () => memory.stats(),
+    'GET /api/memory/status': () => memory.status(),
+    'GET /api/memory/check': () => memory.check(),
+    'GET /api/memory/owners': () => memory.owners(),
+    // Aperçu de ce qu'un agent recevrait : n'enregistre aucun usage.
+    'GET /api/memory/context': (_, q) => {
+      if (!q.get('agentId')) fail(400, 'agentId est obligatoire.');
+      return memory.contextFor(q.get('agentId'), { missionId: q.get('missionId') || null, query: q.get('q') ?? '', touch: false });
+    },
+    'POST /api/memory': (data) => memory.create(data),
+    'POST /api/memory/import': () => memory.importJournal()
+  });
   const paramRoutes = [
+    ...(memory ? [
+      ['GET', /^\/api\/memory\/([^/]+)$/, (m) => memory.get(decodeURIComponent(m[1]))],
+      ['GET', /^\/api\/memory\/([^/]+)\/history$/, (m) => memory.history(decodeURIComponent(m[1]))],
+      ['PUT', /^\/api\/memory\/([^/]+)$/, (m, data) => memory.update(decodeURIComponent(m[1]), data)],
+      ['POST', /^\/api\/memory\/([^/]+)\/state$/, (m, data) => memory.setState(decodeURIComponent(m[1]), data?.to, { note: data?.note ?? '', patch: data?.patch ?? null })]
+    ] : []),
     ...(skills ? [
       ['GET', /^\/api\/skills\/([^/]+)$/, (m) => skills.detail(decodeURIComponent(m[1]))],
       ['GET', /^\/api\/skills\/([^/]+)\/versions\/([0-9a-f]{64})$/, (m) => studio.getSkillVersion(decodeURIComponent(m[1]), m[2])],
@@ -142,13 +173,20 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
     catch (error) { line({ type: 'error', error: error.message }); }
     finally { replying.delete(lock); res.end(); }
   }
+  // Mémoire Archipel pour un agent : seulement du souvenir actif, autorisé et pertinent, dans un budget borné.
+  // Une panne de mémoire ne doit jamais empêcher un agent de répondre.
+  const memoryFor = (agentId, { missionId = null, query = '' } = {}) => {
+    if (!memory) return '';
+    try { return memoryPrompt(memory.contextFor(agentId, { missionId, query: String(query).slice(0, 1500) })); } catch { return ''; }
+  };
   async function reply(agentId, res) {
     const profile = profileOf(agentId);
     if (replying.has(agentId)) fail(409, `${profile.displayName} répond déjà à un message.`);
     const items = studio.listConversation(agentId).items.reverse(); // ponytail: contexte = 50 derniers messages, résumé si les échanges s'allongent
     if (items.at(-1)?.senderType !== 'user') fail(400, 'Aucun message en attente de réponse.');
     const nameOf = namer(), context = missionsPrompt(studio.listMissions(), agentId, nameOf, (id) => studio.listMemory(id), (id) => studio.currentPlan(id));
-    await stream(res, agentId, `${profile.displayName} répond déjà à un message.`, profile, agentId, `${context}\n\n${conversationPrompt(items, nameOf, profile.displayName)}`, (text) => studio.saveAgentReply(agentId, text, 'claude'));
+    const recalled = memoryFor(agentId, { query: items.filter((m) => m.senderType === 'user').slice(-3).map((m) => m.body).join('\n') });
+    await stream(res, agentId, `${profile.displayName} répond déjà à un message.`, profile, agentId, `${recalled}${context}\n\n${conversationPrompt(items, nameOf, profile.displayName)}`, (text) => studio.saveAgentReply(agentId, text, 'claude'));
   }
   // Fil d'équipe : seul un membre désigné (responsable ou collaborateur) parle, une réponse à la fois par mission.
   // Appel explicite : le responsable propose (ou révise) un plan, enregistré comme nouvelle version non validée.
@@ -161,8 +199,9 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
     if (revision && !studio.currentPlan(missionId)) fail(400, 'Aucun plan à réviser : proposez d’abord un plan.');
     const members = [mission.assignedTo, ...mission.collaborators], nameOf = namer();
     const context = missionsPrompt([mission], mission.assignedTo, nameOf, (id) => studio.listMemory(id), (id) => studio.currentPlan(id));
+    const recalled = memoryFor(members, { missionId, query: `${mission.title} ${mission.objective ?? ''} ${revision}` }); // le plan est lu par toute l'équipe
     await stream(res, `mission:${missionId}`, 'Un agent travaille déjà sur cette mission.', profile, mission.assignedTo,
-      `${context}\n\n${planRequestPrompt(mission, studio.listDiscussion(missionId).slice(-50), nameOf, members, revision)}`,
+      `${recalled}${context}\n\n${planRequestPrompt(mission, studio.listDiscussion(missionId).slice(-50), nameOf, members, revision)}`,
       (text) => studio.savePlan(missionId, parsePlan(text, studio.listAgents()), { origin: 'ai', authorAgentId: mission.assignedTo, revisionNote: revision }));
   }
   async function teamReply(missionId, agentId, res) {
@@ -174,7 +213,23 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
     if (!items.length) fail(400, 'Écrivez d’abord un message dans le fil.');
     if (items.at(-1).agentId === agentId) fail(400, `${profile.displayName} vient déjà de répondre.`);
     const nameOf = namer(), context = missionsPrompt([mission], agentId, nameOf, (id) => studio.listMemory(id), (id) => studio.currentPlan(id));
-    await stream(res, `mission:${missionId}`, 'Un agent répond déjà dans ce fil.', profile, agentId, `${context}\n\n${teamPrompt(mission, items, nameOf, profile.displayName, members)}`, (text) => studio.saveDiscussionReply(missionId, agentId, text, 'claude'));
+    // Le fil est lu par tous ses membres : seul le souvenir que TOUS peuvent lire entre dans la réponse (rien de privé ne fuite).
+    const recalled = memoryFor(members, { missionId, query: `${mission.title} ${mission.objective ?? ''} ${items.slice(-3).map((m) => m.body).join(' ')}` });
+    await stream(res, `mission:${missionId}`, 'Un agent répond déjà dans ce fil.', profile, agentId, `${recalled}${context}\n\n${teamPrompt(mission, items, nameOf, profile.displayName, members)}`, (text) => studio.saveDiscussionReply(missionId, agentId, text, 'claude'));
+  }
+  // Fin de mission : l'agent (responsable ou collaborateur) PROPOSE des souvenirs, enregistrés « en attente » ; le propriétaire valide.
+  async function proposeMemory(missionId, input, res) {
+    if (!memory) fail(404, 'La mémoire n’est pas disponible.');
+    const mission = studio.getMission(missionId) ?? fail(404, 'Mission introuvable.');
+    const members = [mission.assignedTo, ...mission.collaborators].filter(Boolean);
+    const agentId = typeof input?.agentId === 'string' && input.agentId ? input.agentId : mission.assignedTo;
+    if (!agentId || !members.includes(agentId)) fail(403, 'Seuls le responsable et les collaborateurs de la mission proposent des souvenirs.');
+    const profile = profileOf(agentId), nameOf = namer();
+    const notes = studio.listMemory(missionId).filter((n) => !n.archivedAt).slice(0, 20);
+    const recalled = memoryFor(agentId, { missionId, query: `${mission.title} ${mission.objective ?? ''}` });
+    await stream(res, `mission:${missionId}`, 'Un agent travaille déjà sur cette mission.', profile, agentId,
+      `${recalled}${memoryProposalPrompt(mission, studio.listDiscussion(missionId).slice(-50), nameOf, notes, studio.currentPlan(missionId), profile.displayName)}`,
+      (text) => memory.propose(agentId, parseMemoryProposals(text), { missionId }));
   }
   return createServer(async (req, res) => {
     try {
@@ -187,6 +242,9 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
       const planMatch = req.method === 'POST' && url.pathname.match(/^\/api\/missions\/([^/]+)\/plan\/propose$/);
       if (planMatch) return await proposePlan(decodeURIComponent(planMatch[1]), await body(req), res);
       const hasBody = req.method === 'POST' || req.method === 'PUT';
+      if (MEMORY_PATH.test(url.pathname)) assertLocalWrite(req, { checkOrigin: req.method !== 'GET' });
+      const memMatch = req.method === 'POST' && url.pathname.match(/^\/api\/missions\/([^/]+)\/memory-proposals$/);
+      if (memMatch) return await proposeMemory(decodeURIComponent(memMatch[1]), await body(req), res);
       if (skills && req.method !== 'GET' && SKILL_PATH.test(url.pathname)) assertLocalWrite(req);
       if (routes[key]) return send(res, 200, await routes[key](hasBody ? await body(req) : undefined, url.searchParams));
       for (const [method, re, fn] of paramRoutes) { const m = req.method === method && url.pathname.match(re); if (m) return send(res, 200, await fn(m, hasBody ? await body(req) : undefined, url.searchParams)); }

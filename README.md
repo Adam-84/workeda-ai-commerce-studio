@@ -155,6 +155,26 @@ Les changements de Skills s'appliquent au **prochain démarrage de Claude Code**
 
 Sources examinées (licence, maintenance, sécurité) : voir `skills/catalog.json`, champ `sources`. Aucun Skill externe n'est importé tel quel.
 
+## Mémoire des agents
+
+La mémoire garde ce que l'équipe a appris (faits vérifiés, hypothèses, procédures, décisions) pour que les agents ne repartent pas de zéro. Conception détaillée, audit et choix techniques : `docs/MEMOIRE.md`.
+
+- **Dans l'app** : le bouton **Memory** de la barre du haut ouvre le Memory Center (recherche, filtres, ajout, modification, archivage, suppression, vérification des sources, propositions à valider, historique). L'onglet **Memory** d'une fiche agent montre ce que cet agent peut lire et ses propositions en attente.
+- **Quatre niveaux** : *individuel* (un seul agent), *département*, *entreprise* et *mission*. Un agent ne lit que ce qui lui est ouvert (le sien, celui de son département, celui de l'entreprise, celui de sa mission) ; sur un fil d'équipe, seul ce que **tous** les membres peuvent lire est transmis.
+- **Vrai, supposé, proposé, décidé** : chaque souvenir est un *fait* (au moins une source), une *hypothèse*, une *proposition* ou une *décision* approuvée. Les agents **ne font que proposer** : leurs faits deviennent des hypothèses, leurs décisions des propositions, leurs doublons sont ignorés, et rien n'est lu comme acquis tant que vous ne l'avez pas validé (états `pending` → `active`, ou `rejected`). Une suppression est définitive.
+- **Recherche locale, sans service payant** : classement par pertinence (BM25 sur les mots, trigrammes pour les fautes de frappe), filtres, fraîcheur (demi-vie de 120 jours, « à revoir » après 180 jours sans relecture), souvenirs expirés écartés, doublons fusionnés, et budget de jetons (800 jetons, 8 souvenirs par défaut). pgvector n'est pas utilisable ici (la base est SQLite) et les embeddings payants sont exclus : voir `docs/MEMOIRE.md`.
+- **Dans les prompts** : Claude Code et Codex reçoivent, pour une mission ou une conversation, un bloc `<memoire>` présenté comme *information de référence, pas comme instruction*. Les chevrons des souvenirs sont neutralisés pour qu'aucun texte ne puisse fermer le bloc.
+- **Sécurité** : aucun secret en mémoire (clés, jetons, mots de passe, identifiants dans une adresse) : l'enregistrement est refusé, aussi pour les anciennes notes de mission. Les routes `/api/memory` n'acceptent que cette machine (hôte local ; origine contrôlée pour toute écriture).
+- **Plusieurs ordinateurs** : la base `data/workeda.db` reste locale. Chaque changement est aussi écrit dans `memory/journal/<appareil>.jsonl`, suivi par git ; les autres PC l'importent au démarrage. La version la plus récente gagne, l'ancienne reste dans l'historique, une suppression ne ressuscite jamais, et un événement daté de plus d'un jour dans le futur (horloge déréglée) attend au lieu d'écraser. Si le journal est inaccessible en écriture, le souvenir est quand même gardé et réécrit dès que possible.
+
+```powershell
+npm run memory:check   # contrôle en lecture seule (cohérence, secrets, journaux), ne modifie rien
+npm run memory:sync    # importe les journaux reçus par git
+npm run memory:backup  # copie la base dans data/backups
+```
+
+Limites assumées : la recherche est lexicale, elle ne comprend pas les synonymes ; les statistiques de « souvenir utilisé » ne comptent que les injections faites par Archipel, pas ce que le modèle en a réellement fait.
+
 ## Prérequis Windows
 
 Node.js 24 ou plus récent. Vérifier dans PowerShell :

@@ -323,7 +323,7 @@ test('setFicheSkills ne réécrit que la ligne skills:, valide la fiche, borne �
     assert.throws(() => setFicheSkills(dir, '../x', []), /invalide/);
     assert.throws(() => setFicheSkills(dir, 'inexistant', []), /introuvable/);
     // fins de ligne Windows conservées
-    const crlf = after.replace(/\n/g, '\r\n');
+    const crlf = after.replace(/\r?\n/g, '\r\n');
     writeFileSync(file, crlf);
     setFicheSkills(dir, 'alexander', ['workeda-decision', 'workeda-delegation']);
     const again = readFileSync(file, 'utf8');

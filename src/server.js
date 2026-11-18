@@ -1,5 +1,5 @@
 import { mkdir } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStudio } from './studio.js';
 import { createApp } from './app.js';
@@ -8,7 +8,12 @@ import { createSkillManager } from './skills-manager.js';
 
 const dbFile = process.env.WORKEDA_DB || 'data/workeda.db';
 await mkdir(dirname(dbFile), { recursive: true });
-const studio = createStudio(dbFile);
+const root = fileURLToPath(new URL('..', import.meta.url));
+// Mémoire des agents : la base est locale, le journal memory/journal/<appareil>.jsonl voyage avec git (synchro entre PC).
+const studio = createStudio(dbFile, { memoryJournalDir: process.env.WORKEDA_MEMORY_JOURNAL || join(root, 'memory', 'journal') });
+const memorySync = studio.memory.importJournal();
+if (memorySync.applied) console.log(`Mémoire : ${memorySync.applied} changement(s) reçu(s) d'un autre ordinateur.`);
+for (const w of memorySync.warnings) console.warn(`Mémoire : ${w}`);
 
 // Fiches lues une seule fois : une modification demande de relancer npm start.
 const loaded = loadAgentFiles(fileURLToPath(new URL('../.claude/agents', import.meta.url)));
@@ -19,8 +24,7 @@ for (const w of warnings) console.warn(`Fiche ignorée : ${w.file} (${w.reason})
 
 // Bibliothèque de Skills : le disque (skills/) fait foi, la base n'en est que le reflet. Au démarrage on signale
 // seulement l'écart avec les copies générées ; « npm run skills:sync » ou une affectation dans l'interface les écrit.
-const root = fileURLToPath(new URL('..', import.meta.url));
-const skills = createSkillManager({ root, studio, profiles: loaded.profiles });
+const skills =createSkillManager({ root, studio, profiles: loaded.profiles });
 const boot = skills.startup();
 for (const p of boot.problems) console.warn(`Skills : ${p}`);
 const drift = boot.drift;

@@ -159,6 +159,29 @@ button.link{border:0;padding:0;background:none;color:var(--accent);font-weight:7
 #pop .skill-content{white-space:pre-wrap;overflow:auto;max-height:46vh;margin:8px 0 0;padding:10px;border:1px solid color-mix(in srgb,var(--text) 18%,transparent);border-radius:10px;font:12px/1.5 ui-monospace,Consolas,monospace}
 .skill-editor{width:100%;min-height:220px;font:12px/1.5 ui-monospace,Consolas,monospace;resize:vertical}
 .skills-center .row{position:static;border-top:0}
+/* Memory : Memory Center et onglet de la fiche agent (réutilise les composants Skills). */
+#memory-btn{font-weight:600;white-space:nowrap}
+#pop.agent-panel:has(.memory-center){width:min(720px,calc(100vw - 32px))}
+.memory-tab h3{margin-top:10px}
+.memory-filters{grid-template-columns:repeat(4,minmax(0,1fr))}
+.memory-filters label:first-child{grid-column:1/-1}
+.memory-pair{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.memory-form{display:grid;gap:8px}
+.memory-excerpt,.memory-body{white-space:pre-wrap;margin:0;overflow-wrap:anywhere}
+.memory-meta{display:grid;grid-template-columns:max-content 1fr;gap:2px 12px;margin:0;font-size:13px}
+.memory-meta dt{color:var(--soft);font-weight:600}.memory-meta dd{margin:0;overflow-wrap:anywhere}
+.memory-history{margin:0;padding-left:22px;font-size:13px;display:grid;gap:3px}
+.skill-row .chip.mem-fact{background:color-mix(in srgb,#2e9e5b 22%,transparent);color:var(--text)}
+.skill-row .chip.mem-decision{background:color-mix(in srgb,var(--accent) 24%,transparent);color:var(--text)}
+.skill-row .chip.mem-hypothesis,.skill-row .chip.mem-proposal{background:color-mix(in srgb,#d9a21b 24%,transparent);color:var(--text)}
+.skill-row .chip.mem-state.mem-pending{outline:1px dashed currentColor}
+.skill-row .chip.mem-state.mem-archived,.skill-row .chip.mem-state.mem-rejected{opacity:.7}
+.skills-center button.danger{color:color-mix(in srgb,#e5484d 65%,var(--text));border-color:currentColor}
+.memory-center label.check select{margin-left:6px}
+@media(max-width:700px){
+  .memory-filters,.memory-pair{grid-template-columns:1fr}
+  #memory-btn{flex:none;padding:6px 8px;min-height:36px}
+}
 @media(max-width:700px){
   #skills-btn{flex:none;padding:6px 8px;min-height:36px}
   .search-wrap{flex:1 1 0;min-width:0}#topbar #search{width:100%;min-width:0}

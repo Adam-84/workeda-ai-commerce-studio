@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { isValidAppearance } from '../public/sprites.js';
 import { isValidIslandStyle, normalizeIslandStyle } from '../public/island-style.js';
 import { SKILL_SCHEMA, createSkillStore } from './studio-skills.js';
+import { createMemoryStore } from './studio-memory.js';
+import { findSecret } from './memory-core.js';
 
 const DEPARTMENTS = [
   ['Direction', 'Pilotage et validations'], ['Catalogue', 'Produits et collections'],
@@ -52,7 +54,7 @@ const links = (list) => {
 };
 const mapMessage = (row) => ({ ...row, fromAgentId: row.from_agent_id, toAgentId: row.to_agent_id, missionId: row.mission_id });
 
-export function createStudio(filename = 'data/workeda.db') {
+export function createStudio(filename = 'data/workeda.db', options = {}) {
   const db = new DatabaseSync(filename);
   db.exec(`PRAGMA foreign_keys = ON;
     CREATE TABLE IF NOT EXISTS departments (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
@@ -139,11 +141,16 @@ export function createStudio(filename = 'data/workeda.db') {
   const memoryFields = (e) => {
     if (!MEMORY_KINDS.includes(e.kind)) throw bad('Type de note invalide.');
     const body = text(e.body, 'La note'); if (!body) throw bad('Écrivez la note avant de l’ajouter.');
+    const secret = findSecret(body); // ces notes sont relues par les agents : jamais de mot de passe, clé ou numéro sensible
+    if (secret) throw bad(`Cette note semble contenir ${secret} : retirez-le, la mémoire ne garde aucun secret.`);
     return { kind: e.kind, body, sourceAgentId: e.sourceAgentId ? agentRef(e.sourceAgentId) : null }; // source déclarée par la personne, pas par l'agent
   };
 
+  const memory = createMemoryStore(db, { filename, journalDir: options.memoryJournalDir ?? null, device: options.device ?? process.env.WORKEDA_DEVICE ?? null });
+
   return {
     ...createSkillStore(db),
+    memory,
     listDepartments: () => db.prepare('SELECT * FROM departments ORDER BY created_at').all().map(mapDepartment),
     createDepartment({ name, description = '' }) {
       if (!name?.trim()) throw new Error('Le nom du département est obligatoire.');
