@@ -1,8 +1,8 @@
 // Messages enregistrés ; les réponses viennent uniquement de Claude Code côté serveur, jamais simulées ici.
 const drafts = new Map();
-export const readReply = async (url, onEvent) => {
+export const readReply = async (url, onEvent, data) => {
   let res;
-  try { res = await fetch(url, { method: 'POST' }); } catch { throw new Error('Le Studio est injoignable : vérifiez qu’il tourne toujours.'); }
+  try { res = await fetch(url, data === undefined ? { method: 'POST' } : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(data) }); } catch { throw new Error('Le Studio est injoignable : vérifiez qu’il tourne toujours.'); }
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `Erreur ${res.status}.`);
   const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
   let buffer = '';

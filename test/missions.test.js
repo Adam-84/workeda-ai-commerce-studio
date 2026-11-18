@@ -48,6 +48,7 @@ test('an existing database keeps its agents, messages, looks and missions after 
     assert.deepEqual(studio.listMemory('m1'), []); // ancienne mission : mémoire vide
     assert.deepEqual(studio.listDiscussion('m1'), []); // et fil d'équipe vide
     assert.equal(studio.getInstructions('a1').updatedAt, null); // et aucune consigne
+    assert.equal(studio.currentPlan('m1'), null); // ni plan d'action
     studio.postDiscussion('m1', { body: 'Premier message du fil' });
     studio.addMemory('m1', { kind: 'decision', body: 'Garder la copie locale', sourceAgentId: 'a2' });
     studio.close();

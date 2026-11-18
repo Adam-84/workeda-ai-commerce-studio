@@ -4,7 +4,7 @@ import { existsSync, statSync, realpathSync } from 'node:fs';
 import { join, extname, resolve, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { connectorState } from './agent-files.js';
-import { runClaude as realClaude, systemPrompt, conversationPrompt, missionsPrompt, teamPrompt } from './claude-reply.js';
+import { runClaude as realClaude, systemPrompt, conversationPrompt, missionsPrompt, teamPrompt, planRequestPrompt, parsePlan } from './claude-reply.js';
 
 // Détection réelle d'un binaire dans le PATH (« détecté » ne veut pas dire « connecté »).
 export const cliPresent = (command, run = execFileSync) => {
@@ -72,6 +72,10 @@ export function createApp({ studio, publicDir, detect: rawDetect = cliPresent, r
     ['GET', /^\/api\/missions\/([^/]+)\/memory$/, (m) => studio.listMemory(decodeURIComponent(m[1]))],
     ['POST', /^\/api\/missions\/([^/]+)\/memory$/, (m, data) => studio.addMemory(decodeURIComponent(m[1]), data)],
     ['PUT', /^\/api\/missions\/([^/]+)\/memory\/([^/]+)$/, (m, data) => studio.updateMemory(decodeURIComponent(m[1]), decodeURIComponent(m[2]), data)],
+    ['GET', /^\/api\/missions\/([^/]+)\/plans$/, (m) => studio.listPlans(decodeURIComponent(m[1]))],
+    ['PUT', /^\/api\/missions\/([^/]+)\/plan$/, (m, data) => studio.savePlan(decodeURIComponent(m[1]), data)],
+    ['PUT', /^\/api\/missions\/([^/]+)\/plans\/([^/]+)\/steps\/([^/]+)$/, (m, data) => studio.setStepState(decodeURIComponent(m[1]), decodeURIComponent(m[2]), decodeURIComponent(m[3]), data?.state)],
+    ['POST', /^\/api\/missions\/([^/]+)\/plans\/([^/]+)\/decision$/, (m, data) => studio.decidePlan(decodeURIComponent(m[1]), decodeURIComponent(m[2]), data)],
     ['GET', /^\/api\/missions\/([^/]+)\/discussion$/, (m) => studio.listDiscussion(decodeURIComponent(m[1]))],
     ['POST', /^\/api\/missions\/([^/]+)\/discussion$/, (m, data) => studio.postDiscussion(decodeURIComponent(m[1]), data)],
     ['GET', /^\/api\/agents\/([^/]+)\/instructions$/, (m) => studio.getInstructions(decodeURIComponent(m[1]))],
@@ -102,10 +106,24 @@ export function createApp({ studio, publicDir, detect: rawDetect = cliPresent, r
     if (replying.has(agentId)) fail(409, `${profile.displayName} répond déjà à un message.`);
     const items = studio.listConversation(agentId).items.reverse(); // ponytail: contexte = 50 derniers messages, résumé si les échanges s'allongent
     if (items.at(-1)?.senderType !== 'user') fail(400, 'Aucun message en attente de réponse.');
-    const nameOf = namer(), context = missionsPrompt(studio.listMissions(), agentId, nameOf, (id) => studio.listMemory(id));
+    const nameOf = namer(), context = missionsPrompt(studio.listMissions(), agentId, nameOf, (id) => studio.listMemory(id), (id) => studio.currentPlan(id));
     await stream(res, agentId, `${profile.displayName} répond déjà à un message.`, profile, agentId, `${context}\n\n${conversationPrompt(items, nameOf, profile.displayName)}`, (text) => studio.saveAgentReply(agentId, text, 'claude'));
   }
   // Fil d'équipe : seul un membre désigné (responsable ou collaborateur) parle, une réponse à la fois par mission.
+  // Appel explicite : le responsable propose (ou révise) un plan, enregistré comme nouvelle version non validée.
+  async function proposePlan(missionId, input, res) {
+    const mission = studio.getMission(missionId) ?? fail(404, 'Mission introuvable.');
+    if (!mission.assignedTo) fail(400, 'Désignez d’abord un responsable : c’est lui qui propose le plan.');
+    const profile = profileOf(mission.assignedTo);
+    const revision = typeof input?.revision === 'string' ? input.revision.trim() : '';
+    if (revision.length > 2000) fail(400, 'Les indications : 2000 caractères au maximum.');
+    if (revision && !studio.currentPlan(missionId)) fail(400, 'Aucun plan à réviser : proposez d’abord un plan.');
+    const members = [mission.assignedTo, ...mission.collaborators], nameOf = namer();
+    const context = missionsPrompt([mission], mission.assignedTo, nameOf, (id) => studio.listMemory(id), (id) => studio.currentPlan(id));
+    await stream(res, `mission:${missionId}`, 'Un agent travaille déjà sur cette mission.', profile, mission.assignedTo,
+      `${context}\n\n${planRequestPrompt(mission, studio.listDiscussion(missionId).slice(-50), nameOf, members, revision)}`,
+      (text) => studio.savePlan(missionId, parsePlan(text, studio.listAgents()), { origin: 'ai', authorAgentId: mission.assignedTo, revisionNote: revision }));
+  }
   async function teamReply(missionId, agentId, res) {
     const mission = studio.getMission(missionId) ?? fail(404, 'Mission introuvable.');
     const members = [mission.assignedTo, ...mission.collaborators].filter(Boolean);
@@ -114,7 +132,7 @@ export function createApp({ studio, publicDir, detect: rawDetect = cliPresent, r
     const items = studio.listDiscussion(missionId).slice(-50); // ponytail: 50 derniers messages du fil
     if (!items.length) fail(400, 'Écrivez d’abord un message dans le fil.');
     if (items.at(-1).agentId === agentId) fail(400, `${profile.displayName} vient déjà de répondre.`);
-    const nameOf = namer(), context = missionsPrompt([mission], agentId, nameOf, (id) => studio.listMemory(id));
+    const nameOf = namer(), context = missionsPrompt([mission], agentId, nameOf, (id) => studio.listMemory(id), (id) => studio.currentPlan(id));
     await stream(res, `mission:${missionId}`, 'Un agent répond déjà dans ce fil.', profile, agentId, `${context}\n\n${teamPrompt(mission, items, nameOf, profile.displayName, members)}`, (text) => studio.saveDiscussionReply(missionId, agentId, text, 'claude'));
   }
   return createServer(async (req, res) => {
@@ -125,6 +143,8 @@ export function createApp({ studio, publicDir, detect: rawDetect = cliPresent, r
       if (replyMatch) return await reply(decodeURIComponent(replyMatch[1]), res);
       const teamMatch = req.method === 'POST' && url.pathname.match(/^\/api\/missions\/([^/]+)\/discussion\/reply\/([^/]+)$/);
       if (teamMatch) return await teamReply(decodeURIComponent(teamMatch[1]), decodeURIComponent(teamMatch[2]), res);
+      const planMatch = req.method === 'POST' && url.pathname.match(/^\/api\/missions\/([^/]+)\/plan\/propose$/);
+      if (planMatch) return await proposePlan(decodeURIComponent(planMatch[1]), await body(req), res);
       const hasBody = req.method === 'POST' || req.method === 'PUT';
       if (routes[key]) return send(res, 200, await routes[key](hasBody ? await body(req) : undefined, url.searchParams));
       for (const [method, re, fn] of paramRoutes) { const m = req.method === method && url.pathname.match(re); if (m) return send(res, 200, await fn(m, hasBody ? await body(req) : undefined, url.searchParams)); }

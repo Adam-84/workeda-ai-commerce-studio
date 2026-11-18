@@ -22,6 +22,9 @@ const MEMORY_KINDS = ['fact', 'decision', 'open'];
 // Consignes permanentes de l'utilisateur pour un agent : texte libre qui complète la fiche, sans jamais la réécrire.
 const INSTRUCTION_FIELDS = [['objective', 'L’objectif principal'], ['priorities', 'Les priorités'], ['preferences', 'Les préférences de travail'], ['limits', 'Les limites']];
 const mapInstructions = (r) => ({ agentId: r.agent_id, objective: r.objective, priorities: r.priorities, preferences: r.preferences, limits: r.limits, updatedAt: r.updated_at });
+// Plan d'action : chaque version est figée ; seul l'état des étapes (déclaré par l'utilisateur) évolue sur place.
+export const STEP_STATES = ['todo', 'doing', 'blocked', 'done'];
+const MAX_STEPS = 30;
 const mapTeamMessage = (r) => ({ id: r.id, missionId: r.mission_id, agentId: r.agent_id, body: r.body, source: r.source, createdAt: r.created_at });
 const mapMemory = (r) => ({ id: r.id, missionId: r.mission_id, kind: r.kind, body: r.body, sourceAgentId: r.source_agent_id, createdAt: r.created_at, updatedAt: r.updated_at, archivedAt: r.archived_at });
 const bad = (message) => Object.assign(new Error(message), { status: 400 });
@@ -69,6 +72,8 @@ export function createStudio(filename = 'data/workeda.db') {
     CREATE INDEX IF NOT EXISTS mission_memory_mission_time ON mission_memory(mission_id, created_at);
     CREATE TABLE IF NOT EXISTS mission_discussion (id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id), agent_id TEXT REFERENCES agents(id), body TEXT NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS mission_discussion_mission_time ON mission_discussion(mission_id, created_at);
+    CREATE TABLE IF NOT EXISTS mission_plans (id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id), version INTEGER NOT NULL, origin TEXT NOT NULL, author_agent_id TEXT REFERENCES agents(id), revision_note TEXT NOT NULL DEFAULT '', steps TEXT NOT NULL, missing TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, UNIQUE (mission_id, version));
+    CREATE TABLE IF NOT EXISTS plan_decisions (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES mission_plans(id), decision TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS agent_instructions (agent_id TEXT PRIMARY KEY REFERENCES agents(id), objective TEXT NOT NULL DEFAULT '', priorities TEXT NOT NULL DEFAULT '', preferences TEXT NOT NULL DEFAULT '', limits TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL);
   `);
   const tx = (fn) => { db.exec('BEGIN'); try { const result = fn(); db.exec('COMMIT'); return result; } catch (e) { if (db.isTransaction) db.exec('ROLLBACK'); throw e; } };
@@ -109,6 +114,24 @@ export function createStudio(filename = 'data/workeda.db') {
     return { title, priority, assignedTo, collaborators, objective: text(m.objective, 'L’objectif'), expectedResult: text(m.expectedResult, 'Le résultat attendu'), contextText: text(m.contextText, 'Le contexte'), contextLinks: links(m.contextLinks), constraints: text(m.constraints, 'Les contraintes'), validations: text(m.validations, 'Les validations'), requiresApproval: m.requiresApproval !== false };
   };
   const getInstructions = (agentId) => { requireAgent(agentId); return one('SELECT * FROM agent_instructions WHERE agent_id = ?', agentId, mapInstructions) ?? { agentId, objective: '', priorities: '', preferences: '', limits: '', updatedAt: null }; };
+  const decisionsOf = (planId) => db.prepare('SELECT decision, note, created_at FROM plan_decisions WHERE plan_id = ? ORDER BY created_at, rowid').all(planId).map((d) => ({ decision: d.decision, note: d.note, createdAt: d.created_at }));
+  const mapPlan = (r) => {
+    const decisions = decisionsOf(r.id), last = decisions.at(-1);
+    return { id: r.id, missionId: r.mission_id, version: r.version, origin: r.origin, authorAgentId: r.author_agent_id, revisionNote: r.revision_note, steps: JSON.parse(r.steps), missing: r.missing, createdAt: r.created_at, decisions, status: last?.decision ?? 'proposed', decidedAt: last?.createdAt ?? null };
+  };
+  const latestPlan = (missionId) => { const r = db.prepare('SELECT * FROM mission_plans WHERE mission_id = ? ORDER BY version DESC LIMIT 1').get(missionId); return r ? mapPlan(r) : null; };
+  const planSteps = (list, previous = []) => {
+    if (!Array.isArray(list)) throw bad('Les étapes doivent être une liste.');
+    if (list.length > MAX_STEPS) throw bad(`${MAX_STEPS} étapes au maximum.`);
+    const known = new Map(previous.map((s) => [s.id, s]));
+    return list.map((s, i) => {
+      if (!s || typeof s !== 'object') throw bad(`Étape ${i + 1} invalide.`);
+      const action = text(s.action, `Étape ${i + 1}, action`, 500); if (!action) throw bad(`Étape ${i + 1} : l’action est obligatoire.`);
+      const state = s.state ?? known.get(s.id)?.state ?? 'todo'; if (!STEP_STATES.includes(state)) throw bad(`Étape ${i + 1} : état invalide.`);
+      const id = typeof s.id === 'string' && /^[\da-f-]{36}$/.test(s.id) ? s.id : randomUUID();
+      return { id, action, agentId: s.agentId ? agentRef(s.agentId) : null, expected: text(s.expected, `Étape ${i + 1}, résultat attendu`, 1000), prerequisites: text(s.prerequisites, `Étape ${i + 1}, prérequis`, 1000), state, stateUpdatedAt: state === known.get(id)?.state ? known.get(id).stateUpdatedAt ?? null : null };
+    });
+  };
   const requireMission = (id) => { if (!one('SELECT id FROM missions WHERE id = ?', id)) throw Object.assign(new Error('Mission introuvable.'), { status: 404 }); };
   const getMemory = (id) => one('SELECT * FROM mission_memory WHERE id = ?', id, mapMemory);
   const memoryFields = (e) => {
@@ -213,6 +236,36 @@ export function createStudio(filename = 'data/workeda.db') {
     },
     getMission: (id) => getMission(id),
     getInstructions,
+    // Plan d'action. Toute modification du contenu crée une nouvelle version ; les versions précédentes et leurs décisions restent.
+    listPlans(missionId) { requireMission(missionId); return db.prepare('SELECT * FROM mission_plans WHERE mission_id = ? ORDER BY version DESC').all(missionId).map(mapPlan); },
+    currentPlan(missionId) { requireMission(missionId); return latestPlan(missionId); },
+    savePlan(missionId, input = {}, { origin = 'user', authorAgentId = null, revisionNote = '' } = {}) {
+      requireMission(missionId);
+      const previous = latestPlan(missionId), steps = planSteps(input?.steps, previous?.steps);
+      if (!steps.length) throw bad('Le plan doit contenir au moins une étape.');
+      const id = randomUUID(), version = (previous?.version ?? 0) + 1;
+      db.prepare('INSERT INTO mission_plans (id, mission_id, version, origin, author_agent_id, revision_note, steps, missing, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, missionId, version, origin === 'ai' ? 'ai' : 'user', authorAgentId, text(revisionNote, 'Les indications', 2000), JSON.stringify(steps), text(input?.missing, 'Les informations manquantes', 4000), now());
+      return mapPlan(db.prepare('SELECT * FROM mission_plans WHERE id = ?').get(id));
+    },
+    // Avancement déclaré par l'utilisateur, sur la version courante seulement ; ne crée pas de version.
+    setStepState(missionId, planId, stepId, state) {
+      const plan = latestPlan(missionId);
+      if (!plan || plan.id !== planId) throw Object.assign(new Error('Seule la version courante du plan peut être suivie.'), { status: 409 });
+      if (!STEP_STATES.includes(state)) throw bad('État invalide.');
+      const step = plan.steps.find((s) => s.id === stepId); if (!step) throw Object.assign(new Error('Étape introuvable.'), { status: 404 });
+      step.state = state; step.stateUpdatedAt = now();
+      db.prepare('UPDATE mission_plans SET steps = ? WHERE id = ?').run(JSON.stringify(plan.steps), planId);
+      return latestPlan(missionId);
+    },
+    // Décision de l'utilisateur sur une version précise. Elle ne lance rien et n'accorde aucune permission.
+    decidePlan(missionId, planId, { decision, note = '' } = {}) {
+      const plan = latestPlan(missionId);
+      if (!plan || plan.id !== planId) throw Object.assign(new Error('Cette version n’est plus la version courante : décidez sur la dernière.'), { status: 409 });
+      if (!['validated', 'rejected'].includes(decision)) throw bad('Décision invalide.');
+      db.prepare('INSERT INTO plan_decisions (id, plan_id, decision, note, created_at) VALUES (?, ?, ?, ?, ?)').run(randomUUID(), planId, decision, text(note, 'Le commentaire', 2000), now());
+      return latestPlan(missionId);
+    },
     // Un champ absent garde sa valeur ; un champ vide l'efface. Aucune permission n'en découle : seul le texte de consigne change.
     setInstructions(agentId, input = {}) {
       const existing = getInstructions(agentId), v = Object.fromEntries(INSTRUCTION_FIELDS.map(([k, label]) => [k, text((input ?? {})[k] ?? existing[k], label, 2000)]));

@@ -1,6 +1,7 @@
 // public/missions.js — onglet Missions d'un agent : liste, fiche, création et modification.
 // Enregistrer une mission ne sollicite aucun agent et n'appelle aucune IA ; seul le fil d'équipe fait répondre les agents désignés.
 import { readReply } from './conversation.js';
+import { planBlock } from './plan.js';
 export const PRIORITY_LABELS = { low: 'Basse', normal: 'Normale', high: 'Haute', urgent: 'Urgente' };
 const STATE_LABELS = { draft: 'Brouillon' };
 const MEMORY_LABELS = { fact: 'Fait', decision: 'Décision', open: 'Point ouvert' };
@@ -41,6 +42,7 @@ export function missionsTab({ agent, agents, missions, save, get, send, announce
         h('p', { class: 'note' }, 'Liens enregistrés comme simples références : leur contenu n’a pas été consulté.')],
       block('Contraintes', m.constraints),
       block('Validations nécessaires', m.validations),
+      planBlock({ mission: m, agents, get, send, announce, h, canReply }),
       memory.el, teamBlock(m, memory),
       h('p', { class: 'note mission-dates' }, `Créée le ${date(m.created_at)}${m.updatedAt ? ` · modifiée le ${date(m.updatedAt)}` : ''}`),
       h('div', { class: 'row' }, h('button', { type: 'button', class: 'primary', onclick: () => edit(m) }, 'Modifier'), h('button', { type: 'button', onclick: list }, 'Retour à la liste')));
