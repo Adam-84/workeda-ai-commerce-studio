@@ -182,3 +182,19 @@ select,fieldset{color:var(--text)}
 #pop .consignes dd{margin:0;font-size:13px}
 #pop .instructions textarea{width:100%;resize:vertical}
 #pop .instructions>button{margin-top:10px}
+/* Plan d'action d'une mission */
+#pop .mission-plan{margin-top:16px;padding-top:2px;border-top:1px solid color-mix(in srgb,var(--text) 15%,transparent);display:grid;gap:8px}
+.plan-version{border:1px solid var(--border);border-radius:10px;padding:10px;display:grid;gap:6px}
+.plan-version.current{border-color:var(--accent)}
+#pop .plan-head{font-size:12px;color:var(--soft)}#pop .plan-head strong{color:var(--text)}
+#pop .plan-warning{font-size:12px;font-weight:600;color:var(--err)}
+#pop .plan-steps,#pop .plan-editor{margin:0;padding-left:20px;list-style:decimal;display:grid;gap:8px}
+.plan-step,.plan-edit-step{display:grid;gap:3px}
+.plan-step.done>p:first-child{text-decoration:line-through;text-decoration-color:var(--soft)}
+#pop .plan-state{display:flex;gap:6px;align-items:center;font-size:12px}
+.plan-edit-step{border:1px solid var(--border);border-radius:10px;padding:8px}
+.mission-plan textarea{width:100%;resize:vertical}
+.mission-plan button:disabled,.mission-plan select:disabled{opacity:.55;cursor:default}
+.plan-actions{display:grid;gap:6px}
+#pop .mission-plan details{margin-top:4px}
+#pop .mission-plan details .plan-version{margin-top:8px}

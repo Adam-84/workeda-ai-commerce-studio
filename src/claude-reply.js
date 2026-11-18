@@ -40,7 +40,19 @@ export function systemPrompt(p, instructions = null) {
 
 // Missions confiées à l'agent (responsable, collaborateur ou demandeur) et leur mémoire non archivée → texte de contexte.
 // memory(missionId) renvoie les notes de la plus récente à la plus ancienne.
-export function missionsPrompt(missions, agentId, names, memory) {
+const STEP_STATE = { todo: 'à faire', doing: 'en cours', blocked: 'bloquée', done: 'terminée' };
+
+// Plan courant → texte. Une proposition n'est jamais présentée comme une décision ; une validation n'autorise rien.
+export function planPrompt(plan, names) {
+  if (!plan) return 'Plan d’action : aucun plan pour le moment.';
+  const status = plan.status === 'validated' ? `VALIDÉ par l'utilisateur le ${plan.decidedAt} (cette validation ne lance aucune étape et n'accorde aucun outil ni accès)`
+    : plan.status === 'rejected' ? `REFUSÉ par l'utilisateur le ${plan.decidedAt}${plan.decisions.at(-1).note ? ` (motif : ${plan.decisions.at(-1).note})` : ''}`
+    : 'PROPOSITION NON VALIDÉE : ne la présente jamais comme une décision';
+  const steps = plan.steps.map((s, i) => `${i + 1}. ${s.action} — responsable : ${s.agentId ? names(s.agentId) : 'à désigner'} ; état : ${STEP_STATE[s.state] ?? s.state}${s.expected ? ` ; résultat attendu : ${s.expected}` : ''}${s.prerequisites ? ` ; prérequis : ${s.prerequisites}` : ''}`);
+  return `Plan d'action, version ${plan.version} — ${status}. Les états des étapes sont déclarés par l'utilisateur.\n${steps.join('\n')}${plan.missing ? `\nInformations manquantes signalées : ${plan.missing}` : ''}`;
+}
+
+export function missionsPrompt(missions, agentId, names, memory, plan = () => null) {
   const roleOf = (m) => (m.assigned_to === agentId ? 'responsable' : m.collaborators.includes(agentId) ? 'collaborateur' : m.requested_by === agentId ? 'demandeur' : null);
   const mine = missions.filter((m) => roleOf(m) && !['done', 'cancelled'].includes(m.state)).slice(0, MAX_MISSIONS);
   if (!mine.length) return 'Missions : aucune mission ne t’est confiée dans le Studio pour le moment.';
@@ -57,10 +69,36 @@ export function missionsPrompt(missions, agentId, names, memory) {
       m.validations && `Validations nécessaires : ${m.validations}`,
       notes.length
         ? `Mémoire (notes saisies à la main par l'utilisateur, la plus récente d'abord ; la source est déclarée, pas vérifiée) :\n${notes.map((n) => `- [${n.createdAt}${n.updatedAt ? `, corrigée ${n.updatedAt}` : ''}] ${KIND[n.kind] ?? n.kind} (source : ${n.sourceAgentId ? names(n.sourceAgentId) : 'l’utilisateur'}) : ${n.body}`).join('\n')}`
-        : 'Mémoire : aucune note.'
+        : 'Mémoire : aucune note.',
+      planPrompt(plan(m.id), names)
     ].filter(Boolean).join('\n');
   });
   return `Tes missions enregistrées dans le Studio :\n\n${blocks.join('\n\n')}`;
+}
+
+// Demande explicite au responsable : proposer (ou réviser) un plan, en JSON strict.
+export function planRequestPrompt(mission, discussion, names, members, revision = '') {
+  const thread = discussion.map((m) => `[${m.createdAt}] ${m.agentId ? names(m.agentId) : 'Utilisateur'} : ${m.body}`).join('\n');
+  return `${thread ? `Échanges de la discussion d'équipe de cette mission :\n${thread}\n\n` : ''}` +
+    `${revision ? `L'utilisateur demande une révision du plan courant avec ces indications :\n${revision}\n\n` : ''}` +
+    `Prépare une PROPOSITION de plan d'action pour la mission « ${mission.title} », à partir de son objectif, de ses contraintes, de sa mémoire et de ces échanges. Ce n'est qu'une proposition : l'utilisateur la validera ou non, et rien ne sera exécuté.\n` +
+    `Chaque étape a une action précise, un agent responsable choisi parmi : ${members.map(names).join(', ')}, le résultat attendu et les éventuels prérequis. N'invente aucune donnée : liste dans "missing" les informations qui manquent pour avancer.\n` +
+    `Réponds uniquement avec un objet JSON, sans texte autour ni Markdown :\n{"steps":[{"action":"…","agent":"Prénom","expected":"…","prerequisites":"…"}],"missing":["…"]}`;
+}
+
+// Réponse du modèle → étapes du Studio. Un prénom inconnu laisse l'étape sans responsable et le signale.
+export function parsePlan(textOut, agents) {
+  const start = textOut.indexOf('{'), end = textOut.lastIndexOf('}');
+  let data; try { data = JSON.parse(textOut.slice(start, end + 1)); } catch { throw new Error('Le plan reçu n’est pas lisible. Redemandez une proposition.'); }
+  if (!Array.isArray(data.steps) || !data.steps.length) throw new Error('Le plan reçu ne contient aucune étape. Redemandez une proposition.');
+  const byName = new Map(agents.map((a) => [a.name.toLocaleLowerCase('fr'), a.id]));
+  const missing = (Array.isArray(data.missing) ? data.missing : [data.missing]).filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim());
+  const steps = data.steps.map((s) => {
+    const agentId = byName.get(String(s?.agent ?? '').trim().toLocaleLowerCase('fr')) ?? null;
+    if (!agentId && s?.agent) missing.push(`Responsable « ${s.agent} » inconnu pour l’étape « ${s.action} » : à désigner.`);
+    return { action: String(s?.action ?? ''), agentId, expected: String(s?.expected ?? ''), prerequisites: String(s?.prerequisites ?? '') };
+  });
+  return { steps, missing: missing.map((x) => `- ${x}`).join('\n') };
 }
 
 // Fil d'équipe d'une mission (du plus ancien au plus récent) → consigne pour l'agent désigné.
