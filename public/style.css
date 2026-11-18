@@ -141,3 +141,15 @@ select,fieldset{color:var(--text)}
   .chat-key-hint{display:none}
   .chat-composer-actions{justify-content:flex-end}
 }
+/* Onglet Missions : liste, fiche et formulaire */
+#pop h3.mission-title{margin:8px 0 4px;font-size:18px;text-transform:none;letter-spacing:0;color:var(--text);outline:none}
+#pop .missions h4{margin:14px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--soft)}
+#pop .mission-list{margin:8px 0 12px}
+.mission-list button{width:100%;display:grid;gap:3px;text-align:left;padding:10px 12px}
+.mission-list button:hover{background:color-mix(in srgb,var(--text) 8%,transparent)}
+#pop label.check{display:flex;gap:8px;align-items:center;color:var(--text);font-size:13px}
+.mission-collab{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:6px 12px}
+.missions textarea{width:100%;resize:vertical}
+#pop .missions a{color:inherit;text-decoration:underline;overflow-wrap:anywhere}
+#pop .mission-dates{margin-top:14px}
+#pop .row .err{flex-basis:100%}#pop .row .err:empty{display:none}

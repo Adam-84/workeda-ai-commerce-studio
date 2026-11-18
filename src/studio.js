@@ -14,7 +14,32 @@ const now = () => new Date().toISOString();
 const asBoolean = (value) => Boolean(value);
 const mapDepartment = (row) => ({ ...row, enabled: asBoolean(row.enabled) });
 const mapAgent = (row) => ({ ...row, enabled: asBoolean(row.enabled), statusSource: row.status_source });
-const mapMission = (row) => ({ ...row, requiresApproval: asBoolean(row.requires_approval) });
+const mapMission = ({ expected_result, context_text, context_links, updated_at, ...row }, collaborators = []) => ({ ...row, requiresApproval: asBoolean(row.requires_approval), assignedTo: row.assigned_to, requestedBy: row.requested_by, expectedResult: expected_result, contextText: context_text, contextLinks: JSON.parse(context_links), updatedAt: updated_at, collaborators });
+// Colonnes ajoutées aux missions existantes (ajout seul, valeurs par défaut : les anciennes missions restent lisibles).
+const MISSION_COLUMNS = [['objective', "TEXT NOT NULL DEFAULT ''"], ['priority', "TEXT NOT NULL DEFAULT 'normal'"], ['expected_result', "TEXT NOT NULL DEFAULT ''"], ['context_text', "TEXT NOT NULL DEFAULT ''"], ['context_links', "TEXT NOT NULL DEFAULT '[]'"], ['constraints', "TEXT NOT NULL DEFAULT ''"], ['validations', "TEXT NOT NULL DEFAULT ''"], ['updated_at', 'TEXT']];
+const PRIORITIES = ['low', 'normal', 'high', 'urgent'];
+const bad = (message) => Object.assign(new Error(message), { status: 400 });
+const text = (value, label, max = 4000) => {
+  if (value == null) return '';
+  if (typeof value !== 'string') throw bad(`${label} : texte attendu.`);
+  if (value.trim().length > max) throw bad(`${label} : ${max} caractères au maximum.`);
+  return value.trim();
+};
+// Un lien n'est qu'une référence enregistrée : il n'est jamais ouvert ni lu par le serveur.
+const links = (list) => {
+  if (list == null) return [];
+  if (!Array.isArray(list)) throw bad('Les liens doivent être une liste.');
+  const out = [];
+  for (const raw of list) {
+    const s = typeof raw === 'string' ? raw.trim() : '';
+    if (!s && typeof raw === 'string') continue;
+    let url = null; try { url = new URL(s); } catch {}
+    if (!url || !['http:', 'https:'].includes(url.protocol) || s.length > 2048) throw bad(`Lien invalide : « ${s.slice(0, 80)} ». Indiquez une adresse complète commençant par http:// ou https://.`);
+    if (!out.includes(url.href)) out.push(url.href);
+  }
+  if (out.length > 20) throw bad('20 liens au maximum.');
+  return out;
+};
 const mapMessage = (row) => ({ ...row, fromAgentId: row.from_agent_id, toAgentId: row.to_agent_id, missionId: row.mission_id });
 
 export function createStudio(filename = 'data/workeda.db') {
@@ -33,7 +58,12 @@ export function createStudio(filename = 'data/workeda.db') {
     CREATE INDEX IF NOT EXISTS user_messages_agent_time ON user_messages(agent_id, created_at, id);
     CREATE TABLE IF NOT EXISTS agent_replies (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), body TEXT NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS agent_replies_agent_time ON agent_replies(agent_id, created_at, id);
+    CREATE TABLE IF NOT EXISTS mission_collaborators (mission_id TEXT NOT NULL REFERENCES missions(id), agent_id TEXT NOT NULL REFERENCES agents(id), PRIMARY KEY (mission_id, agent_id));
   `);
+  const tx = (fn) => { db.exec('BEGIN'); try { const result = fn(); db.exec('COMMIT'); return result; } catch (e) { if (db.isTransaction) db.exec('ROLLBACK'); throw e; } };
+  const have = new Set(db.prepare('PRAGMA table_info(missions)').all().map((c) => c.name));
+  const missing = MISSION_COLUMNS.filter(([name]) => !have.has(name));
+  if (missing.length) tx(() => { for (const [name, type] of missing) db.exec(`ALTER TABLE missions ADD COLUMN ${name} ${type}`); });
   const seeded = db.prepare('SELECT COUNT(*) AS count FROM departments').get().count;
   if (seeded === 0) {
     const insert = db.prepare('INSERT INTO departments (id, name, description, created_at) VALUES (?, ?, ?, ?)');
@@ -51,6 +81,22 @@ export function createStudio(filename = 'data/workeda.db') {
 
   const mapIslandStyle = (r) => ({ departmentId: r.department_id, label: r.label, accent: r.accent, floor: r.floor, wall: r.wall, emblem: r.emblem, tree: r.tree, ground: r.ground, lanterns: r.lanterns === null ? null : Boolean(r.lanterns), updatedAt: r.updated_at });
   const requireDepartment = (id) => { const d = one('SELECT id, name FROM departments WHERE id = ?', id); if (!d) throw Object.assign(new Error('Département introuvable.'), { status: 404 }); return d; };
+
+  const getMission = (id) => one('SELECT * FROM missions WHERE id = ?', id, (r) => mapMission(r, db.prepare('SELECT agent_id FROM mission_collaborators WHERE mission_id = ? ORDER BY rowid').all(id).map((c) => c.agent_id)));
+  const setCollaborators = (id, agentIds) => {
+    db.prepare('DELETE FROM mission_collaborators WHERE mission_id = ?').run(id);
+    const add = db.prepare('INSERT INTO mission_collaborators (mission_id, agent_id) VALUES (?, ?)');
+    for (const agentId of agentIds) add.run(id, agentId);
+  };
+  const agentRef = (id) => { if (typeof id !== 'string') throw bad('Agent invalide.'); requireAgent(id); return id; };
+  const missionFields = (m) => {
+    const title = text(m.title, 'Le titre', 120); if (!title) throw bad('Le titre de mission est obligatoire.');
+    const priority = m.priority ?? 'normal'; if (!PRIORITIES.includes(priority)) throw bad('Priorité invalide.');
+    const assignedTo = m.assignedTo ? agentRef(m.assignedTo) : null;
+    if (m.collaborators != null && !Array.isArray(m.collaborators)) throw bad('Les collaborateurs doivent être une liste.');
+    const collaborators = [...new Set(m.collaborators ?? [])].filter((c) => c !== assignedTo).map(agentRef); // le responsable n'est pas aussi collaborateur
+    return { title, priority, assignedTo, collaborators, objective: text(m.objective, 'L’objectif'), expectedResult: text(m.expectedResult, 'Le résultat attendu'), contextText: text(m.contextText, 'Le contexte'), contextLinks: links(m.contextLinks), constraints: text(m.constraints, 'Les contraintes'), validations: text(m.validations, 'Les validations'), requiresApproval: m.requiresApproval !== false };
+  };
 
   return {
     listDepartments: () => db.prepare('SELECT * FROM departments ORDER BY created_at').all().map(mapDepartment),
@@ -89,13 +135,33 @@ export function createStudio(filename = 'data/workeda.db') {
       return one('SELECT * FROM agents WHERE id = ?', agentId, mapAgent);
     },
     listEvents: (agentId) => db.prepare('SELECT * FROM events WHERE agent_id = ? ORDER BY rowid DESC').all(agentId),
-    createMission({ title, requestedBy = null, assignedTo = null, requiresApproval = true }) {
-      if (!title?.trim()) throw new Error('Le titre de mission est obligatoire.');
-      const id = randomUUID(); db.prepare('INSERT INTO missions (id, title, requested_by, assigned_to, requires_approval, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(id, title.trim(), requestedBy, assignedTo, Number(requiresApproval), now());
-      if (assignedTo) emit(assignedTo, 'mission.assigned', title.trim(), 'manual', true);
-      return one('SELECT * FROM missions WHERE id = ?', id, mapMission);
+    // Enregistrement seul : créer ou modifier une mission ne sollicite aucun agent ni aucune IA.
+    createMission(input = {}) {
+      const m = missionFields(input), id = randomUUID();
+      tx(() => {
+        db.prepare('INSERT INTO missions (id, title, requested_by, assigned_to, requires_approval, created_at, objective, priority, expected_result, context_text, context_links, constraints, validations) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+          .run(id, m.title, input.requestedBy ?? null, m.assignedTo, Number(m.requiresApproval), now(), m.objective, m.priority, m.expectedResult, m.contextText, JSON.stringify(m.contextLinks), m.constraints, m.validations);
+        setCollaborators(id, m.collaborators);
+      });
+      if (m.assignedTo) emit(m.assignedTo, 'mission.assigned', m.title, 'manual', true);
+      return getMission(id);
     },
-    listMissions: () => db.prepare('SELECT * FROM missions ORDER BY created_at DESC').all().map(mapMission),
+    updateMission(id, input = {}) {
+      const existing = getMission(id); if (!existing) throw Object.assign(new Error('Mission introuvable.'), { status: 404 });
+      const m = missionFields({ ...existing, ...input });
+      tx(() => {
+        db.prepare('UPDATE missions SET title=?, assigned_to=?, requires_approval=?, objective=?, priority=?, expected_result=?, context_text=?, context_links=?, constraints=?, validations=?, updated_at=? WHERE id=?')
+          .run(m.title, m.assignedTo, Number(m.requiresApproval), m.objective, m.priority, m.expectedResult, m.contextText, JSON.stringify(m.contextLinks), m.constraints, m.validations, now(), id);
+        setCollaborators(id, m.collaborators);
+      });
+      if (m.assignedTo) emit(m.assignedTo, m.assignedTo === existing.assignedTo ? 'mission.updated' : 'mission.assigned', m.title, 'manual', true);
+      return getMission(id);
+    },
+    listMissions: () => {
+      const team = new Map();
+      for (const r of db.prepare('SELECT mission_id, agent_id FROM mission_collaborators ORDER BY rowid').all()) team.set(r.mission_id, [...(team.get(r.mission_id) ?? []), r.agent_id]);
+      return db.prepare('SELECT * FROM missions ORDER BY created_at DESC').all().map((r) => mapMission(r, team.get(r.id)));
+    },
     sendMessage({ fromAgentId, toAgentId, missionId = null, body }) {
       if (!body?.trim()) throw new Error('Le message est obligatoire.');
       const id = randomUUID(); db.prepare('INSERT INTO messages (id, from_agent_id, to_agent_id, mission_id, body, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(id, fromAgentId, toAgentId, missionId, body.trim(), now());
