@@ -82,7 +82,7 @@ export function missionsTab({ agent, agents, missions, save, get, send, announce
     function render(entries) {
       const live = entries.filter((e) => !e.archivedAt), old = entries.filter((e) => e.archivedAt);
       box.replaceChildren(h('h4', {}, 'Mémoire de la mission'),
-        h('p', { class: 'note' }, 'Notes datées saisies à la main. Aucun agent ne les lit pour l’instant.'),
+        h('p', { class: 'note' }, 'Notes datées saisies à la main. Les agents de la mission les lisent quand ils vous répondent dans Discussion (notes archivées exclues).'),
         noteForm({ kind: 'fact', sourceAgentId: null, body: '' }, 'Ajouter à la mémoire', async (data) => {
           await send('POST', base, data); announce('Note ajoutée à la mémoire'); await load(); box.querySelector('textarea')?.focus();
         }),

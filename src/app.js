@@ -4,7 +4,7 @@ import { existsSync, statSync, realpathSync } from 'node:fs';
 import { join, extname, resolve, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { connectorState } from './agent-files.js';
-import { REPLY_AGENTS, runClaude as realClaude, systemPrompt, conversationPrompt } from './claude-reply.js';
+import { runClaude as realClaude, systemPrompt, conversationPrompt, missionsPrompt } from './claude-reply.js';
 
 // Détection réelle d'un binaire dans le PATH (« détecté » ne veut pas dire « connecté »).
 export const cliPresent = (command, run = execFileSync) => {
@@ -42,7 +42,7 @@ export function createApp({ studio, publicDir, detect: rawDetect = cliPresent, r
       return list.map((p) => ({
         agentId: ids.get(p.slug), slug: p.slug, displayName: p.displayName, model: p.model, tools: p.tools,
         connectors: p.connectors.map((id) => ({ id, state: connectorState(id, detect) })),
-        collaboratesAll: p.collaboratesAll, replies: REPLY_AGENTS.has(p.slug),
+        collaboratesAll: p.collaboratesAll,
         collaborates: p.collaborates.map((slug) => ({ slug, agentId: ids.get(slug) ?? null })),
         sections: p.sections
       }));
@@ -82,16 +82,17 @@ export function createApp({ studio, publicDir, detect: rawDetect = cliPresent, r
   async function reply(agentId, res) {
     const { ids, list } = linked();
     const profile = list.find((p) => ids.get(p.slug) === agentId);
-    if (!profile || !REPLY_AGENTS.has(profile.slug)) throw Object.assign(new Error('Les réponses IA ne sont activées que pour Lucas pour le moment.'), { status: 403 });
+    if (!profile) throw Object.assign(new Error('Cet agent n’a pas de fiche dans .claude/agents : il ne peut pas répondre.'), { status: 403 });
     if (replying.has(agentId)) throw Object.assign(new Error(`${profile.displayName} répond déjà à un message.`), { status: 409 });
     const items = studio.listConversation(agentId).items.reverse(); // ponytail: contexte = 50 derniers messages, résumé si les échanges s'allongent
     if (items.at(-1)?.senderType !== 'user') throw Object.assign(new Error('Aucun message en attente de réponse.'), { status: 400 });
-    const names = new Map(studio.listAgents().map((a) => [a.id, a.name]));
+    const names = new Map(studio.listAgents().map((a) => [a.id, a.name])), nameOf = (id) => names.get(id) ?? 'Agent';
+    const context = missionsPrompt(studio.listMissions(), agentId, nameOf, (id) => studio.listMemory(id));
     replying.add(agentId);
     res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store' });
     const line = (data) => { if (!res.writableEnded) res.write(JSON.stringify(data) + '\n'); };
     try {
-      const text = await runClaude({ model: profile.model, system: systemPrompt(profile), prompt: conversationPrompt(items, (id) => names.get(id) ?? 'Agent', profile.displayName), onText: (t) => line({ type: 'text', text: t }) });
+      const text = await runClaude({ model: profile.model, system: systemPrompt(profile), prompt: `${context}\n\n${conversationPrompt(items, nameOf, profile.displayName)}`, onText: (t) => line({ type: 'text', text: t }) });
       line({ type: 'done', message: studio.saveAgentReply(agentId, text, 'claude') }); // enregistré même si le panneau a été fermé
     } catch (error) { line({ type: 'error', error: error.message }); }
     finally { replying.delete(agentId); res.end(); }

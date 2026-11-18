@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { createStudio } from '../src/studio.js';
 import { createApp } from '../src/app.js';
 import { loadAgentFiles } from '../src/agent-files.js';
-import { runClaude, claudeArgs } from '../src/claude-reply.js';
+import { runClaude, claudeArgs, missionsPrompt, MAX_MISSIONS } from '../src/claude-reply.js';
 
 // Faux processus pour vérifier la lecture du flux ; l'appel réel est vérifié séparément sur une base temporaire.
 const fakeSpawn = (lines, code = 0) => (command, args) => {
@@ -61,7 +61,10 @@ test('reply route streams, saves the reply and passes the fiche and history', ()
   let seen;
   const runner = async (opts) => { seen = opts; opts.onText('Bon'); opts.onText('jour'); return 'Bonjour'; };
   return withLucas(runner, async ({ studio, base, lucas, olivia }) => {
-    assert.equal((await post(`${base}/api/agents/${olivia}/reply`)).status, 403);
+    const manual = studio.hireAgent({ name: 'Zoé', role: 'Recrutée à la main', departmentId: studio.listDepartments()[0].id });
+    await post(`${base}/api/agents/${manual.id}/conversation`, { body: 'Bonjour' });
+    assert.equal((await post(`${base}/api/agents/${manual.id}/reply`)).status, 403); // sans fiche, pas de réponse
+    assert.equal((await post(`${base}/api/agents/${olivia}/reply`)).status, 400); // les autres agents répondent aussi ; ici rien à répondre
     assert.equal((await post(`${base}/api/agents/${lucas}/reply`)).status, 400); // rien à répondre
     await post(`${base}/api/agents/${lucas}/conversation`, { body: 'Audite la fiche du tapis' });
     const res = await post(`${base}/api/agents/${lucas}/reply`);
@@ -89,3 +92,41 @@ test('a failed call keeps the user message and stores no reply', () => withLucas
   assert.deepEqual(events, [{ type: 'error', error: 'Claude n’a pas pu répondre : panne' }]);
   assert.deepEqual(studio.listConversation(lucas).items.map((m) => m.senderType), ['user']);
 }));
+
+test('every agent with a fiche answers with its own fiche, model, missions and memory', () => {
+  let seen;
+  const runner = async (opts) => { seen = opts; return 'Réponse'; };
+  return withLucas(runner, async ({ studio, base, lucas, olivia }) => {
+    const alexander = studio.listAgentFiles().find((l) => l.slug === 'alexander').agentId;
+    const mine = studio.createMission({ title: 'Point hebdo', assignedTo: olivia, collaborators: [lucas], priority: 'high', objective: 'Lister les blocages', contextLinks: ['https://exemple.fr/note'], constraints: 'Lecture seule' });
+    studio.addMemory(mine.id, { kind: 'decision', body: 'Le point se fait le lundi', sourceAgentId: lucas });
+    const old = studio.addMemory(mine.id, { kind: 'fact', body: 'Note périmée' });
+    studio.updateMemory(mine.id, old.id, { archived: true });
+    studio.createMission({ title: 'Mission d’un autre', assignedTo: alexander });
+    await post(`${base}/api/agents/${olivia}/conversation`, { body: 'Où en est le point hebdo ?' });
+    const events = (await (await post(`${base}/api/agents/${olivia}/reply`)).text()).trim().split('\n').map((l) => JSON.parse(l));
+    assert.equal(events.at(-1).type, 'done');
+    assert.match(seen.system, /Coordinatrice des missions/);
+    assert.match(seen.system, /ne peux pas contacter les autres agents/);
+    assert.match(seen.prompt, /Mission « Point hebdo » \(ton rôle : responsable ; priorité haute/);
+    assert.match(seen.prompt, /collaborateurs : Lucas/);
+    assert.match(seen.prompt, /Liens de référence \(non consultés, tu ne peux pas les ouvrir\) :\n- https:\/\/exemple\.fr\/note/);
+    assert.match(seen.prompt, /Décision \(source : Lucas\) : Le point se fait le lundi/);
+    assert.doesNotMatch(seen.prompt, /Note périmée/); // archivée
+    assert.doesNotMatch(seen.prompt, /Mission d’un autre/);
+    assert.match(seen.prompt, /Où en est le point hebdo \?/);
+    await post(`${base}/api/agents/${alexander}/conversation`, { body: 'Bonjour' });
+    await (await post(`${base}/api/agents/${alexander}/reply`)).text();
+    assert.equal(seen.model, 'opus'); // le modèle de sa fiche
+    assert.match(seen.prompt, /Mission « Mission d’un autre » \(ton rôle : responsable/);
+    assert.equal(studio.listConversation(olivia).items[0].body, 'Réponse');
+  });
+});
+
+test('mission context says when nothing is assigned and keeps a bounded size', () => {
+  assert.match(missionsPrompt([], 'a', () => 'X', () => []), /aucune mission/);
+  const many = Array.from({ length: MAX_MISSIONS + 5 }, (_, i) => ({ id: `m${i}`, title: `M${i}`, assigned_to: 'a', collaborators: [], state: 'draft', priority: 'normal', contextLinks: [], requiresApproval: true }));
+  const text = missionsPrompt(many, 'a', () => 'X', () => []);
+  assert.equal(text.match(/Mission « /g).length, MAX_MISSIONS);
+  assert.match(text, /Mémoire : aucune note\./);
+});
