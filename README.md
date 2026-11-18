@@ -21,7 +21,7 @@ Archipel isométrique à l'échelle 1:1 (personnages 64×64) : la place centrale
 - **Mini-plan** (bas droite) : un clic recentre la carte sur une île.
 - **Pastille au-dessus d'un bâtiment** : agents, missions, recrutement.
 - **Parcelle « + »** : recruter un agent (nom, rôle, département prérempli, puis confirmation). Il entre par la porte et rejoint son bureau.
-- **Personnage** : onglets Discussion, Missions, Profil (statut et source), Apparence et Activité.
+- **Personnage** : onglets Discussion, Missions, Profil (statut et source), Apparence, Activité et Skills.
 - **Barre du bas** : donner une mission à un agent (crée une vraie mission, validation requise).
 - **Recherche** (barre du haut) : met en évidence les agents dont le nom ou le rôle correspond et liste jusqu’à 8 résultats ; les autres agents restent visibles.
 
@@ -88,7 +88,7 @@ Ce MVP ne se connecte pas à Shopify, ne modifie aucun thème, ne modifie aucun 
 
 ### Discussion avec un personnage
 
-Un clic sur un personnage ouvre un panneau avec Discussion, Missions, Profil, Apparence et Activité. Sur petit écran, ce panneau occupe tout l'écran.
+Un clic sur un personnage ouvre un panneau avec Discussion, Missions, Profil, Apparence, Activité et Skills. Sur petit écran, ce panneau occupe tout l'écran.
 
 Dans Discussion, vous écrivez en tant que **Vous**, avec des bulles et un horodatage. Les anciens messages entre agents restent visibles avec leur expéditeur et leur destinataire. Les messages utilisateur sont conservés dans la nouvelle table `user_messages` ; aucune table existante n'est réécrite.
 
@@ -134,6 +134,26 @@ Au premier démarrage, dix agents sont recrutés à partir de leur fiche dans `.
 - Route de lecture : `GET /api/agent-profiles`. `GET /api/health` indique aussi `agentFiles` (fiches chargées, fiches ignorées).
 
 Les fiches s'inspirent des agents du dépôt [msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents), sous licence MIT. Elles sont réécrites pour Workeda : aucun fichier n'est copié.
+
+## Skills des agents
+
+Un Skill est un dossier `skills/<nom>/SKILL.md` : des consignes en texte, rien d'autre. La bibliothèque contient 19 Skills Workeda, répartis entre les dix agents (deux par agent), et un fichier `skills/catalog.json` (catégories, versions, métiers, dépendances, sources examinées).
+
+- **Dans l'app** : le bouton **Skills** de la barre du haut ouvre le centre Skills (bibliothèque avec recherche et filtres, détail, création, modification avec nouvelle version, archivage, import GitHub, état des copies). L'onglet **Skills** d'une fiche agent liste ses Skills préchargés, des suggestions pour son métier et les Skills disponibles.
+- **Qui fait foi** : le dossier `skills/` et la ligne `skills: [...]` de chaque fiche `.claude/agents/<agent>.md` (quatre Skills au plus par agent). La base SQLite n'en est que le reflet : aucune table existante n'est modifiée, chaque PC la reconstruit depuis le dépôt, donc la synchronisation entre ordinateurs passe par git.
+- **Claude Code et Codex** : `.claude/skills/` (Skills préchargés par au moins un agent) et `.agents/skills/` (tous les Skills actifs) sont des copies générées, marquées `.archipel-managed`. Un dossier sans ce marqueur n'est jamais écrasé et rien n'est supprimé. Quand un Skill est archivé, bloqué ou n'est plus préchargé, sa copie générée est désactivée (son `SKILL.md` devient `SKILL.md.inactive`, donc plus lu par les outils) ; elle est réactivée si le Skill redevient voulu. Un Skill refusé par l'analyse de sécurité ou invalide pour l'un des deux outils n'est jamais copié. Un éditeur ouvert avant une autre modification ne peut pas l'écraser (erreur 409 : rouvrez le Skill).
+- **Jetons** : seuls les Skills listés dans la fiche d'un agent sont chargés à son démarrage. Les chiffres affichés sont une estimation (caractères ÷ 4), pas une mesure faite par un modèle.
+- **Sécurité** : un Skill ne donne ni outil ni permission. Archipel ne télécharge de l'import que le fichier `SKILL.md` (https, hôtes GitHub, 64 Ko au plus), ne lance aucun script, refuse les contenus signalés « bloquant » et n'écrase jamais un Skill existant. L'import se fait en deux temps : un aperçu sans rien écrire, puis la confirmation. Les actions d'écriture n'acceptent que les requêtes locales.
+- **Statistiques d'usage** : elles ne viennent que de déclarations manuelles ; Archipel n'exécute aucun agent et ne peut pas mesurer l'usage réel.
+
+```powershell
+npm run skills:check   # contrôle sans rien écrire (Skills, fiches, dépendances, copies)
+npm run skills:sync    # régénère .claude/skills et .agents/skills
+```
+
+Les changements de Skills s'appliquent au **prochain démarrage de Claude Code** : la liste des agents est lue au lancement. Pour vérifier qu'un agent utilise bien ses Skills, relancez Claude Code dans ce dossier, demandez par exemple « Isabella, calcule la marge d'un produit à 25 € acheté 9 € » et contrôlez que la réponse suit la méthode du Skill `workeda-calcul-marge` (formule et hypothèses affichées). Sous Codex, lancez `/skills` pour voir ceux du dépôt. Cette vérification se fait dans ces outils : l'app ne peut pas la prouver à leur place.
+
+Sources examinées (licence, maintenance, sécurité) : voir `skills/catalog.json`, champ `sources`. Aucun Skill externe n'est importé tel quel.
 
 ## Prérequis Windows
 

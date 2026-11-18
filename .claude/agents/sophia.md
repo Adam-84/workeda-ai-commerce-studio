@@ -8,6 +8,7 @@ role: Analyste de marché e-commerce
 department: Laboratoire
 collaborates: noah, lucas, alexander
 connectors: web
+skills: [workeda-etude-marche, workeda-sources-fiables]
 ---
 
 ## Métier

@@ -7,6 +7,7 @@ display_name: Alexander
 role: Directeur général IA
 department: Direction
 collaborates: tous
+skills: [workeda-delegation, workeda-decision]
 ---
 
 ## Métier

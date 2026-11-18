@@ -8,6 +8,7 @@ role: Responsable catalogue Shopify
 department: Catalogue
 collaborates: isabella, chloe, benjamin
 connectors: shopify-admin
+skills: [workeda-audit-catalogue, workeda-merchandising]
 ---
 
 ## Métier

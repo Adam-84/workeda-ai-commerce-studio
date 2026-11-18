@@ -8,6 +8,7 @@ role: Responsable contrôle qualité
 department: Opérations
 collaborates: ryan, chloe, alexander
 connectors: shopify-cli, playwright
+skills: [workeda-controle-livrable, workeda-qa-accessibilite]
 ---
 
 ## Métier

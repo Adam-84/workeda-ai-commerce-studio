@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { isValidAppearance } from '../public/sprites.js';
 import { isValidIslandStyle, normalizeIslandStyle } from '../public/island-style.js';
+import { SKILL_SCHEMA, createSkillStore } from './studio-skills.js';
 
 const DEPARTMENTS = [
   ['Direction', 'Pilotage et validations'], ['Catalogue', 'Produits et collections'],
@@ -80,6 +81,7 @@ export function createStudio(filename = 'data/workeda.db') {
   const have = new Set(db.prepare('PRAGMA table_info(missions)').all().map((c) => c.name));
   const missing = MISSION_COLUMNS.filter(([name]) => !have.has(name));
   if (missing.length) tx(() => { for (const [name, type] of missing) db.exec(`ALTER TABLE missions ADD COLUMN ${name} ${type}`); });
+  db.exec(SKILL_SCHEMA);
   const seeded = db.prepare('SELECT COUNT(*) AS count FROM departments').get().count;
   if (seeded === 0) {
     const insert = db.prepare('INSERT INTO departments (id, name, description, created_at) VALUES (?, ?, ?, ?)');
@@ -141,6 +143,7 @@ export function createStudio(filename = 'data/workeda.db') {
   };
 
   return {
+    ...createSkillStore(db),
     listDepartments: () => db.prepare('SELECT * FROM departments ORDER BY created_at').all().map(mapDepartment),
     createDepartment({ name, description = '' }) {
       if (!name?.trim()) throw new Error('Le nom du département est obligatoire.');

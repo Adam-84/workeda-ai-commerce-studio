@@ -8,6 +8,7 @@ role: Analyste des performances commerciales
 department: Données
 collaborates: alexander, lucas, isabella
 connectors: shopify-admin
+skills: [workeda-kpi-ecommerce, workeda-rapport-statistique]
 ---
 
 ## Métier

@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "skills:check": "node src/skills-cli.js check",
+    "skills:sync": "node src/skills-cli.js sync"
   },
   "engines": {
     "node": ">=24"

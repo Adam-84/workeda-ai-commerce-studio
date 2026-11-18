@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { createStudio } from './studio.js';
 import { createApp } from './app.js';
 import { loadAgentFiles } from './agent-files.js';
+import { createSkillManager } from './skills-manager.js';
 
 const dbFile = process.env.WORKEDA_DB || 'data/workeda.db';
 await mkdir(dirname(dbFile), { recursive: true });
@@ -16,8 +17,17 @@ const warnings = [...loaded.warnings, ...synced.warnings];
 if (synced.created.length) console.log(`Agents recrutés depuis .claude/agents : ${synced.created.join(', ')}`);
 for (const w of warnings) console.warn(`Fiche ignorée : ${w.file} (${w.reason})`);
 
+// Bibliothèque de Skills : le disque (skills/) fait foi, la base n'en est que le reflet. Au démarrage on signale
+// seulement l'écart avec les copies générées ; « npm run skills:sync » ou une affectation dans l'interface les écrit.
+const root = fileURLToPath(new URL('..', import.meta.url));
+const skills = createSkillManager({ root, studio, profiles: loaded.profiles });
+const boot = skills.startup();
+for (const p of boot.problems) console.warn(`Skills : ${p}`);
+const drift = boot.drift;
+if (!drift.inSync || drift.conflict.length) console.warn(`Skills : copies Claude Code / Codex à régénérer (« npm run skills:sync »), ${drift.missing.length} absente(s), ${drift.outdated.length} périmée(s), ${drift.conflict.length} dossier(s) non géré(s).`);
+
 const port = Number(process.env.PORT || 4318);
-const server = createApp({ studio, publicDir: fileURLToPath(new URL('../public', import.meta.url)), agentFiles: { profiles: loaded.profiles, warnings } });
+const server = createApp({ studio, skills, publicDir: fileURLToPath(new URL('../public', import.meta.url)), agentFiles: { profiles: loaded.profiles, warnings } });
 server.on('error', (e) => {
   if (e.code !== 'EADDRINUSE') throw e;
   console.error(`Le port ${port} est déjà utilisé : le studio tourne peut-être déjà. Fermez l'autre fenêtre ou choisissez un autre port avec PORT.`);
