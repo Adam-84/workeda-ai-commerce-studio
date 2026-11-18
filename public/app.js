@@ -11,6 +11,7 @@ import { OPTIONS as ISLAND_OPTIONS, LABELS_FR, LABEL_MAX, normalizeIslandStyle, 
 import { connectorText, modelLabel, colleagues, ignoredText, helpLine, FULL_SECTIONS } from './agent-profile.js';
 import { createConversation } from './conversation.js';
 import { missionsTab } from './missions.js';
+import { instructionsBlock } from './instructions.js';
 
 const $ = (s) => document.querySelector(s);
 const get = (p) => fetch(p).then(async (r) => { const d = await r.json(); if (!r.ok) throw new Error(d.error); return d; });
@@ -443,6 +444,7 @@ const TABS = {
   Profil: (a) => h('div', {},
     h('div', { class: 'status' }, `${STATUS_LABELS[a.status] || a.status} · source : ${a.statusSource}`),
     a.statusSource === 'manual' && h('p', { style: 'margin-top:6px' }, 'Statut déclaré manuellement : aucun connecteur n’a vérifié d’activité.'),
+    instructionsBlock({ agent: a, replies: state.profiles.has(a.id), get, send, announce, h }),
     state.profiles.has(a.id) && profileBlock(state.profiles.get(a.id)),
     ),
   Apparence: (a) => {

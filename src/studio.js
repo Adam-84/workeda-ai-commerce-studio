@@ -19,6 +19,9 @@ const mapMission = ({ expected_result, context_text, context_links, updated_at, 
 const MISSION_COLUMNS = [['objective', "TEXT NOT NULL DEFAULT ''"], ['priority', "TEXT NOT NULL DEFAULT 'normal'"], ['expected_result', "TEXT NOT NULL DEFAULT ''"], ['context_text', "TEXT NOT NULL DEFAULT ''"], ['context_links', "TEXT NOT NULL DEFAULT '[]'"], ['constraints', "TEXT NOT NULL DEFAULT ''"], ['validations', "TEXT NOT NULL DEFAULT ''"], ['updated_at', 'TEXT']];
 const PRIORITIES = ['low', 'normal', 'high', 'urgent'];
 const MEMORY_KINDS = ['fact', 'decision', 'open'];
+// Consignes permanentes de l'utilisateur pour un agent : texte libre qui complète la fiche, sans jamais la réécrire.
+const INSTRUCTION_FIELDS = [['objective', 'L’objectif principal'], ['priorities', 'Les priorités'], ['preferences', 'Les préférences de travail'], ['limits', 'Les limites']];
+const mapInstructions = (r) => ({ agentId: r.agent_id, objective: r.objective, priorities: r.priorities, preferences: r.preferences, limits: r.limits, updatedAt: r.updated_at });
 const mapTeamMessage = (r) => ({ id: r.id, missionId: r.mission_id, agentId: r.agent_id, body: r.body, source: r.source, createdAt: r.created_at });
 const mapMemory = (r) => ({ id: r.id, missionId: r.mission_id, kind: r.kind, body: r.body, sourceAgentId: r.source_agent_id, createdAt: r.created_at, updatedAt: r.updated_at, archivedAt: r.archived_at });
 const bad = (message) => Object.assign(new Error(message), { status: 400 });
@@ -66,6 +69,7 @@ export function createStudio(filename = 'data/workeda.db') {
     CREATE INDEX IF NOT EXISTS mission_memory_mission_time ON mission_memory(mission_id, created_at);
     CREATE TABLE IF NOT EXISTS mission_discussion (id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id), agent_id TEXT REFERENCES agents(id), body TEXT NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS mission_discussion_mission_time ON mission_discussion(mission_id, created_at);
+    CREATE TABLE IF NOT EXISTS agent_instructions (agent_id TEXT PRIMARY KEY REFERENCES agents(id), objective TEXT NOT NULL DEFAULT '', priorities TEXT NOT NULL DEFAULT '', preferences TEXT NOT NULL DEFAULT '', limits TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL);
   `);
   const tx = (fn) => { db.exec('BEGIN'); try { const result = fn(); db.exec('COMMIT'); return result; } catch (e) { if (db.isTransaction) db.exec('ROLLBACK'); throw e; } };
   const have = new Set(db.prepare('PRAGMA table_info(missions)').all().map((c) => c.name));
@@ -104,6 +108,7 @@ export function createStudio(filename = 'data/workeda.db') {
     const collaborators = [...new Set(m.collaborators ?? [])].filter((c) => c !== assignedTo).map(agentRef); // le responsable n'est pas aussi collaborateur
     return { title, priority, assignedTo, collaborators, objective: text(m.objective, 'L’objectif'), expectedResult: text(m.expectedResult, 'Le résultat attendu'), contextText: text(m.contextText, 'Le contexte'), contextLinks: links(m.contextLinks), constraints: text(m.constraints, 'Les contraintes'), validations: text(m.validations, 'Les validations'), requiresApproval: m.requiresApproval !== false };
   };
+  const getInstructions = (agentId) => { requireAgent(agentId); return one('SELECT * FROM agent_instructions WHERE agent_id = ?', agentId, mapInstructions) ?? { agentId, objective: '', priorities: '', preferences: '', limits: '', updatedAt: null }; };
   const requireMission = (id) => { if (!one('SELECT id FROM missions WHERE id = ?', id)) throw Object.assign(new Error('Mission introuvable.'), { status: 404 }); };
   const getMemory = (id) => one('SELECT * FROM mission_memory WHERE id = ?', id, mapMemory);
   const memoryFields = (e) => {
@@ -207,6 +212,16 @@ export function createStudio(filename = 'data/workeda.db') {
       return one('SELECT * FROM mission_discussion WHERE id = ?', id, mapTeamMessage);
     },
     getMission: (id) => getMission(id),
+    getInstructions,
+    // Un champ absent garde sa valeur ; un champ vide l'efface. Aucune permission n'en découle : seul le texte de consigne change.
+    setInstructions(agentId, input = {}) {
+      const existing = getInstructions(agentId), v = Object.fromEntries(INSTRUCTION_FIELDS.map(([k, label]) => [k, text((input ?? {})[k] ?? existing[k], label, 2000)]));
+      db.prepare(`INSERT INTO agent_instructions (agent_id, objective, priorities, preferences, limits, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(agent_id) DO UPDATE SET objective = excluded.objective, priorities = excluded.priorities, preferences = excluded.preferences, limits = excluded.limits, updated_at = excluded.updated_at`)
+        .run(agentId, v.objective, v.priorities, v.preferences, v.limits, now());
+      emit(agentId, 'agent.instructions.updated', 'Consignes modifiées.', 'manual', true);
+      return getInstructions(agentId);
+    },
     listMissions: () => {
       const team = new Map();
       for (const r of db.prepare('SELECT mission_id, agent_id FROM mission_collaborators ORDER BY rowid').all()) team.set(r.mission_id, [...(team.get(r.mission_id) ?? []), r.agent_id]);
