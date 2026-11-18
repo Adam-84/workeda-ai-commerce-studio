@@ -45,7 +45,12 @@ test('an existing database keeps its agents, messages, looks and missions after 
     assert.equal(edited.title, 'Ancienne mission'); // les champs non envoyés restent intacts
     assert.deepEqual(edited.collaborators, ['a2']);
     assert.equal(studio.listMessages('m1').length, 1);
+    assert.deepEqual(studio.listMemory('m1'), []); // ancienne mission : mémoire vide
+    studio.addMemory('m1', { kind: 'decision', body: 'Garder la copie locale', sourceAgentId: 'a2' });
     studio.close();
+    const reopened = createStudio(file);
+    assert.equal(reopened.listMemory('m1')[0].body, 'Garder la copie locale');
+    reopened.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -85,6 +90,50 @@ test('creating and editing a mission over HTTP never calls the AI', async () => 
     assert.deepEqual([edited.status, edited.data.expectedResult, edited.data.contextLinks], [200, 'Liste priorisée', ['https://exemple.fr/']]);
     assert.equal((await call('PUT', '/api/missions/inconnue', { title: 'T' })).status, 404);
     assert.equal((await call('PUT', `/api/missions/${created.data.id}`, { contextLinks: ['ftp://x'] })).status, 400);
+    assert.equal(aiCalls, 0);
+  } finally { await new Promise((r) => server.close(r)); studio.close(); }
+});
+
+test('mission memory: dated typed notes that are corrected or archived, never erased', () => {
+  const studio = createStudio(':memory:');
+  const harper = studio.hireAgent({ name: 'Harper', role: 'Test', departmentId: studio.listDepartments()[0].id });
+  const m = studio.createMission({ title: 'Audit' }), other = studio.createMission({ title: 'Autre' });
+  const fact = studio.addMemory(m.id, { kind: 'fact', body: ' 12 fiches sans image ' });
+  const said = studio.addMemory(m.id, { kind: 'open', body: 'Qui valide les visuels ?', sourceAgentId: harper.id });
+  assert.deepEqual([fact.body, fact.sourceAgentId, fact.updatedAt, fact.archivedAt], ['12 fiches sans image', null, null, null]);
+  assert.deepEqual(studio.listMemory(m.id).map((e) => e.id), [said.id, fact.id]); // la plus récente d'abord
+  assert.equal(studio.updateMemory(m.id, fact.id, { body: '12 fiches sans image' }).updatedAt, null); // rien changé : pas « corrigée »
+  const fixed = studio.updateMemory(m.id, fact.id, { body: '14 fiches sans image', kind: 'decision' });
+  assert.deepEqual([fixed.body, fixed.kind], ['14 fiches sans image', 'decision']); assert.ok(fixed.updatedAt);
+  const archived = studio.updateMemory(m.id, said.id, { archived: true, body: 'ignoré' });
+  assert.ok(archived.archivedAt); assert.equal(archived.body, 'Qui valide les visuels ?');
+  assert.equal(studio.updateMemory(m.id, said.id, { archived: true }).archivedAt, archived.archivedAt); // date d'archivage conservée
+  assert.equal(studio.updateMemory(m.id, said.id, { archived: false }).archivedAt, null);
+  assert.equal(studio.listMemory(m.id).length, 2);
+  assert.deepEqual(studio.listMemory(other.id), []);
+  for (const input of [{ kind: 'fact', body: ' ' }, { kind: 'rumeur', body: 'x' }, { kind: 'fact', body: 'x'.repeat(4001) }, { kind: 'fact', body: 'x', sourceAgentId: 'inconnu' }, { kind: 'fact', body: 5 }])
+    assert.throws(() => studio.addMemory(m.id, input));
+  assert.throws(() => studio.addMemory('inconnue', { kind: 'fact', body: 'x' }), /Mission introuvable/);
+  assert.throws(() => studio.updateMemory(other.id, fact.id, { body: 'x' }), /Note introuvable/); // une note reste dans sa mission
+  studio.close();
+});
+
+test('mission memory over HTTP, without any AI call', async () => {
+  const studio = createStudio(':memory:');
+  let aiCalls = 0;
+  const server = createApp({ studio, publicDir: fileURLToPath(new URL('../public', import.meta.url)), detect: () => true, runClaude: async () => { aiCalls++; return ''; } });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const call = (method, path, data) => fetch(`http://127.0.0.1:${server.address().port}${path}`, { method, headers: { 'content-type': 'application/json' }, body: data && JSON.stringify(data) }).then(async (r) => ({ status: r.status, data: await r.json() }));
+  try {
+    const mission = studio.createMission({ title: 'Audit' });
+    const base = `/api/missions/${mission.id}/memory`;
+    const added = await call('POST', base, { kind: 'fact', body: 'Note' });
+    assert.equal(added.status, 200);
+    assert.equal((await call('PUT', `${base}/${added.data.id}`, { body: 'Note corrigée' })).data.body, 'Note corrigée');
+    assert.ok((await call('PUT', `${base}/${added.data.id}`, { archived: true })).data.archivedAt);
+    assert.deepEqual((await call('GET', base)).data.map((e) => e.body), ['Note corrigée']);
+    assert.equal((await call('GET', '/api/missions/inconnue/memory')).status, 404);
+    assert.equal((await call('POST', base, { kind: 'fact', body: '' })).status, 400);
     assert.equal(aiCalls, 0);
   } finally { await new Promise((r) => server.close(r)); studio.close(); }
 });

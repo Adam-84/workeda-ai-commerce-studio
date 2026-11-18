@@ -2,11 +2,12 @@
 // Enregistrer une mission ne sollicite aucun agent et n'appelle aucune IA.
 export const PRIORITY_LABELS = { low: 'Basse', normal: 'Normale', high: 'Haute', urgent: 'Urgente' };
 const STATE_LABELS = { draft: 'Brouillon' };
+const MEMORY_LABELS = { fact: 'Fait', decision: 'Décision', open: 'Point ouvert' };
 const date = (iso) => new Date(iso).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' });
 const BLANK = { title: '', objective: '', collaborators: [], priority: 'normal', expectedResult: '', contextText: '', contextLinks: [], constraints: '', validations: '', requiresApproval: true };
 
 // missions : () => liste à jour ; save(method, path, data) enregistre puis recharge l'état, et renvoie la mission.
-export function missionsTab({ agent, agents, missions, save, announce, h }) {
+export function missionsTab({ agent, agents, missions, save, get, send, announce, h }) {
   const root = h('div', { class: 'missions' });
   const nameOf = (id) => agents.find((a) => a.id === id)?.name ?? 'Agent inconnu';
   const field = (label, control, hint) => h('label', {}, label, control, hint && h('span', { class: 'note' }, hint));
@@ -38,8 +39,59 @@ export function missionsTab({ agent, agents, missions, save, announce, h }) {
         h('p', { class: 'note' }, 'Liens enregistrés comme simples références : leur contenu n’a pas été consulté.')],
       block('Contraintes', m.constraints),
       block('Validations nécessaires', m.validations),
+      memoryBlock(m),
       h('p', { class: 'note mission-dates' }, `Créée le ${date(m.created_at)}${m.updatedAt ? ` · modifiée le ${date(m.updatedAt)}` : ''}`),
       h('div', { class: 'row' }, h('button', { type: 'button', class: 'primary', onclick: () => edit(m) }, 'Modifier'), h('button', { type: 'button', onclick: list }, 'Retour à la liste')));
+  }
+
+  // Mémoire : notes datées saisies à la main ; corriger ou archiver, jamais effacer.
+  function memoryBlock(m) {
+    const box = h('section', { class: 'mission-memory', 'aria-label': 'Mémoire de la mission' }, h('h4', {}, 'Mémoire de la mission'), h('p', { class: 'note' }, 'Chargement…'));
+    const base = `/api/missions/${encodeURIComponent(m.id)}/memory`, status = h('p', { class: 'err', role: 'alert' });
+    const load = () => get(base).then(render).catch((x) => box.replaceChildren(h('h4', {}, 'Mémoire de la mission'), h('p', { class: 'err' }, x.message)));
+    const noteForm = (v, label, submit, cancel) => {
+      const err = h('p', { class: 'err', role: 'alert' }), btn = h('button', { type: 'submit', class: 'primary' }, label);
+      const f = h('form', { class: 'memory-form', onsubmit: async (e) => {
+        e.preventDefault(); err.textContent = ''; btn.disabled = true;
+        const fd = new FormData(f);
+        try { await submit({ kind: fd.get('kind'), sourceAgentId: fd.get('sourceAgentId') || null, body: fd.get('body') }); } catch (x) { err.textContent = x.message; btn.disabled = false; }
+      } },
+        h('div', { class: 'memory-pick' },
+          field('Type', h('select', { name: 'kind' }, Object.entries(MEMORY_LABELS).map(([k, l]) => h('option', { value: k, selected: k === v.kind }, l)))),
+          field('Source', h('select', { name: 'sourceAgentId' }, h('option', { value: '' }, 'Vous'), agents.map((a) => h('option', { value: a.id, selected: a.id === v.sourceAgentId }, a.name))))),
+        field('Note', h('textarea', { name: 'body', rows: 2, maxlength: 4000, required: true }, v.body)),
+        h('div', { class: 'memory-actions' }, btn, cancel && h('button', { type: 'button', onclick: cancel }, 'Annuler'), err));
+      return f;
+    };
+    const item = (e) => {
+      const li = h('li', { class: e.archivedAt ? 'memory-entry archived' : 'memory-entry' },
+        h('p', { class: 'memory-meta' }, h('strong', {}, MEMORY_LABELS[e.kind] ?? e.kind),
+          ` · ${date(e.createdAt)} · source : ${e.sourceAgentId ? nameOf(e.sourceAgentId) : 'vous'}, saisie manuelle${e.updatedAt ? ` · corrigée le ${date(e.updatedAt)}` : ''}${e.archivedAt ? ` · archivée le ${date(e.archivedAt)}` : ''}`),
+        h('p', { class: 'pre' }, e.body),
+        h('div', { class: 'memory-actions' },
+          !e.archivedAt && h('button', { type: 'button', onclick: () => {
+            li.replaceChildren(noteForm(e, 'Enregistrer la correction', async (data) => { await send('PUT', `${base}/${encodeURIComponent(e.id)}`, data); announce('Note corrigée'); await load(); }, load));
+            li.querySelector('textarea').focus();
+          } }, 'Corriger'),
+          h('button', { type: 'button', onclick: async () => {
+            status.textContent = '';
+            try { await send('PUT', `${base}/${encodeURIComponent(e.id)}`, { archived: !e.archivedAt }); announce(e.archivedAt ? 'Note restaurée' : 'Note archivée'); await load(); } catch (x) { status.textContent = x.message; }
+          } }, e.archivedAt ? 'Restaurer' : 'Archiver')));
+      return li;
+    };
+    function render(entries) {
+      const live = entries.filter((e) => !e.archivedAt), old = entries.filter((e) => e.archivedAt);
+      box.replaceChildren(h('h4', {}, 'Mémoire de la mission'),
+        h('p', { class: 'note' }, 'Notes datées saisies à la main. Aucun agent ne les lit pour l’instant.'),
+        noteForm({ kind: 'fact', sourceAgentId: null, body: '' }, 'Ajouter à la mémoire', async (data) => {
+          await send('POST', base, data); announce('Note ajoutée à la mémoire'); await load(); box.querySelector('textarea')?.focus();
+        }),
+        status,
+        live.length ? h('ul', { class: 'memory-list' }, live.map(item)) : h('p', { class: 'note' }, 'Aucune note pour le moment.'),
+        old.length ? h('details', {}, h('summary', {}, `Notes archivées (${old.length})`), h('ul', { class: 'memory-list' }, old.map(item))) : '');
+    }
+    load();
+    return box;
   }
 
   function edit(m = null) {

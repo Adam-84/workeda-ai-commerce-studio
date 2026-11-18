@@ -153,3 +153,14 @@ select,fieldset{color:var(--text)}
 #pop .missions a{color:inherit;text-decoration:underline;overflow-wrap:anywhere}
 #pop .mission-dates{margin-top:14px}
 #pop .row .err{flex-basis:100%}#pop .row .err:empty{display:none}
+/* Mémoire de la mission */
+#pop .mission-memory{margin-top:16px;padding-top:2px;border-top:1px solid color-mix(in srgb,var(--text) 15%,transparent)}
+.memory-pick{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.memory-actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+#pop .memory-actions .err{flex-basis:100%}#pop .memory-actions .err:empty,#pop .mission-memory>.err:empty{display:none}
+#pop .memory-list{margin-top:10px;gap:8px}
+.memory-entry{border:1px solid var(--border);border-radius:10px;padding:8px 10px;display:grid;gap:6px}
+.memory-entry.archived{opacity:.75}
+#pop .memory-meta{font-size:11px;color:var(--soft)}#pop .memory-meta strong{color:var(--text)}
+.memory-entry .memory-actions>button:not(.primary){font-size:12px;padding:4px 10px}
+#pop .mission-memory details{margin-top:10px}

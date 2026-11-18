@@ -18,6 +18,8 @@ const mapMission = ({ expected_result, context_text, context_links, updated_at, 
 // Colonnes ajoutées aux missions existantes (ajout seul, valeurs par défaut : les anciennes missions restent lisibles).
 const MISSION_COLUMNS = [['objective', "TEXT NOT NULL DEFAULT ''"], ['priority', "TEXT NOT NULL DEFAULT 'normal'"], ['expected_result', "TEXT NOT NULL DEFAULT ''"], ['context_text', "TEXT NOT NULL DEFAULT ''"], ['context_links', "TEXT NOT NULL DEFAULT '[]'"], ['constraints', "TEXT NOT NULL DEFAULT ''"], ['validations', "TEXT NOT NULL DEFAULT ''"], ['updated_at', 'TEXT']];
 const PRIORITIES = ['low', 'normal', 'high', 'urgent'];
+const MEMORY_KINDS = ['fact', 'decision', 'open'];
+const mapMemory = (r) => ({ id: r.id, missionId: r.mission_id, kind: r.kind, body: r.body, sourceAgentId: r.source_agent_id, createdAt: r.created_at, updatedAt: r.updated_at, archivedAt: r.archived_at });
 const bad = (message) => Object.assign(new Error(message), { status: 400 });
 const text = (value, label, max = 4000) => {
   if (value == null) return '';
@@ -59,6 +61,8 @@ export function createStudio(filename = 'data/workeda.db') {
     CREATE TABLE IF NOT EXISTS agent_replies (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), body TEXT NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS agent_replies_agent_time ON agent_replies(agent_id, created_at, id);
     CREATE TABLE IF NOT EXISTS mission_collaborators (mission_id TEXT NOT NULL REFERENCES missions(id), agent_id TEXT NOT NULL REFERENCES agents(id), PRIMARY KEY (mission_id, agent_id));
+    CREATE TABLE IF NOT EXISTS mission_memory (id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id), kind TEXT NOT NULL, body TEXT NOT NULL, source_agent_id TEXT REFERENCES agents(id), created_at TEXT NOT NULL, updated_at TEXT, archived_at TEXT);
+    CREATE INDEX IF NOT EXISTS mission_memory_mission_time ON mission_memory(mission_id, created_at);
   `);
   const tx = (fn) => { db.exec('BEGIN'); try { const result = fn(); db.exec('COMMIT'); return result; } catch (e) { if (db.isTransaction) db.exec('ROLLBACK'); throw e; } };
   const have = new Set(db.prepare('PRAGMA table_info(missions)').all().map((c) => c.name));
@@ -96,6 +100,13 @@ export function createStudio(filename = 'data/workeda.db') {
     if (m.collaborators != null && !Array.isArray(m.collaborators)) throw bad('Les collaborateurs doivent être une liste.');
     const collaborators = [...new Set(m.collaborators ?? [])].filter((c) => c !== assignedTo).map(agentRef); // le responsable n'est pas aussi collaborateur
     return { title, priority, assignedTo, collaborators, objective: text(m.objective, 'L’objectif'), expectedResult: text(m.expectedResult, 'Le résultat attendu'), contextText: text(m.contextText, 'Le contexte'), contextLinks: links(m.contextLinks), constraints: text(m.constraints, 'Les contraintes'), validations: text(m.validations, 'Les validations'), requiresApproval: m.requiresApproval !== false };
+  };
+  const requireMission = (id) => { if (!one('SELECT id FROM missions WHERE id = ?', id)) throw Object.assign(new Error('Mission introuvable.'), { status: 404 }); };
+  const getMemory = (id) => one('SELECT * FROM mission_memory WHERE id = ?', id, mapMemory);
+  const memoryFields = (e) => {
+    if (!MEMORY_KINDS.includes(e.kind)) throw bad('Type de note invalide.');
+    const body = text(e.body, 'La note'); if (!body) throw bad('Écrivez la note avant de l’ajouter.');
+    return { kind: e.kind, body, sourceAgentId: e.sourceAgentId ? agentRef(e.sourceAgentId) : null }; // source déclarée par la personne, pas par l'agent
   };
 
   return {
@@ -156,6 +167,26 @@ export function createStudio(filename = 'data/workeda.db') {
       });
       if (m.assignedTo) emit(m.assignedTo, m.assignedTo === existing.assignedTo ? 'mission.updated' : 'mission.assigned', m.title, 'manual', true);
       return getMission(id);
+    },
+    // Mémoire : notes saisies à la main, corrigées ou archivées, jamais effacées. Aucun agent ne la lit pour l'instant.
+    listMemory(missionId) { requireMission(missionId); return db.prepare('SELECT * FROM mission_memory WHERE mission_id = ? ORDER BY created_at DESC, rowid DESC').all(missionId).map(mapMemory); },
+    addMemory(missionId, input = {}) {
+      requireMission(missionId);
+      const e = memoryFields(input), id = randomUUID();
+      db.prepare('INSERT INTO mission_memory (id, mission_id, kind, body, source_agent_id, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(id, missionId, e.kind, e.body, e.sourceAgentId, now());
+      return getMemory(id);
+    },
+    updateMemory(missionId, entryId, input = {}) {
+      const existing = getMemory(entryId);
+      if (!existing || existing.missionId !== missionId) throw Object.assign(new Error('Note introuvable.'), { status: 404 });
+      if (typeof input.archived === 'boolean') { // archiver ou restaurer, sans toucher au texte
+        db.prepare('UPDATE mission_memory SET archived_at = ? WHERE id = ?').run(input.archived ? existing.archivedAt ?? now() : null, entryId);
+        return getMemory(entryId);
+      }
+      const e = memoryFields({ ...existing, ...input });
+      if (e.kind !== existing.kind || e.body !== existing.body || e.sourceAgentId !== existing.sourceAgentId) // « corrigée le » seulement si quelque chose change
+        db.prepare('UPDATE mission_memory SET kind = ?, body = ?, source_agent_id = ?, updated_at = ? WHERE id = ?').run(e.kind, e.body, e.sourceAgentId, now(), entryId);
+      return getMemory(entryId);
     },
     listMissions: () => {
       const team = new Map();
