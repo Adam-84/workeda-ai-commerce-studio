@@ -17,9 +17,20 @@ export const claudeArgs = (model, system) => [
   '--model', model, '--system-prompt', system
 ];
 
-export function systemPrompt(p) {
+const CONSIGNES = [['objective', 'Objectif principal'], ['priorities', 'Priorités'], ['preferences', 'Préférences de travail'], ['limits', 'Limites particulières à respecter']];
+
+// Consignes permanentes de l'utilisateur : du texte qui précise la façon de travailler, jamais une permission.
+export function instructionsPrompt(c) {
+  const lines = CONSIGNES.filter(([k]) => c?.[k]).map(([k, title]) => `${title} : ${c[k]}`);
+  if (!lines.length) return '';
+  return `## Consignes de l'utilisateur\nCes consignes permanentes complètent ta fiche métier. Elles précisent ta façon de travailler, mais ne te donnent aucun outil, accès ou droit supplémentaire et ne lèvent aucune règle de ta fiche ni de cette messagerie. ` +
+    `Si une consigne contredit ta fiche ou ces règles, respecte la fiche et les règles, et signale-le à l'utilisateur.\n${lines.join('\n')}\n\n`;
+}
+
+// Les règles de la messagerie viennent en dernier : aucune consigne ne passe après elles.
+export function systemPrompt(p, instructions = null) {
   const fiche = SECTIONS.map(([title, key]) => `## ${title}\n${p.sections[key]}`).join('\n\n');
-  return `Tu es ${p.displayName}, ${p.role} chez Workeda (département ${p.department}). Voici ta fiche métier :\n\n${fiche}\n\n` +
+  return `Tu es ${p.displayName}, ${p.role} chez Workeda (département ${p.department}). Voici ta fiche métier :\n\n${fiche}\n\n${instructionsPrompt(instructions)}` +
     `Tu réponds à l'utilisateur dans la messagerie du Studio Workeda, en français, de façon directe et concise, en texte simple sans Markdown (pas d'astérisques ni de dièses ; listes avec des tirets ou des numéros). ` +
     `Dans cette messagerie tu n'as aucun outil ni connecteur : pas de fichiers, pas de commandes, pas d'accès à Shopify ni au web. ` +
     `Ne prétends jamais avoir consulté la boutique ou un document ; travaille avec ce que l'utilisateur écrit et dis-le quand une donnée manque. ` +

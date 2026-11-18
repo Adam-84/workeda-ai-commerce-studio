@@ -74,6 +74,8 @@ export function createApp({ studio, publicDir, detect: rawDetect = cliPresent, r
     ['PUT', /^\/api\/missions\/([^/]+)\/memory\/([^/]+)$/, (m, data) => studio.updateMemory(decodeURIComponent(m[1]), decodeURIComponent(m[2]), data)],
     ['GET', /^\/api\/missions\/([^/]+)\/discussion$/, (m) => studio.listDiscussion(decodeURIComponent(m[1]))],
     ['POST', /^\/api\/missions\/([^/]+)\/discussion$/, (m, data) => studio.postDiscussion(decodeURIComponent(m[1]), data)],
+    ['GET', /^\/api\/agents\/([^/]+)\/instructions$/, (m) => studio.getInstructions(decodeURIComponent(m[1]))],
+    ['PUT', /^\/api\/agents\/([^/]+)\/instructions$/, (m, data) => studio.setInstructions(decodeURIComponent(m[1]), data)],
     ['PUT', /^\/api\/agents\/([^/]+)\/appearance$/, (m, data) => studio.setAppearance(decodeURIComponent(m[1]), data)],
     ['DELETE', /^\/api\/agents\/([^/]+)\/appearance$/, (m) => studio.clearAppearance(decodeURIComponent(m[1]))],
     ['PUT', /^\/api\/departments\/([^/]+)\/style$/, (m, data) => studio.setIslandStyle(decodeURIComponent(m[1]), data)],
@@ -85,12 +87,13 @@ export function createApp({ studio, publicDir, detect: rawDetect = cliPresent, r
   const profileOf = (agentId) => { const { ids, list } = linked(); return list.find((p) => ids.get(p.slug) === agentId) ?? fail(403, 'Cet agent n’a pas de fiche dans .claude/agents : il ne peut pas répondre.'); };
   const namer = () => { const names = new Map(studio.listAgents().map((a) => [a.id, a.name])); return (id) => names.get(id) ?? 'Agent'; };
   // Lance Claude et diffuse sa réponse ; save(text) l'enregistre même si le panneau a été fermé. lock : une réponse à la fois par clé.
-  async function stream(res, lock, busy, profile, prompt, save) {
+  // La consigne système = fiche + consignes de l'utilisateur pour cet agent ; les options de claude (aucun outil) ne changent jamais.
+  async function stream(res, lock, busy, profile, agentId, prompt, save) {
     if (replying.has(lock)) fail(409, busy);
     replying.add(lock);
     res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store' });
     const line = (data) => { if (!res.writableEnded) res.write(JSON.stringify(data) + '\n'); };
-    try { line({ type: 'done', message: save(await runClaude({ model: profile.model, system: systemPrompt(profile), prompt, onText: (t) => line({ type: 'text', text: t }) })) }); }
+    try { line({ type: 'done', message: save(await runClaude({ model: profile.model, system: systemPrompt(profile, studio.getInstructions(agentId)), prompt, onText: (t) => line({ type: 'text', text: t }) })) }); }
     catch (error) { line({ type: 'error', error: error.message }); }
     finally { replying.delete(lock); res.end(); }
   }
@@ -100,7 +103,7 @@ export function createApp({ studio, publicDir, detect: rawDetect = cliPresent, r
     const items = studio.listConversation(agentId).items.reverse(); // ponytail: contexte = 50 derniers messages, résumé si les échanges s'allongent
     if (items.at(-1)?.senderType !== 'user') fail(400, 'Aucun message en attente de réponse.');
     const nameOf = namer(), context = missionsPrompt(studio.listMissions(), agentId, nameOf, (id) => studio.listMemory(id));
-    await stream(res, agentId, `${profile.displayName} répond déjà à un message.`, profile, `${context}\n\n${conversationPrompt(items, nameOf, profile.displayName)}`, (text) => studio.saveAgentReply(agentId, text, 'claude'));
+    await stream(res, agentId, `${profile.displayName} répond déjà à un message.`, profile, agentId, `${context}\n\n${conversationPrompt(items, nameOf, profile.displayName)}`, (text) => studio.saveAgentReply(agentId, text, 'claude'));
   }
   // Fil d'équipe : seul un membre désigné (responsable ou collaborateur) parle, une réponse à la fois par mission.
   async function teamReply(missionId, agentId, res) {
@@ -112,7 +115,7 @@ export function createApp({ studio, publicDir, detect: rawDetect = cliPresent, r
     if (!items.length) fail(400, 'Écrivez d’abord un message dans le fil.');
     if (items.at(-1).agentId === agentId) fail(400, `${profile.displayName} vient déjà de répondre.`);
     const nameOf = namer(), context = missionsPrompt([mission], agentId, nameOf, (id) => studio.listMemory(id));
-    await stream(res, `mission:${missionId}`, 'Un agent répond déjà dans ce fil.', profile, `${context}\n\n${teamPrompt(mission, items, nameOf, profile.displayName, members)}`, (text) => studio.saveDiscussionReply(missionId, agentId, text, 'claude'));
+    await stream(res, `mission:${missionId}`, 'Un agent répond déjà dans ce fil.', profile, agentId, `${context}\n\n${teamPrompt(mission, items, nameOf, profile.displayName, members)}`, (text) => studio.saveDiscussionReply(missionId, agentId, text, 'claude'));
   }
   return createServer(async (req, res) => {
     try {
