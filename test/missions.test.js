@@ -46,10 +46,13 @@ test('an existing database keeps its agents, messages, looks and missions after 
     assert.deepEqual(edited.collaborators, ['a2']);
     assert.equal(studio.listMessages('m1').length, 1);
     assert.deepEqual(studio.listMemory('m1'), []); // ancienne mission : mémoire vide
+    assert.deepEqual(studio.listDiscussion('m1'), []); // et fil d'équipe vide
+    studio.postDiscussion('m1', { body: 'Premier message du fil' });
     studio.addMemory('m1', { kind: 'decision', body: 'Garder la copie locale', sourceAgentId: 'a2' });
     studio.close();
     const reopened = createStudio(file);
     assert.equal(reopened.listMemory('m1')[0].body, 'Garder la copie locale');
+    assert.equal(reopened.listDiscussion('m1')[0].body, 'Premier message du fil');
     reopened.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

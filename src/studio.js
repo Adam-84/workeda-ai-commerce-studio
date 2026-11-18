@@ -19,6 +19,7 @@ const mapMission = ({ expected_result, context_text, context_links, updated_at, 
 const MISSION_COLUMNS = [['objective', "TEXT NOT NULL DEFAULT ''"], ['priority', "TEXT NOT NULL DEFAULT 'normal'"], ['expected_result', "TEXT NOT NULL DEFAULT ''"], ['context_text', "TEXT NOT NULL DEFAULT ''"], ['context_links', "TEXT NOT NULL DEFAULT '[]'"], ['constraints', "TEXT NOT NULL DEFAULT ''"], ['validations', "TEXT NOT NULL DEFAULT ''"], ['updated_at', 'TEXT']];
 const PRIORITIES = ['low', 'normal', 'high', 'urgent'];
 const MEMORY_KINDS = ['fact', 'decision', 'open'];
+const mapTeamMessage = (r) => ({ id: r.id, missionId: r.mission_id, agentId: r.agent_id, body: r.body, source: r.source, createdAt: r.created_at });
 const mapMemory = (r) => ({ id: r.id, missionId: r.mission_id, kind: r.kind, body: r.body, sourceAgentId: r.source_agent_id, createdAt: r.created_at, updatedAt: r.updated_at, archivedAt: r.archived_at });
 const bad = (message) => Object.assign(new Error(message), { status: 400 });
 const text = (value, label, max = 4000) => {
@@ -63,6 +64,8 @@ export function createStudio(filename = 'data/workeda.db') {
     CREATE TABLE IF NOT EXISTS mission_collaborators (mission_id TEXT NOT NULL REFERENCES missions(id), agent_id TEXT NOT NULL REFERENCES agents(id), PRIMARY KEY (mission_id, agent_id));
     CREATE TABLE IF NOT EXISTS mission_memory (id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id), kind TEXT NOT NULL, body TEXT NOT NULL, source_agent_id TEXT REFERENCES agents(id), created_at TEXT NOT NULL, updated_at TEXT, archived_at TEXT);
     CREATE INDEX IF NOT EXISTS mission_memory_mission_time ON mission_memory(mission_id, created_at);
+    CREATE TABLE IF NOT EXISTS mission_discussion (id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id), agent_id TEXT REFERENCES agents(id), body TEXT NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS mission_discussion_mission_time ON mission_discussion(mission_id, created_at);
   `);
   const tx = (fn) => { db.exec('BEGIN'); try { const result = fn(); db.exec('COMMIT'); return result; } catch (e) { if (db.isTransaction) db.exec('ROLLBACK'); throw e; } };
   const have = new Set(db.prepare('PRAGMA table_info(missions)').all().map((c) => c.name));
@@ -188,6 +191,22 @@ export function createStudio(filename = 'data/workeda.db') {
         db.prepare('UPDATE mission_memory SET kind = ?, body = ?, source_agent_id = ?, updated_at = ? WHERE id = ?').run(e.kind, e.body, e.sourceAgentId, now(), entryId);
       return getMemory(entryId);
     },
+    // Discussion d'équipe d'une mission : vos messages (agent_id NULL) et les réponses des agents désignés.
+    listDiscussion(missionId) { requireMission(missionId); return db.prepare('SELECT * FROM mission_discussion WHERE mission_id = ? ORDER BY created_at, rowid').all(missionId).map(mapTeamMessage); },
+    postDiscussion(missionId, { body } = {}) {
+      requireMission(missionId);
+      const t = text(body, 'Le message', 20000); if (!t) throw bad('Écrivez un message avant de l’envoyer.');
+      const id = randomUUID(); db.prepare('INSERT INTO mission_discussion (id, mission_id, agent_id, body, source, created_at) VALUES (?, ?, NULL, ?, ?, ?)').run(id, missionId, t, 'user', now());
+      return one('SELECT * FROM mission_discussion WHERE id = ?', id, mapTeamMessage);
+    },
+    // Réponse réellement produite par un modèle : appelée par le serveur seulement.
+    saveDiscussionReply(missionId, agentId, body, source) {
+      requireMission(missionId); requireAgent(agentId);
+      const id = randomUUID(); db.prepare('INSERT INTO mission_discussion (id, mission_id, agent_id, body, source, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(id, missionId, agentId, body, source, now());
+      emit(agentId, 'team.reply.sent', `Réponse dans la discussion de « ${getMission(missionId).title} »`, source, true);
+      return one('SELECT * FROM mission_discussion WHERE id = ?', id, mapTeamMessage);
+    },
+    getMission: (id) => getMission(id),
     listMissions: () => {
       const team = new Map();
       for (const r of db.prepare('SELECT mission_id, agent_id FROM mission_collaborators ORDER BY rowid').all()) team.set(r.mission_id, [...(team.get(r.mission_id) ?? []), r.agent_id]);

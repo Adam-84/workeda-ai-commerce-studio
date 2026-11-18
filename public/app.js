@@ -426,7 +426,7 @@ function agentView(id, opts = {}) {
   closeHook = leave;
   const defs = [
     { label: 'Discussion', render: () => { conversation = createConversation({ agent: a, agents: state.agents, get, send, announce, replies: state.profiles.has(a.id) }); return conversation.el; }, leave },
-    { label: 'Missions', render: () => missionsTab({ agent: a, agents: state.agents, missions: () => state.missions, announce, h, get, send,
+    { label: 'Missions', render: () => missionsTab({ agent: a, agents: state.agents, missions: () => state.missions, announce, h, get, send, canReply: (id) => state.profiles.has(id),
       save: async (method, path, data) => { const saved = await send(method, path, data); await refresh(); return saved; } }) },
     ...['Profil', 'Apparence'].map((label) => ({ label, render: () => TABS[label](a) })),
     { label: 'Activité', render: () => TABS.Journal(a) }

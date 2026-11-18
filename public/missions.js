@@ -1,5 +1,6 @@
 // public/missions.js — onglet Missions d'un agent : liste, fiche, création et modification.
-// Enregistrer une mission ne sollicite aucun agent et n'appelle aucune IA.
+// Enregistrer une mission ne sollicite aucun agent et n'appelle aucune IA ; seul le fil d'équipe fait répondre les agents désignés.
+import { readReply } from './conversation.js';
 export const PRIORITY_LABELS = { low: 'Basse', normal: 'Normale', high: 'Haute', urgent: 'Urgente' };
 const STATE_LABELS = { draft: 'Brouillon' };
 const MEMORY_LABELS = { fact: 'Fait', decision: 'Décision', open: 'Point ouvert' };
@@ -7,7 +8,7 @@ const date = (iso) => new Date(iso).toLocaleString('fr-FR', { dateStyle: 'short'
 const BLANK = { title: '', objective: '', collaborators: [], priority: 'normal', expectedResult: '', contextText: '', contextLinks: [], constraints: '', validations: '', requiresApproval: true };
 
 // missions : () => liste à jour ; save(method, path, data) enregistre puis recharge l'état, et renvoie la mission.
-export function missionsTab({ agent, agents, missions, save, get, send, announce, h }) {
+export function missionsTab({ agent, agents, missions, save, get, send, announce, h, canReply = () => false }) {
   const root = h('div', { class: 'missions' });
   const nameOf = (id) => agents.find((a) => a.id === id)?.name ?? 'Agent inconnu';
   const field = (label, control, hint) => h('label', {}, label, control, hint && h('span', { class: 'note' }, hint));
@@ -27,6 +28,7 @@ export function missionsTab({ agent, agents, missions, save, get, send, announce
   function sheet(id) {
     const m = missions().find((x) => x.id === id); if (!m) return list();
     const block = (label, value) => [h('h4', {}, label), value ? h('p', { class: 'pre' }, value) : h('p', { class: 'note' }, 'Non renseigné')];
+    const memory = memoryBlock(m);
     show(h('button', { type: 'button', onclick: list }, '← Missions'), heading(m.title),
       h('p', { class: 'note' }, `Priorité ${PRIORITY_LABELS[m.priority]?.toLowerCase() ?? m.priority} · ${STATE_LABELS[m.state] ?? m.state} · validation ${m.requiresApproval ? 'requise' : 'non requise'}`),
       block('Objectif', m.objective),
@@ -39,7 +41,7 @@ export function missionsTab({ agent, agents, missions, save, get, send, announce
         h('p', { class: 'note' }, 'Liens enregistrés comme simples références : leur contenu n’a pas été consulté.')],
       block('Contraintes', m.constraints),
       block('Validations nécessaires', m.validations),
-      memoryBlock(m),
+      memory.el, teamBlock(m, memory),
       h('p', { class: 'note mission-dates' }, `Créée le ${date(m.created_at)}${m.updatedAt ? ` · modifiée le ${date(m.updatedAt)}` : ''}`),
       h('div', { class: 'row' }, h('button', { type: 'button', class: 'primary', onclick: () => edit(m) }, 'Modifier'), h('button', { type: 'button', onclick: list }, 'Retour à la liste')));
   }
@@ -82,7 +84,7 @@ export function missionsTab({ agent, agents, missions, save, get, send, announce
     function render(entries) {
       const live = entries.filter((e) => !e.archivedAt), old = entries.filter((e) => e.archivedAt);
       box.replaceChildren(h('h4', {}, 'Mémoire de la mission'),
-        h('p', { class: 'note' }, 'Notes datées saisies à la main. Les agents de la mission les lisent quand ils vous répondent dans Discussion (notes archivées exclues).'),
+        h('p', { class: 'note' }, 'Notes datées saisies à la main. Les agents de la mission les lisent quand ils répondent, dans Discussion comme dans le fil d’équipe (notes archivées exclues).'),
         noteForm({ kind: 'fact', sourceAgentId: null, body: '' }, 'Ajouter à la mémoire', async (data) => {
           await send('POST', base, data); announce('Note ajoutée à la mémoire'); await load(); box.querySelector('textarea')?.focus();
         }),
@@ -91,6 +93,62 @@ export function missionsTab({ agent, agents, missions, save, get, send, announce
         old.length ? h('details', {}, h('summary', {}, `Notes archivées (${old.length})`), h('ul', { class: 'memory-list' }, old.map(item))) : '');
     }
     load();
+    return { el: box, load, noteForm };
+  }
+
+  // Fil d'équipe : vous écrivez, puis cochez qui répond, responsable d'abord. Chaque réponse est un appel réel à Claude Code.
+  function teamBlock(m, memory) {
+    const base = `/api/missions/${encodeURIComponent(m.id)}/discussion`;
+    const members = [m.assigned_to, ...m.collaborators].filter(Boolean), speakers = members.filter(canReply), silent = members.filter((id) => !canReply(id));
+    const box = h('section', { class: 'mission-team', 'aria-label': 'Discussion d’équipe' }, h('h4', {}, 'Discussion d’équipe'));
+    if (!members.length) { box.append(h('p', { class: 'note' }, 'Ajoutez un responsable ou des collaborateurs pour ouvrir la discussion d’équipe.')); return box; }
+    const list = h('ol', { class: 'team-list' }), status = h('p', { class: 'chat-send-status', role: 'status' });
+    const input = h('textarea', { name: 'body', rows: 3, maxlength: 20000, placeholder: 'Écrire à l’équipe…', 'aria-label': 'Votre message à l’équipe' });
+    const picks = speakers.map((id) => h('label', { class: 'check' }, h('input', { type: 'checkbox', value: id }), nameOf(id)));
+    const button = h('button', { type: 'submit', class: 'primary' }, 'Envoyer');
+    let busy = false;
+    const chosen = () => picks.map((l) => l.firstChild).filter((c) => c.checked).map((c) => c.value);
+    const sync = () => { const n = chosen().length, t = input.value.trim(); button.disabled = busy || (!t && !n); button.textContent = busy ? 'Réponses en cours…' : t ? (n ? 'Envoyer et faire répondre' : 'Envoyer') : 'Faire répondre'; };
+    const bubble = (msg) => {
+      const li = h('li', { class: msg.agentId ? 'team-msg' : 'team-msg own' }, h('p', { class: 'memory-meta' }, h('strong', {}, msg.agentId ? nameOf(msg.agentId) : 'Vous'), ` · ${date(msg.createdAt)}`), h('p', { class: 'pre' }, msg.body));
+      const keep = h('button', { type: 'button', class: 'team-keep', onclick: () => {
+        keep.replaceWith(memory.noteForm({ kind: 'fact', sourceAgentId: msg.agentId, body: msg.body }, 'Ajouter à la mémoire', async (data) => {
+          await send('POST', `/api/missions/${encodeURIComponent(m.id)}/memory`, data); announce('Message retenu dans la mémoire'); await memory.load(); await load();
+        }, load));
+        li.querySelector('textarea').focus();
+      } }, 'Retenir');
+      li.append(keep);
+      return li;
+    };
+    const load = () => get(base).then((items) => list.replaceChildren(...(items.length ? items.map(bubble) : [h('li', { class: 'note' }, 'Aucun message pour le moment.')]))).catch((x) => { status.textContent = x.message; });
+    const form = h('form', { class: 'team-composer', oninput: sync, onchange: sync, onsubmit: async (e) => {
+      e.preventDefault(); if (busy) return;
+      const text = input.value.trim(), who = chosen();
+      busy = true; status.textContent = ''; status.classList.remove('err'); sync();
+      try {
+        if (text) { await send('POST', base, { body: text }); input.value = ''; await load(); }
+        for (const id of speakers.filter((x) => who.includes(x))) {
+          const name = nameOf(id), live = h('p', { class: 'pre' });
+          list.append(h('li', { class: 'team-msg pending' }, h('p', { class: 'memory-meta' }, h('strong', {}, name), ' · rédige sa réponse…'), live));
+          status.textContent = `${name} rédige sa réponse…`;
+          let done = false;
+          await readReply(`${base}/reply/${encodeURIComponent(id)}`, (ev) => {
+            if (ev.type === 'text') live.textContent += ev.text; else if (ev.type === 'done') done = true; else if (ev.type === 'error') throw new Error(ev.error);
+          }).catch((x) => { throw new Error(`${name} n’a pas pu répondre. ${x.message}`); });
+          if (!done) throw new Error(`La réponse de ${name} s’est interrompue avant la fin.`);
+          announce(`Réponse de ${name} reçue.`); await load();
+        }
+        picks.forEach((l) => { l.firstChild.checked = false; });
+        status.textContent = who.length ? 'Réponses enregistrées dans le fil.' : 'Message enregistré dans le fil.';
+      } catch (x) { status.textContent = x.message; status.classList.add('err'); await load(); }
+      finally { busy = false; sync(); }
+    } },
+      input,
+      h('fieldset', { class: 'team-picks' }, h('legend', {}, 'Faire répondre'), speakers.length ? picks : h('p', { class: 'note' }, 'Aucun membre avec fiche ne peut répondre.')),
+      silent.length > 0 && h('p', { class: 'note' }, `Sans fiche, ne répond pas : ${silent.map(nameOf).join(', ')}.`),
+      h('div', { class: 'memory-actions' }, button), status);
+    box.append(h('p', { class: 'note' }, 'Vous, le responsable et les collaborateurs. Écrivez, puis cochez qui répond : chaque réponse est un appel à Claude Code. Les agents lisent la mission, sa mémoire et tout le fil.'), list, form);
+    sync(); load();
     return box;
   }
 

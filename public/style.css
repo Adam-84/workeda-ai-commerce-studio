@@ -164,3 +164,14 @@ select,fieldset{color:var(--text)}
 #pop .memory-meta{font-size:11px;color:var(--soft)}#pop .memory-meta strong{color:var(--text)}
 .memory-entry .memory-actions>button:not(.primary){font-size:12px;padding:4px 10px}
 #pop .mission-memory details{margin-top:10px}
+/* Discussion d'équipe d'une mission */
+#pop .mission-team{margin-top:16px;padding-top:2px;border-top:1px solid color-mix(in srgb,var(--text) 15%,transparent)}
+#pop .team-list{margin:10px 0;padding:0;list-style:none;display:grid;gap:8px}
+.team-msg{border:1px solid var(--border);border-radius:10px;padding:8px 10px;display:grid;gap:6px;justify-items:start}
+.team-msg.own{background:color-mix(in srgb,var(--accent) 10%,var(--panel-solid))}
+.team-msg.pending{border-style:dashed}
+.team-msg>*{max-width:100%}.team-msg form{justify-self:stretch}
+.team-keep{font-size:12px;padding:4px 10px}
+.team-composer textarea{width:100%;resize:vertical}
+.team-picks{display:flex;flex-wrap:wrap;gap:6px 14px}
+.team-composer button:disabled{opacity:.55;cursor:default}

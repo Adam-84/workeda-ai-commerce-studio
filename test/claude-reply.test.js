@@ -130,3 +130,39 @@ test('mission context says when nothing is assigned and keeps a bounded size', (
   assert.equal(text.match(/Mission « /g).length, MAX_MISSIONS);
   assert.match(text, /Mémoire : aucune note\./);
 });
+
+test('team thread: only designated members answer, each reading the mission, its memory and colleagues', () => {
+  let seen, release;
+  const runner = async (opts) => { seen = opts; if (opts.prompt.includes('BLOQUER')) await new Promise((r) => { release = r; }); return `Réponse de ${opts.system.match(/Tu es (\w+)/)[1]}`; };
+  return withLucas(runner, async ({ studio, base, lucas, olivia }) => {
+    const id = (slug) => studio.listAgentFiles().find((l) => l.slug === slug).agentId;
+    const manual = studio.hireAgent({ name: 'Zoé', role: 'Sans fiche', departmentId: studio.listDepartments()[0].id });
+    const m = studio.createMission({ title: 'Point hebdo', assignedTo: olivia, collaborators: [lucas, manual.id] });
+    studio.addMemory(m.id, { kind: 'decision', body: 'Le lundi avant 11 h' });
+    const url = (agent) => `${base}/api/missions/${m.id}/discussion/reply/${agent}`;
+    const events = async (agent) => (await (await post(url(agent))).text()).trim().split('\n').map((l) => JSON.parse(l));
+    assert.equal((await post(url(olivia))).status, 400); // fil vide
+    assert.equal((await post(`${base}/api/missions/${m.id}/discussion`, { body: 'Qui relit le point ?' })).status, 200);
+    assert.equal((await post(url(id('noah')))).status, 403); // pas membre
+    assert.equal((await post(url(manual.id))).status, 403); // membre sans fiche
+    assert.equal((await events(olivia)).at(-1).type, 'done');
+    assert.match(seen.prompt, /Mission « Point hebdo » \(ton rôle : responsable/);
+    assert.match(seen.prompt, /Le lundi avant 11 h/);
+    assert.match(seen.prompt, /Participants : l'Utilisateur, Olivia, Lucas, Zoé/);
+    assert.match(seen.prompt, /C'est à toi, Olivia, de prendre la parole/);
+    assert.equal((await post(url(olivia))).status, 400); // vient de répondre
+    assert.equal((await events(lucas)).at(-1).message.body, 'Réponse de Lucas');
+    assert.match(seen.prompt, /\] Olivia :\nRéponse de Olivia/); // Lucas lit sa collègue
+    assert.match(seen.prompt, /ton rôle : collaborateur/);
+    assert.deepEqual(studio.listDiscussion(m.id).map((x) => x.agentId), [null, olivia, lucas]);
+    assert.equal(studio.listConversation(olivia).items.length, 0); // la Discussion personnelle n'est pas touchée
+    assert.equal(studio.listEvents(lucas)[0].kind, 'team.reply.sent');
+    await post(`${base}/api/missions/${m.id}/discussion`, { body: 'BLOQUER' });
+    const first = post(url(olivia));
+    while (!release) await new Promise((r) => setTimeout(r, 5));
+    assert.equal((await post(url(lucas))).status, 409); // une réponse à la fois par mission
+    release(); await (await first).text();
+    assert.equal((await post(`${base}/api/missions/inconnue/discussion/reply/${olivia}`)).status, 404);
+    assert.equal((await post(`${base}/api/missions/${m.id}/discussion`, { body: '  ' })).status, 400);
+  });
+});

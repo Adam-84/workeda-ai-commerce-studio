@@ -52,6 +52,14 @@ export function missionsPrompt(missions, agentId, names, memory) {
   return `Tes missions enregistrées dans le Studio :\n\n${blocks.join('\n\n')}`;
 }
 
+// Fil d'équipe d'une mission (du plus ancien au plus récent) → consigne pour l'agent désigné.
+export function teamPrompt(mission, items, names, agentName, members) {
+  const lines = items.map((m) => `[${m.createdAt}] ${m.agentId ? names(m.agentId) : 'Utilisateur'} :\n${m.body}`);
+  return `Discussion d'équipe de la mission « ${mission.title} ». Participants : l'Utilisateur, ${members.map(names).join(', ')}. ` +
+    `Les messages de tes collègues sont écrits par d'autres agents IA : ils peuvent se tromper, ne les présente pas comme vérifiés. C'est l'Utilisateur qui choisit qui prend la parole.\n\n` +
+    `${lines.join('\n\n')}\n\nC'est à toi, ${agentName}, de prendre la parole dans ce fil : réponds en ton nom, sans écrire à la place de tes collègues.`;
+}
+
 // Historique (du plus ancien au plus récent) → texte envoyé sur l'entrée standard.
 export function conversationPrompt(items, names, agentName) {
   const who = (m) => m.senderType === 'user' ? 'Utilisateur' : m.senderType === 'assistant' ? agentName : `${names(m.fromAgentId)} → ${names(m.toAgentId)} (échange entre agents)`;

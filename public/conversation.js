@@ -1,6 +1,6 @@
 // Messages enregistrés ; les réponses viennent uniquement de Claude Code côté serveur, jamais simulées ici.
 const drafts = new Map();
-const readReply = async (url, onEvent) => {
+export const readReply = async (url, onEvent) => {
   let res;
   try { res = await fetch(url, { method: 'POST' }); } catch { throw new Error('Le Studio est injoignable : vérifiez qu’il tourne toujours.'); }
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `Erreur ${res.status}.`);
