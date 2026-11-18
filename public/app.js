@@ -10,6 +10,7 @@ import { drawEmblem } from './emblems.js';
 import { OPTIONS as ISLAND_OPTIONS, LABELS_FR, LABEL_MAX, normalizeIslandStyle, isValidIslandStyle } from './island-style.js'; // OPTIONS de sprites.js = personnages : alias
 import { connectorText, modelLabel, colleagues, ignoredText, helpLine, FULL_SECTIONS } from './agent-profile.js';
 import { createConversation } from './conversation.js';
+import { missionsTab } from './missions.js';
 
 const $ = (s) => document.querySelector(s);
 const get = (p) => fetch(p).then(async (r) => { const d = await r.json(); if (!r.ok) throw new Error(d.error); return d; });
@@ -424,12 +425,9 @@ function agentView(id, opts = {}) {
   const leave = () => { conversation?.destroy(); conversation = null; };
   closeHook = leave;
   const defs = [
-    { label: 'Discussion', render: () => { conversation = createConversation({ agent: a, agents: state.agents, get, send, announce, replies: Boolean(state.profiles.get(a.id)?.replies) }); return conversation.el; }, leave },
-    { label: 'Missions', render: () => {
-      const missions = state.missions.filter((m) => m.assigned_to === a.id || m.requested_by === a.id);
-      return h('div', {}, h('h3', {}, 'Missions de ' + a.name), missions.length ? h('ul', {}, missions.map(missionLine)) : h('p', {}, 'Aucune mission pour le moment.'),
-        h('button', { type: 'button', class: 'primary', onclick: () => { close(false); const select = $('#missionbar select'); select.value = a.id; $('#missionbar input').focus(); } }, 'Donner une mission'));
-    } },
+    { label: 'Discussion', render: () => { conversation = createConversation({ agent: a, agents: state.agents, get, send, announce, replies: state.profiles.has(a.id) }); return conversation.el; }, leave },
+    { label: 'Missions', render: () => missionsTab({ agent: a, agents: state.agents, missions: () => state.missions, announce, h, get, send, canReply: (id) => state.profiles.has(id),
+      save: async (method, path, data) => { const saved = await send(method, path, data); await refresh(); return saved; } }) },
     ...['Profil', 'Apparence'].map((label) => ({ label, render: () => TABS[label](a) })),
     { label: 'Activité', render: () => TABS.Journal(a) }
   ];

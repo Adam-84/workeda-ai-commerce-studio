@@ -1,6 +1,6 @@
 // Messages enregistrés ; les réponses viennent uniquement de Claude Code côté serveur, jamais simulées ici.
 const drafts = new Map();
-const readReply = async (url, onEvent) => {
+export const readReply = async (url, onEvent) => {
   let res;
   try { res = await fetch(url, { method: 'POST' }); } catch { throw new Error('Le Studio est injoignable : vérifiez qu’il tourne toujours.'); }
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `Erreur ${res.status}.`);
@@ -58,8 +58,8 @@ export function createConversation({ agent, agents, get, send, announce, replies
     node('div', { class: 'chat-composer-actions' }, node('span', { class: 'chat-key-hint' }, 'Entrée pour envoyer · Maj+Entrée pour une nouvelle ligne'), button), status);
   const el = node('div', { class: 'conversation' },
     node('p', { class: 'chat-note', id: `chat-note-${agent.id}` }, replies
-      ? `Messages enregistrés dans ce Studio. ${agent.name} répond avec Claude Code, sans outil ni accès aux fichiers ou à Shopify.`
-      : 'Messages enregistrés dans ce Studio. Les réponses IA ne sont pas encore connectées pour cet agent.'), scroll, form);
+      ? `Messages enregistrés dans ce Studio. ${agent.name} répond avec Claude Code, sans outil ni accès aux fichiers ou à Shopify, en s’appuyant sur ses missions et leur mémoire enregistrées ici.`
+      : 'Messages enregistrés dans ce Studio. Sans fiche dans .claude/agents, cet agent ne répond pas : vos messages sont seulement conservés.'), scroll, form);
 
   function sync(message) {
     if (disposed) return;

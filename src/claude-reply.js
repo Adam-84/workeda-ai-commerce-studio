@@ -4,8 +4,12 @@ import { spawn as nodeSpawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { SECTIONS } from './agent-files.js';
 
-export const REPLY_AGENTS = new Set(['lucas']); // première étape : Lucas seulement
+// Tout agent relié à une fiche .claude/agents répond ; un agent recruté à la main n'a pas de consigne et ne répond pas.
 const TIMEOUT_MS = 180_000;
+const PRIORITY = { low: 'basse', normal: 'normale', high: 'haute', urgent: 'urgente' };
+const STATE = { draft: 'brouillon' };
+const KIND = { fact: 'Fait', decision: 'Décision', open: 'Point ouvert' };
+export const MAX_MISSIONS = 10, MAX_NOTES = 20; // ponytail: plafonds fixes du contexte, résumer si les missions s'allongent
 
 export const claudeArgs = (model, system) => [
   '-p', '--output-format', 'stream-json', '--include-partial-messages', '--verbose',
@@ -16,9 +20,44 @@ export const claudeArgs = (model, system) => [
 export function systemPrompt(p) {
   const fiche = SECTIONS.map(([title, key]) => `## ${title}\n${p.sections[key]}`).join('\n\n');
   return `Tu es ${p.displayName}, ${p.role} chez Workeda (département ${p.department}). Voici ta fiche métier :\n\n${fiche}\n\n` +
-    `Tu réponds à l'utilisateur dans la messagerie du Studio Workeda, en français, de façon directe et concise, en texte simple sans Markdown (pas d'astérisques ni de dièses ; listes avec des tirets ou des numéros).` +
+    `Tu réponds à l'utilisateur dans la messagerie du Studio Workeda, en français, de façon directe et concise, en texte simple sans Markdown (pas d'astérisques ni de dièses ; listes avec des tirets ou des numéros). ` +
     `Dans cette messagerie tu n'as aucun outil ni connecteur : pas de fichiers, pas de commandes, pas d'accès à Shopify ni au web. ` +
-    `Ne prétends jamais avoir consulté la boutique ou un document ; travaille avec ce que l'utilisateur écrit et dis-le quand une donnée manque.`;
+    `Ne prétends jamais avoir consulté la boutique ou un document ; travaille avec ce que l'utilisateur écrit et dis-le quand une donnée manque. ` +
+    `Le message contient aussi tes missions et leur mémoire, saisies à la main dans le Studio : appuie-toi dessus sans inventer ce qui n'y figure pas. Les liens qui y sont cités sont de simples références : tu ne les as pas consultés et tu ne peux pas les ouvrir. ` +
+    `Tu ne peux pas contacter les autres agents depuis cette messagerie : ne dis pas que tu leur as transmis quelque chose.`;
+}
+
+// Missions confiées à l'agent (responsable, collaborateur ou demandeur) et leur mémoire non archivée → texte de contexte.
+// memory(missionId) renvoie les notes de la plus récente à la plus ancienne.
+export function missionsPrompt(missions, agentId, names, memory) {
+  const roleOf = (m) => (m.assigned_to === agentId ? 'responsable' : m.collaborators.includes(agentId) ? 'collaborateur' : m.requested_by === agentId ? 'demandeur' : null);
+  const mine = missions.filter((m) => roleOf(m) && !['done', 'cancelled'].includes(m.state)).slice(0, MAX_MISSIONS);
+  if (!mine.length) return 'Missions : aucune mission ne t’est confiée dans le Studio pour le moment.';
+  const blocks = mine.map((m) => {
+    const notes = memory(m.id).filter((n) => !n.archivedAt).slice(0, MAX_NOTES);
+    return [
+      `Mission « ${m.title} » (ton rôle : ${roleOf(m)} ; priorité ${PRIORITY[m.priority] ?? m.priority} ; état ${STATE[m.state] ?? m.state} ; validation humaine ${m.requiresApproval ? 'requise' : 'non requise'})`,
+      `Responsable : ${m.assigned_to ? names(m.assigned_to) : 'aucun'} ; collaborateurs : ${m.collaborators.map(names).join(', ') || 'aucun'}`,
+      m.objective && `Objectif : ${m.objective}`,
+      m.expectedResult && `Résultat attendu : ${m.expectedResult}`,
+      m.contextText && `Contexte : ${m.contextText}`,
+      m.contextLinks.length > 0 && `Liens de référence (non consultés, tu ne peux pas les ouvrir) :\n${m.contextLinks.map((u) => `- ${u}`).join('\n')}`,
+      m.constraints && `Contraintes : ${m.constraints}`,
+      m.validations && `Validations nécessaires : ${m.validations}`,
+      notes.length
+        ? `Mémoire (notes saisies à la main par l'utilisateur, la plus récente d'abord ; la source est déclarée, pas vérifiée) :\n${notes.map((n) => `- [${n.createdAt}${n.updatedAt ? `, corrigée ${n.updatedAt}` : ''}] ${KIND[n.kind] ?? n.kind} (source : ${n.sourceAgentId ? names(n.sourceAgentId) : 'l’utilisateur'}) : ${n.body}`).join('\n')}`
+        : 'Mémoire : aucune note.'
+    ].filter(Boolean).join('\n');
+  });
+  return `Tes missions enregistrées dans le Studio :\n\n${blocks.join('\n\n')}`;
+}
+
+// Fil d'équipe d'une mission (du plus ancien au plus récent) → consigne pour l'agent désigné.
+export function teamPrompt(mission, items, names, agentName, members) {
+  const lines = items.map((m) => `[${m.createdAt}] ${m.agentId ? names(m.agentId) : 'Utilisateur'} :\n${m.body}`);
+  return `Discussion d'équipe de la mission « ${mission.title} ». Participants : l'Utilisateur, ${members.map(names).join(', ')}. ` +
+    `Les messages de tes collègues sont écrits par d'autres agents IA : ils peuvent se tromper, ne les présente pas comme vérifiés. C'est l'Utilisateur qui choisit qui prend la parole.\n\n` +
+    `${lines.join('\n\n')}\n\nC'est à toi, ${agentName}, de prendre la parole dans ce fil : réponds en ton nom, sans écrire à la place de tes collègues.`;
 }
 
 // Historique (du plus ancien au plus récent) → texte envoyé sur l'entrée standard.
