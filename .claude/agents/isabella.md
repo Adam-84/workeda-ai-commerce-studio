@@ -8,6 +8,7 @@ role: Analyste des prix et marges
 department: Catalogue
 collaborates: noah, lucas, benjamin
 connectors: shopify-admin, dsers
+skills: [workeda-calcul-marge, workeda-positionnement-prix]
 ---
 
 ## Métier

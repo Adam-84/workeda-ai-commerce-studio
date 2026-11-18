@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "categories": [
+    { "slug": "pilotage", "name": "Pilotage et coordination" },
+    { "slug": "recherche", "name": "Recherche et veille" },
+    { "slug": "catalogue", "name": "Catalogue et merchandising" },
+    { "slug": "finance", "name": "Prix et rentabilité" },
+    { "slug": "experience", "name": "Expérience client et conversion" },
+    { "slug": "technique", "name": "Développement du thème" },
+    { "slug": "qualite", "name": "Qualité, sécurité et accessibilité" },
+    { "slug": "donnees", "name": "Données et indicateurs" }
+  ],
+  "skills": [
+    { "name": "workeda-delegation", "title": "Déléguer dans l'équipe", "category": "pilotage", "version": "1.0.0", "license": "Workeda (interne)", "roles": ["direction", "délégation", "décision", "coordination", "stratégie", "management"] },
+    { "name": "workeda-decision", "title": "Prendre une décision", "category": "pilotage", "version": "1.0.0", "license": "Workeda (interne)", "roles": ["direction", "décision", "stratégie", "arbitrage", "management"] },
+    { "name": "workeda-suivi-missions", "title": "Suivre les missions", "category": "pilotage", "version": "1.0.0", "license": "Workeda (interne)", "roles": ["projet", "suivi", "missions", "coordination", "blocages"] },
+    { "name": "workeda-planification", "title": "Planifier un chantier", "category": "pilotage", "version": "1.0.0", "license": "Workeda (interne)", "roles": ["projet", "planning", "planification", "coordination", "jalons"] },
+    { "name": "workeda-etude-marche", "title": "Étude de marché e-commerce", "category": "recherche", "version": "1.0.0", "license": "Workeda (interne)", "roles": ["marché", "tendances", "recherche", "catégorie", "demande"] },
+    { "name": "workeda-sources-fiables", "title": "Sources fiables", "category": "recherche", "version": "1.0.0", "license": "Workeda (interne)", "roles": ["sources", "recherche", "veille", "données", "analyse", "citation"] },
+    { "name": "workeda-veille-prix", "title": "Veille prix et concurrence", "category": "recherche", "version": "1.0.0", "license": "Workeda (interne)", "roles": ["concurrence", "concurrents", "prix", "benchmark", "veille", "relevé"] },
+    { "name": "workeda-audit-catalogue", "title": "Audit du catalogue (lecture seule)", "category": "catalogue", "version": "1.0.0", "license": "Workeda (interne)", "roles": ["catalogue", "shopify", "fiches", "collections", "variantes", "référencement"] },
+    { "name": "workeda-merchandising", "title": "Merchandising", "category": "catalogue", "version": "1.0.0", "license": "Workeda (interne)", "roles": ["catalogue", "merchandising", "collections", "bundles", "mise en avant"] },
+    { "name": "workeda-calcul-marge", "title": "Calcul de marge", "category": "finance", "version": "1.0.0", "license": "Workeda (interne)", "roles": ["marge", "prix", "rentabilité", "calcul", "tva", "coûts"] },
+    { "name": "workeda-positionnement-prix", "title": "Positionnement prix", "category": "finance", "version": "1.0.0", "license": "Workeda (interne)", "roles": ["prix", "positionnement", "concurrence", "rentabilité", "plancher"], "dependsOn": ["workeda-calcul-marge"] },
+    { "name": "workeda-cro-ecommerce", "title": "Conversion e-commerce", "category": "experience", "version": "1.0.0", "license": "Workeda (interne)", "roles": ["conversion", "cro", "parcours", "ux", "psychologie", "panier"] },
+    { "name": "workeda-parcours-mobile", "title": "Parcours mobile d'abord", "category": "experience", "version": "1.0.0", "license": "Workeda (interne)", "roles": ["mobile", "ui", "ux", "maquette", "design", "parcours"] },
+    { "name": "workeda-liquid-theme", "title": "Développement de thème Shopify", "category": "technique", "version": "1.0.0", "license": "Workeda (interne)", "roles": ["liquid", "javascript", "css", "thème", "développement", "shopify"] },
+    { "name": "workeda-theme-securite", "title": "Sécurité du code de thème", "category": "qualite", "version": "1.0.0", "license": "Workeda (interne)", "roles": ["sécurité", "développement", "code", "xss", "thème", "revue"] },
+    { "name": "workeda-controle-livrable", "title": "Contrôle d'un livrable", "category": "qualite", "version": "1.0.0", "license": "Workeda (interne)", "roles": ["qualité", "qa", "contrôle", "recette", "validation", "preuve"] },
+    { "name": "workeda-qa-accessibilite", "title": "QA et accessibilité", "category": "qualite", "version": "1.0.0", "license": "Workeda (interne)", "roles": ["qualité", "qa", "accessibilité", "playwright", "tests", "wcag"] },
+    { "name": "workeda-kpi-ecommerce", "title": "Indicateurs e-commerce", "category": "donnees", "version": "1.0.0", "license": "Workeda (interne)", "roles": ["kpi", "indicateurs", "ventes", "conversion", "trafic", "reporting", "analytics"] },
+    { "name": "workeda-rapport-statistique", "title": "Rapport statistique honnête", "category": "donnees", "version": "1.0.0", "license": "Workeda (interne)", "roles": ["statistiques", "analyse", "test", "reporting", "données", "kpi"] }
+  ],
+  "sources": [
+    { "name": "anthropics/skills", "url": "https://github.com/anthropics/skills", "license": "Apache-2.0 par Skill (4 vérifiés)", "verdict": "fiable, non importé", "notes": "Skills de documents et de test web, scripts inclus : non importés tels quels." },
+    { "name": "openai/skills", "url": "https://github.com/openai/skills", "license": "non précisée au niveau du dépôt", "verdict": "écarté", "notes": "Dépôt déprécié ; OpenAI renvoie vers openai/plugins." },
+    { "name": "Shopify/Shopify-AI-Toolkit", "url": "https://github.com/Shopify/Shopify-AI-Toolkit", "license": "MIT", "verdict": "écarté", "notes": "Le Skill « shopify » exécute des scripts et envoie une télémétrie (prompt, identifiant de session) à un service externe, et propose des écritures sur la boutique." },
+    { "name": "coreyhaines31/marketingskills", "url": "https://github.com/coreyhaines31/marketingskills", "license": "MIT", "verdict": "inspiration, non importé", "notes": "Rédigé pour le SaaS, renvoie à des fichiers et chemins absents. Lu : cro, pricing." },
+    { "name": "alirezarezvani/claude-skills", "url": "https://github.com/alirezarezvani/claude-skills", "license": "MIT", "verdict": "non importé", "notes": "Gros dépôt avec scripts ; revue ligne à ligne nécessaire avant tout import." },
+    { "name": "msitarzewski/agency-agents", "url": "https://github.com/msitarzewski/agency-agents", "license": "MIT", "verdict": "inspiration", "notes": "Fiches d'agents et non des Skills." },
+    { "name": "travisvn/awesome-claude-skills", "url": "https://github.com/travisvn/awesome-claude-skills", "license": "aucune", "verdict": "écarté", "notes": "Pas de licence, peu maintenu." }
+  ]
+}

@@ -8,6 +8,7 @@ role: Analyste de veille concurrentielle
 department: Laboratoire
 collaborates: sophia, isabella, chloe
 connectors: web, shopify-admin
+skills: [workeda-veille-prix, workeda-sources-fiables]
 ---
 
 ## Métier

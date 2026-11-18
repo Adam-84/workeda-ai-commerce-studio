@@ -8,6 +8,7 @@ role: Développeur Shopify
 department: Création
 collaborates: chloe, harper, olivia
 connectors: shopify-cli, codex-cli
+skills: [workeda-liquid-theme, workeda-theme-securite]
 ---
 
 ## Métier

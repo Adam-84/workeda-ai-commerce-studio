@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { isValidAppearance } from '../public/sprites.js';
 import { isValidIslandStyle, normalizeIslandStyle } from '../public/island-style.js';
+import { SKILL_SCHEMA, createSkillStore } from './studio-skills.js';
 
 const DEPARTMENTS = [
   ['Direction', 'Pilotage et validations'], ['Catalogue', 'Produits et collections'],
@@ -32,6 +33,7 @@ export function createStudio(filename = 'data/workeda.db') {
     CREATE TABLE IF NOT EXISTS user_messages (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), body TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS user_messages_agent_time ON user_messages(agent_id, created_at, id);
   `);
+  db.exec(SKILL_SCHEMA);
   const seeded = db.prepare('SELECT COUNT(*) AS count FROM departments').get().count;
   if (seeded === 0) {
     const insert = db.prepare('INSERT INTO departments (id, name, description, created_at) VALUES (?, ?, ?, ?)');
@@ -51,6 +53,7 @@ export function createStudio(filename = 'data/workeda.db') {
   const requireDepartment = (id) => { const d = one('SELECT id, name FROM departments WHERE id = ?', id); if (!d) throw Object.assign(new Error('Département introuvable.'), { status: 404 }); return d; };
 
   return {
+    ...createSkillStore(db),
     listDepartments: () => db.prepare('SELECT * FROM departments ORDER BY created_at').all().map(mapDepartment),
     createDepartment({ name, description = '' }) {
       if (!name?.trim()) throw new Error('Le nom du département est obligatoire.');

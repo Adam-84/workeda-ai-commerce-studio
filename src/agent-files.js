@@ -5,6 +5,8 @@ import { join } from 'node:path';
 export const SECTIONS = [['Métier', 'metier'], ['Ne fait jamais', 'neFaitJamais'], ['Missions', 'missions'], ['Règles', 'regles'], ['Méthode', 'methode'], ['Livrable', 'livrable'], ['Relais', 'relais'], ['Réussite', 'reussite']];
 export const REQUIRED = ['name', 'description', 'tools', 'model', 'display_name', 'role', 'department', 'collaborates'];
 export const MODELS = ['opus', 'sonnet', 'haiku'];
+export const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export const MAX_PRELOADED = 4; // un Skill préchargé est injecté en entier : on borne le coût en jetons
 const list = (value) => (value ?? '').split(',').map((x) => x.trim()).filter(Boolean);
 
 export function parseAgentFile(text, filename) {
@@ -12,12 +14,23 @@ export function parseAgentFile(text, filename) {
   const m = src.match(/^---\n([\s\S]*?)\n---(?:\n|$)([\s\S]*)$/);
   if (!m) return { error: 'en-tête --- absent' };
   const head = {};
+  let skills = [];
   for (const line of m[1].split('\n')) {
     if (!line.trim()) continue;
     const i = line.indexOf(':');
     if (i < 1) return { error: `ligne d'en-tête illisible : « ${line} »` };
     const key = line.slice(0, i).trim(), value = line.slice(i + 1).trim();
     if (Object.hasOwn(head, key)) return { error: `clé en double : ${key}` };
+    if (key === 'skills') { // liste YAML entre crochets : skills: [nom-un, nom-deux]
+      if (!/^\[[a-z0-9, -]*\]$/.test(value)) return { error: 'skills doit être une liste entre crochets, par exemple [nom-un, nom-deux]' };
+      const items = value.slice(1, -1).split(',').map((x) => x.trim());
+      if (items.length === 1 && !items[0]) items.pop();
+      if (items.some((x) => !SKILL_NAME.test(x))) return { error: 'skills : nom de Skill invalide (minuscules, chiffres et tirets)' };
+      if (new Set(items).size !== items.length) return { error: 'skills : un Skill est cité deux fois' };
+      if (items.length > MAX_PRELOADED) return { error: `skills : ${MAX_PRELOADED} Skills préchargés au maximum (chaque Skill est injecté en entier à chaque mission)` };
+      skills = items; head.skills = value;
+      continue;
+    }
     if (value.includes(': ')) return { error: `la valeur de « ${key} » contient un deux-points suivi d'une espace, que Claude Code ne sait pas lire` };
     if (value.endsWith(':') || value.includes(' #') || /^["'#[{>|&*!%@`]/.test(value)) return { error: `la valeur de « ${key} » contient une suite que Claude Code (YAML) lit mal` };
     head[key] = value;
@@ -40,7 +53,7 @@ export function parseAgentFile(text, filename) {
       slug, description: head.description, tools: list(head.tools), model: head.model,
       displayName: head.display_name, role: head.role, department: head.department,
       collaboratesAll, collaborates: collaboratesAll ? [] : list(head.collaborates),
-      connectors: list(head.connectors), sections
+      connectors: list(head.connectors), skills, sections
     }
   };
 }

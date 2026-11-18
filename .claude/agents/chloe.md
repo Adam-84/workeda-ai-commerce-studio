@@ -8,6 +8,7 @@ role: Designer UX/UI e-commerce
 department: Création
 collaborates: sophia, ryan, harper
 connectors: web, shopify-admin
+skills: [workeda-cro-ecommerce, workeda-parcours-mobile]
 ---
 
 ## Métier

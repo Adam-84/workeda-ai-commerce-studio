@@ -121,3 +121,28 @@ select,fieldset{color:var(--text)}
   .chat-key-hint{display:none}
   .chat-composer-actions{justify-content:flex-end}
 }
+
+/* Skills : onglet de la fiche agent et centre Skills (mêmes variables et mêmes composants que le panneau personnage). */
+#skills-btn{font-weight:600;white-space:nowrap}
+#pop.agent-panel:has(.skills-center){width:min(640px,calc(100vw - 32px))}
+.skills-tab,.skills-center [role=tabpanel]>div{display:grid;gap:8px;align-content:start}
+#pop .skill-list{display:grid;gap:8px}
+#pop .skill-row{display:flex;gap:10px;justify-content:space-between;align-items:flex-start;padding:10px 12px;border:1px solid color-mix(in srgb,var(--text) 18%,transparent);border-radius:12px}
+#pop .skill-row>div{min-width:0;display:grid;gap:4px;overflow-wrap:anywhere}
+#pop .skill-row>button{flex:none;min-height:36px}
+.skill-row button:disabled,.skills-center button:disabled{opacity:.55;cursor:default}
+button.link{border:0;padding:0;background:none;color:var(--accent);font-weight:700;text-align:left;text-decoration:underline;text-underline-offset:3px}
+.skill-row .chip{display:inline-block;margin:0 4px 0 0;padding:2px 8px;font-size:11px}
+.skill-chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.skill-filters{display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px}
+.skill-findings{display:grid;gap:4px}
+#pop .skill-content{white-space:pre-wrap;overflow:auto;max-height:46vh;margin:8px 0 0;padding:10px;border:1px solid color-mix(in srgb,var(--text) 18%,transparent);border-radius:10px;font:12px/1.5 ui-monospace,Consolas,monospace}
+.skill-editor{width:100%;min-height:220px;font:12px/1.5 ui-monospace,Consolas,monospace;resize:vertical}
+.skills-center .row{position:static;border-top:0}
+@media(max-width:700px){
+  #skills-btn{flex:none;padding:6px 8px;min-height:36px}
+  .search-wrap{flex:1 1 0;min-width:0}#topbar #search{width:100%;min-width:0}
+  .skill-filters{grid-template-columns:1fr}
+  .skill-row button,.skills-center .row button,.skills-center button.link{min-height:44px}
+  .skill-editor,.skills-center input,.skills-center select,.skills-center textarea,.skills-tab input{font-size:16px}
+}

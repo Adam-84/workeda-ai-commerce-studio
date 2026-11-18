@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { existsSync, statSync, realpathSync } from 'node:fs';
 import { join, extname, resolve, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { connectorState } from './agent-files.js';
+import { connectorState, MAX_PRELOADED } from './agent-files.js';
 
 // Détection réelle d'un binaire dans le PATH (« détecté » ne veut pas dire « connecté »).
 export const cliPresent = (command, run = execFileSync) => {
@@ -21,7 +21,26 @@ const body = async (req) => {
 
 const DETECT_TTL_MS = 10_000;
 
-export function createApp({ studio, publicDir, detect: rawDetect = cliPresent, agentFiles: { profiles = [], warnings = [] } = {} }) {
+// Les routes qui écrivent dans skills/ ou dans les fiches ne répondent qu'à cette machine : un Skill est du texte que
+// les agents lisent comme une consigne, il ne doit pas pouvoir être modifié par une autre page web ou un autre poste.
+const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+const SKILL_PATH = /^\/api\/(?:skills(?:\/|$)|agents\/[^/]+\/skills)/;
+function assertLocalWrite(req) {
+  const deny = (why) => Object.assign(new Error(`Modification refusée : ${why}.`), { status: 403 });
+  if (!LOOPBACK.has(req.socket.remoteAddress)) throw deny('connexion non locale');
+  let host;
+  try { host = new URL(`http://${req.headers.host}`); } catch { throw deny('en-tête Host invalide'); }
+  if (!LOCAL_HOSTS.has(host.hostname)) throw deny('nom d’hôte non local');
+  const { origin } = req.headers; // absent pour un appel sans navigateur ; présent et différent pour une autre page web
+  if (origin !== undefined) {
+    let from = null;
+    try { from = new URL(origin).host; } catch { /* « null » ou illisible : refusé ci-dessous */ }
+    if (from !== host.host) throw deny('requête issue d’une autre origine');
+  }
+}
+
+export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPresent, agentFiles: { profiles = [], warnings = [] } = {} }) {
   // La détection lance un processus synchrone : on garde le résultat quelques secondes.
   const seen = new Map();
   const detect = (command) => {
@@ -64,7 +83,29 @@ export function createApp({ studio, publicDir, detect: rawDetect = cliPresent, a
       return studio.recordActivity({ ...data, verified: true });
     }
   };
+  if (skills) Object.assign(routes, {
+    'GET /api/skills': () => studio.listSkills(),
+    'GET /api/skills/categories': () => studio.listSkillCategories(),
+    'GET /api/skills/sources': () => studio.listSkillSources(),
+    'GET /api/skills/stats': () => ({ ...studio.skillStats(), maxPreloaded: MAX_PRELOADED }),
+    'GET /api/skills/health': () => skills.health(),
+    'GET /api/skills/recommend': (_, q) => skills.recommend({ agentId: q.get('agentId'), text: q.get('text') }),
+    'POST /api/skills': (data) => skills.create(data),
+    'POST /api/skills/import': (data) => skills.importSkill(data),
+    'POST /api/skills/sync': () => skills.sync()
+  });
   const paramRoutes = [
+    ...(skills ? [
+      ['GET', /^\/api\/skills\/([^/]+)$/, (m) => skills.detail(decodeURIComponent(m[1]))],
+      ['GET', /^\/api\/skills\/([^/]+)\/versions\/([0-9a-f]{64})$/, (m) => studio.getSkillVersion(decodeURIComponent(m[1]), m[2])],
+      ['PUT', /^\/api\/skills\/([^/]+)$/, (m, data) => skills.update(decodeURIComponent(m[1]), data)],
+      ['POST', /^\/api\/skills\/([^/]+)\/archive$/, (m) => skills.setArchived(decodeURIComponent(m[1]), true)],
+      ['POST', /^\/api\/skills\/([^/]+)\/unarchive$/, (m) => skills.setArchived(decodeURIComponent(m[1]), false)],
+      ['POST', /^\/api\/skills\/([^/]+)\/use$/, (m, data) => studio.declareSkillUse({ skill: decodeURIComponent(m[1]), agentId: data.agentId, note: data.note })],
+      ['GET', /^\/api\/agents\/([^/]+)\/skills$/, (m) => skills.forAgent(decodeURIComponent(m[1]))],
+      ['POST', /^\/api\/agents\/([^/]+)\/skills$/, (m, data) => skills.assign(decodeURIComponent(m[1]), data.skill)],
+      ['DELETE', /^\/api\/agents\/([^/]+)\/skills\/([^/]+)$/, (m) => skills.unassign(decodeURIComponent(m[1]), decodeURIComponent(m[2]))]
+    ] : []),
     ['GET', /^\/api\/agents\/([^/]+)\/conversation$/, (m, _, q) => studio.listConversation(decodeURIComponent(m[1]), q.get('before'))],
     ['POST', /^\/api\/agents\/([^/]+)\/conversation$/, (m, data) => studio.sendUserMessage(decodeURIComponent(m[1]), data)],
     ['PUT', /^\/api\/agents\/([^/]+)\/appearance$/, (m, data) => studio.setAppearance(decodeURIComponent(m[1]), data)],
@@ -77,6 +118,7 @@ export function createApp({ studio, publicDir, detect: rawDetect = cliPresent, a
       const url = new URL(req.url, 'http://localhost');
       const key = `${req.method} ${url.pathname}`;
       const hasBody = req.method === 'POST' || req.method === 'PUT';
+      if (skills && req.method !== 'GET' && SKILL_PATH.test(url.pathname)) assertLocalWrite(req);
       if (routes[key]) return send(res, 200, await routes[key](hasBody ? await body(req) : undefined, url.searchParams));
       for (const [method, re, fn] of paramRoutes) { const m = req.method === method && url.pathname.match(re); if (m) return send(res, 200, await fn(m, hasBody ? await body(req) : undefined, url.searchParams)); }
       const file = resolve(join(root, key === 'GET /' ? 'index.html' : decodeURIComponent(url.pathname)));

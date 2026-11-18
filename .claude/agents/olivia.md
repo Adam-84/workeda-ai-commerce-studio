@@ -7,6 +7,7 @@ display_name: Olivia
 role: Coordinatrice des missions
 department: Direction
 collaborates: tous
+skills: [workeda-suivi-missions, workeda-planification]
 ---
 
 ## Métier

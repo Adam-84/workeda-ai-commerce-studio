@@ -10,6 +10,7 @@ import { drawEmblem } from './emblems.js';
 import { OPTIONS as ISLAND_OPTIONS, LABELS_FR, LABEL_MAX, normalizeIslandStyle, isValidIslandStyle } from './island-style.js'; // OPTIONS de sprites.js = personnages : alias
 import { connectorText, modelLabel, colleagues, ignoredText, helpLine, FULL_SECTIONS } from './agent-profile.js';
 import { createConversation } from './conversation.js';
+import { agentSkillsTab, skillsCenter } from './skills-ui.js';
 
 const $ = (s) => document.querySelector(s);
 const get = (p) => fetch(p).then(async (r) => { const d = await r.json(); if (!r.ok) throw new Error(d.error); return d; });
@@ -144,8 +145,7 @@ function drawBeams(t) {
     if (Math.abs(age - dur / 2) < 0.3) { ctx.globalAlpha = 0.35; ctx.fillStyle = color; ctx.fillRect(crystal[0] - 10, crystal[1] - 600, 20, 600); ctx.globalAlpha = 1; } // éclair vertical au passage du cristal
   }
 }
-let last = 0;
-function frame(ts) { if (ts - last >= 40) { last = ts; draw(ts / 1000); } requestAnimationFrame(frame); }
+function frame(ts) { draw(ts / 1000); requestAnimationFrame(frame); } // une image par rafraîchissement d'écran (60 fps sur un écran 60 Hz)
 
 // ---------- superposition HTML (boutons, pastilles, icônes) ----------
 const overlayNodes = [];
@@ -265,7 +265,7 @@ loadUserSprites();
 const pop = $('#pop'); let current = null;
 const anchorEl = () => current && overlay.querySelector(`[data-key="${current.key}"]`);
 function positionPop() {
-  if (current?.kind === 'agent') { pop.style.left = pop.style.top = ''; return; }
+  if (current?.kind === 'agent' || current?.kind === 'skills') { pop.style.left = pop.style.top = ''; return; }
   if (matchMedia('(max-width: 700px)').matches) { pop.style.left = pop.style.top = ''; return; }
   const a = anchorEl(); if (!a) return;
   const r = a.getBoundingClientRect(), w = pop.offsetWidth, hh = pop.offsetHeight;
@@ -276,12 +276,12 @@ function positionPop() {
 let closeHook = null; // l'éditeur d'île y met l'annulation de son aperçu non enregistré
 let liveDraft = null; // { id, get } tant que le formulaire de personnalisation est ouvert
 const runCloseHook = () => { const f = closeHook; closeHook = null; liveDraft = null; f?.(); };
-export function close(restore = true) { runCloseHook(); if (pop.hidden) return; const key = current?.key; pop.hidden = true; current = null; announce('Fenêtre fermée'); if (restore && key) overlay.querySelector(`[data-key="${key}"]`)?.focus(); }
+export function close(restore = true) { runCloseHook(); if (pop.hidden) return; const key = current?.key; pop.hidden = true; current = null; announce('Fenêtre fermée'); if (restore && key) (key.startsWith('skills:') ? $('#skills-btn') : overlay.querySelector(`[data-key="${key}"]`))?.focus(); }
 export function show(kind, id, opts = {}) {
   runCloseHook();
   const key = opts.recruit ? `plot:${id}` : `${kind}:${id}`; current = { kind, id, key };
-  pop.classList.toggle('agent-panel', kind === 'agent');
-  const view = { island: islandView, agent: agentView, hub: hubView }[kind](id, opts);
+  pop.classList.toggle('agent-panel', kind === 'agent' || kind === 'skills');
+  const view = { island: islandView, agent: agentView, hub: hubView, skills: skillsView }[kind](id, opts);
   pop.replaceChildren(h('button', { class: 'x', type: 'button', 'aria-label': 'Fermer', onclick: () => close() }, '×'), view);
   pop.scrollTop = 0; pop.hidden = false; positionPop(); pop.focus(); announce(`${pop.querySelector('h2')?.textContent ?? ''} ouvert`);
 }
@@ -419,6 +419,7 @@ function agentView(id, opts = {}) {
         h('button', { type: 'button', class: 'primary', onclick: () => { close(false); const select = $('#missionbar select'); select.value = a.id; $('#missionbar input').focus(); } }, 'Donner une mission'));
     } },
     ...['Profil', 'Apparence'].map((label) => ({ label, render: () => TABS[label](a) })),
+    { label: 'Skills', render: () => agentSkillsTab({ ui: UI, agent: a, openSkill: (name) => show('skills', 'library', { skill: name }) }) },
     { label: 'Activité', render: () => TABS.Journal(a) }
   ];
   const selected = opts.tab === 'Messages' ? 'Discussion' : opts.tab === 'Journal' ? 'Activité' : opts.tab;
@@ -448,6 +449,8 @@ const TABS = {
   },
   Journal: (a) => { const ul = h('ul', {}, h('li', {}, 'Chargement…')); get(`/api/events?agentId=${encodeURIComponent(a.id)}`).then((ev) => ul.replaceChildren(...ev.slice(0, 8).map((e) => h('li', {}, `${new Date(e.created_at).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })} · ${e.kind} · ${e.detail} (source : ${e.source})`)))).catch((x) => ul.replaceChildren(h('li', { class: 'err' }, x.message))); return ul; },
 };
+const UI = { h, get, send, announce, tabset, field };
+function skillsView(_id, opts = {}) { return skillsCenter({ ui: UI, openAgent: (id) => show('agent', id, { tab: 'Skills' }), initial: opts.skill ?? null }); }
 function hubView() {
   const d = (x) => (x ? 'détecté' : 'non détecté'), c = state.health?.connectors;
   return h('div', {}, h('h2', {}, 'Place centrale'), h('p', {}, `${state.departments.length} départements · ${state.agents.length} agents · ${state.missions.length} missions`),
@@ -467,6 +470,7 @@ $('#search').addEventListener('input', (e) => {
   res.hidden = false;
 });
 const toggleSettings = () => { const s = $('#settings'); s.hidden = !s.hidden; if (!s.hidden) $('#sky').focus(); };
+$('#skills-btn').addEventListener('click', () => (current?.kind === 'skills' ? close() : show('skills', 'library')));
 $('#settings-btn').addEventListener('click', toggleSettings); $('#phase-pill').addEventListener('click', toggleSettings);
 
 // ---------- barre de mission ----------
