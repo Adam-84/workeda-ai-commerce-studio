@@ -552,6 +552,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
   const recordResult = (taskId, { agentId, runId, summary = '', body, sources = [], observed = {}, verified, level, verification }) => {
     const t = task(taskId), text = clean(body, 'Le résultat', LIMITS.result, { required: true });
     assertNoSecret('Le résultat', text);
+    ({ sources, observed } = scrubContactData({ sources, observed }));
     const r = getRun(runId); if (!r || r.agentId !== agentId || r.taskId !== taskId) throw bad('Résultat sans exécution correspondante.', 403);
     const id = randomUUID();
     run('INSERT INTO comm_results (id, task_id, agent_id, run_id, summary, body, sources, observed, verified, level, verification, verified_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', id, t.id, agentId, runId, short(summary, 400), text, JSON.stringify(sources), JSON.stringify(observed), Number(Boolean(verified)), level, short(verification, 400), 'systeme', now());

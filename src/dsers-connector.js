@@ -1,7 +1,7 @@
 // src/dsers-connector.js — DSers en LECTURE SEULE via le MCP officiel.
 // Chaque appel passe par `call()` : (1) liste blanche d'outils, (2) plafond quotidien configurable (100 par défaut), (3) journal sans contenu,
 // (4) cache par durée de vie. Aucune écriture, aucune commande, aucun paiement, aucune publication : ces outils sont refusés avant tout réseau.
-import { assertAllowed, classifyExposedTools, DSERS_READ_SCOPES, CACHE_TTL_MS, projectStoreProduct, projectPackage, projectShippingQuote, matchCatalog, analyzeLogistics } from './integrations-core.js';
+import { assertAllowed, classifyExposedTools, DSERS_READ_SCOPES, CACHE_TTL_MS, projectStoreProduct, projectPackage, projectShippingQuote, matchCatalog, analyzeLogistics, scrubText } from './integrations-core.js';
 import { createMcpClient, IntegrationError } from './mcp-client.js';
 import { assertLoopbackRedirect, buildAuthorizationUrl, createFlowStore, createPkce, exchangeCode, fetchMetadata, refreshTokens, registerClient } from './oauth-pkce.js';
 
@@ -136,7 +136,7 @@ export function createDsersConnector({ store, secrets, fetchImpl, now = () => Da
       catch (e) { steps.push({ step: name, ok: false, calls: 0, error: e.message, kind: e.kind ?? 'error' }); if (fatal(e)) throw Object.assign(e, { steps }); }
     };
     try {
-      await run('boutiques', 'stores', async () => { const r = await call('list_stores', {}); return { calls: 1, payload: { stores: listOf(r, ['stores', 'items', 'data']).map((s) => ({ id: String(s.id ?? s.store_id ?? ''), name: String(s.name ?? s.store_name ?? '').slice(0, 80), platform: String(s.platform ?? s.type ?? '').slice(0, 30) })) } }; });
+      await run('boutiques', 'stores', async () => { const r = await call('list_stores', {}); return { calls: 1, payload: { stores: listOf(r, ['stores', 'items', 'data']).map((s) => ({ id: String(s.id ?? s.store_id ?? ''), name: scrubText(s.name ?? s.store_name, 80), platform: scrubText(s.platform ?? s.type, 30) })) } }; });
       await run('produits liés', 'products', async () => { const { items, calls } = await pages('list_managed_store_products', 'products', projectStoreProduct, MAX_PAGES.products); return { calls, payload: { products: items } }; });
       await run('colis', 'packages', async () => { const { items, calls } = await pages('list_packages', 'packages', projectPackage, MAX_PAGES.packages); return { calls, payload: { packages: items } }; });
       // Frais d'expédition : seulement pour un lot de produits à fournisseur connu, et seulement s'il reste du quota (réserve de 10 appels).

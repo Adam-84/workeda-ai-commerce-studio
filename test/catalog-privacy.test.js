@@ -23,6 +23,40 @@ const safe = (v) => {
 const raw = { id: 1234567890123, title: dirty, handle: `lampe-${email}`, vendor: dirty, product_type: dirty, tags: [dirty], body_html: `<p>Aluminium 30 cm, 24 W. ${dirty}</p>` };
 const snapshot = { mode: 'public', domain: 'example.invalid', ok: true, partial: false, errors: [], collections: [{ id: '1', title: dirty, handle: email, count: 1 }], products: [{ id: '1', title: dirty, handle: email, type: dirty, tags: [dirty], priceMin: 10, priceMax: 10, descChars: 50 }], sourceUrls: [] };
 
+test('revue finale : secrets du catalogue absents des relevés et des prompts, même avant troncature', async () => {
+  const credential = ['shpat', 'a'.repeat(32)].join('_');
+  const input = structuredClone(snapshot);
+  input.products[0].title = `Lampe ${credential}`;
+  input.products[0].desc = `Aluminium 30 cm ${credential}`;
+  const db = new DatabaseSync(':memory:');
+  try {
+    const store = createShopStore(db, { connector: { fetchCatalog: async () => input } });
+    const result = await store.refresh();
+    assert.ok(!JSON.stringify(result).includes(credential), 'secret dans API catalogue');
+    assert.ok(!JSON.stringify(db.prepare('SELECT products FROM shop_snapshots').get()).includes(credential), 'secret dans SQL');
+    assert.ok(!catalogPrompt(input).includes(credential), 'secret dans prompt historique');
+    const product = normalizePublicProduct({ ...raw, title: `${'x'.repeat(150)} ${credential}` }, 'example.invalid');
+    assert.ok(!product.title.includes(credential.slice(0, 10)), 'fragment de secret après troncature');
+    assert.match(result.snapshot.products[0].desc, /Aluminium 30 cm/);
+  } finally { db.close(); }
+});
+
+test('revue finale : les métadonnées de résultat ne publient aucun secret dans le journal Comms', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'archipel-secret-journal-'));
+  const studio = createStudio(':memory:', { commJournalDir: dir, device: 'pc-test' });
+  const credential = ['shpat', 'b'.repeat(32)].join('_');
+  try {
+    studio.syncAgentFiles([{ slug: 'lucas', displayName: 'Lucas', role: 'Catalogue', department: 'Catalogue' }]);
+    const agentId = studio.listAgentFiles()[0].agentId;
+    const task = studio.comm.createTask({ assigneeId: agentId, instruction: 'Auditer les produits' }).task;
+    const run = studio.comm.startRun({ agentId, kind: 'task', taskId: task.id });
+    const result = studio.comm.recordResult(task.id, { agentId, runId: run.id, body: 'Rapport sans secret', summary: credential, sources: [{ label: credential }], observed: { nested: { detail: credential } }, verification: credential, verified: false, level: 'run' });
+    assert.ok(!readFileSync(join(dir, 'pc-test.jsonl'), 'utf8').includes(credential), 'secret dans journal portable');
+    assert.ok(!JSON.stringify(result).includes(credential), 'secret dans résultat API');
+    assert.ok(!buildContext([{ item: { id: '1', level: 'company', nature: 'hypothesis', title: credential, body: credential, sources: [] }, stale: false }]).text.includes(credential), 'secret dans mémoire historique');
+  } finally { studio.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('catalogue public et admin : contacts retirés avant troncature, texte commercial et noms conservés', async () => {
   for (const p of [normalizePublicProduct(raw, 'example.invalid'), normalizeAdminProduct({ ...raw, productType: dirty, descriptionHtml: raw.body_html, seo: { title: dirty } }, 'example.invalid')]) {
     safe(p); assert.match(p.desc, /Aluminium 30 cm, 24 W/); assert.match(p.title, /Jean Exemple, 12 rue Fictive/); assert.equal(p.id, String(raw.id));

@@ -28,6 +28,25 @@ function setup({ dsers = {}, track = {}, env = OPEN, clockMs, wrapFetch = (f) =>
   return { studio, svc, sim, t17, secrets, secretsDir, clock, connect };
 }
 
+test('revue finale : les coordonnées DSers encodées sont nettoyées avant stockage et troncature', async () => {
+  const { studio, svc, sim, connect } = setup({ wrapFetch: (fetch) => async (u, i) => {
+    if (String(u).endsWith('/mcp') && JSON.parse(i.body).params?.name === 'list_stores') {
+      const { id } = JSON.parse(i.body);
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id, result: { structuredContent: { stores: [{ id: 's1', name: `${'x'.repeat(70)} client%40example.invalid` }] } } }));
+    }
+    return fetch(u, i);
+  } });
+  try {
+    await connect();
+    sim.rawProducts[0].title = 'Lampe client%40example.invalid';
+    sim.rawProducts[1].title = `${'x'.repeat(150)} client&#64;example.invalid`;
+    assert.equal((await svc.sync('dsers', { force: true })).ok, true);
+    const stored = JSON.stringify(['products', 'stores'].map((kind) => svc.store.latest('dsers', kind)));
+    for (const fragment of ['client%40', 'client&#64;', 'client@']) assert.ok(!stored.includes(fragment), 'coordonnée DSers conservée');
+    assert.ok(stored.includes('Lampe'), 'texte commercial conservé');
+  } finally { studio.close(); }
+});
+
 test('réseau réel désactivé par défaut : aucune connexion, aucun appel, état honnête', async () => {
   const { svc, sim } = setup({ env: {} });
   await assert.rejects(() => svc.beginAuth('dsers'), (e) => e.kind === 'real_network_disabled');

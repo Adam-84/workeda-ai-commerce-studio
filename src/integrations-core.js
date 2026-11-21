@@ -78,7 +78,7 @@ export function maskTracking(n) {
 export const trackingKey = (n) => createHash('sha1').update(String(n ?? '').trim().toUpperCase()).digest('hex').slice(0, 10); // identifiant stable, non réversible
 // Retire e-mails, téléphones et numéros de suivi d'un texte libre (descriptions d'événements, notes). Les dates ne sont jamais prises pour des téléphones.
 export function scrubText(text, max = 160) {
-  let s = String(text ?? '');
+  let s = scrubContacts(text);
   const dates = []; s = s.replace(DATE_RE, (d) => { dates.push(d); return `\u0001${dates.length - 1}\u0001`; });
   // Ordre : e-mails, puis numéros de suivi (masqués), puis téléphones (sinon un suivi serait pris pour un téléphone).
   s = s.replace(EMAIL_RE, '[e-mail retiré]').replace(TRACKISH_RE, (m) => maskTracking(m)).replace(PHONE_RE, (m) => (m.replace(/\D/g, '').length >= 9 ? '[téléphone retiré]' : m));

@@ -1,4 +1,5 @@
-// Filtrage ciblé des champs libres : ni noms, ni adresses, ni caractéristiques commerciales.
+// Filtrage ciblé des champs libres : coordonnées et formes de secrets reconnues, sans retirer les noms ni les adresses.
+import { scrubSecrets } from './secret-store.js';
 const EMAIL = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
 const TRACK = /\b(?:1Z[A-Z0-9]{16}|[A-Z]{2,6}\d{8,24}[A-Z]{0,2}|\d{12,30})\b/gi;
 const PHONE = /(?<![\p{L}\d])(?:\+|00)?\d[\d \t\u00a0().-]{6,}\d(?![\p{L}\d])/gu;
@@ -11,10 +12,12 @@ const decode = (text) => {
   return s;
 };
 export function scrubContacts(value) {
-  const original = String(value ?? '');
+  const original = scrubSecrets(String(value ?? ''));
   let s = original;
   for (let i = 0; i < 3; i++) { const d = decode(s); if (d === s) break; s = d; }
-  let changed = false;
+  const redacted = scrubSecrets(s);
+  let changed = redacted !== s;
+  s = redacted;
   s = s.replace(EMAIL, () => { changed = true; return '[e-mail retiré]'; });
   const stable = [];
   s = s.replace(STABLE, (m) => { stable.push(m); return `\u0001${stable.length - 1}\u0001`; });
