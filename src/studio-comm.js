@@ -49,6 +49,13 @@ export const COMM_MIGRATIONS = [{
   // budget_usd : plafond de coût rapporté pour une demande racine (NULL pour les sous-tâches, qui comptent dans celui de leur racine).
   up: `ALTER TABLE comm_tasks ADD COLUMN with_catalog INTEGER NOT NULL DEFAULT 0; ALTER TABLE comm_tasks ADD COLUMN budget_usd REAL;`,
   down: `ALTER TABLE comm_tasks DROP COLUMN with_catalog; ALTER TABLE comm_tasks DROP COLUMN budget_usd;`
+}, {
+  version: 3,
+  name: 'intégrations en lecture seule (DSers, 17TRACK) demandées par tâche',
+  // with_integrations : liste (JSON) des intégrations que le propriétaire demande de fournir à la tâche. Aucune donnée ici : l'accès réel
+  // est vérifié à l'exécution contre les accès accordés à l'agent (jamais par défaut), et les données viennent du cache local.
+  up: `ALTER TABLE comm_tasks ADD COLUMN with_integrations TEXT NOT NULL DEFAULT '[]';`,
+  down: `ALTER TABLE comm_tasks DROP COLUMN with_integrations;`
 }];
 export const COMM_SCHEMA_VERSION = COMM_MIGRATIONS.at(-1).version;
 
@@ -107,18 +114,23 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
   // --- journal ----------------------------------------------------------------------------------------------------------------------------------
   const outbox = () => { const v = parseJsonList(meta('outbox'), []); return v.filter((x) => typeof x === 'string'); };
   const setOutbox = (v) => setMeta('outbox', JSON.stringify([...new Set(v)]));
+  // Un résultat ou un message issu de données DSers/17TRACK reste LOCAL : le journal (versionné dans git) n'en emporte que l'existence.
+  const LOCAL_ONLY = '[Contenu local non synchronisé : issu de données DSers/17TRACK.]';
+  const redactFor = (taskId, text) => (taskId && parseJsonList(get('SELECT with_integrations FROM comm_tasks WHERE id = ?', taskId)?.with_integrations).length ? LOCAL_ONLY : text);
+  // Une instruction déléguée PAR UN AGENT à partir de données DSers/17TRACK peut en contenir : elle reste locale aussi.
+  const redactAgentAsk = (taskId, text) => { const t = taskId && get('SELECT requested_by, with_integrations FROM comm_tasks WHERE id = ?', taskId); return t && t.requested_by !== 'user' && parseJsonList(t.with_integrations).length ? LOCAL_ONLY : text; };
   const portable = {
     thread: (id) => { const t = get('SELECT * FROM comm_threads WHERE id = ?', id); return t && { id: t.id, kind: t.kind, title: t.title, missionId: t.mission_id, department: t.department, createdBy: t.created_by === 'user' ? 'user' : slugOf(t.created_by), createdAt: t.created_at, closedAt: t.closed_at, members: all('SELECT agent_id FROM comm_thread_members WHERE thread_id = ? ORDER BY rowid', id).map((m) => slugOf(m.agent_id)).filter(Boolean) }; },
-    message: (id) => { const m = get('SELECT * FROM comm_messages WHERE id = ?', id); return m && { id: m.id, threadId: m.thread_id, senderType: m.sender_type, sender: m.sender_agent_id ? slugOf(m.sender_agent_id) : null, kind: m.kind, body: m.body, refs: parseJsonList(m.refs), taskId: m.task_id, runId: m.run_id, replyTo: m.reply_to, createdAt: m.created_at, device: m.device }; },
+    message: (id) => { const m = get('SELECT * FROM comm_messages WHERE id = ?', id); return m && { id: m.id, threadId: m.thread_id, senderType: m.sender_type, sender: m.sender_agent_id ? slugOf(m.sender_agent_id) : null, kind: m.kind, body: m.kind === 'delegation' ? redactAgentAsk(m.task_id, m.body) : redactFor(m.task_id, m.body), refs: parseJsonList(m.refs).map((r) => (r && typeof r === 'object' && r.label && redactAgentAsk(m.task_id, 'x') === LOCAL_ONLY ? { ...r, label: LOCAL_ONLY } : r)), taskId: m.task_id, runId: m.run_id, replyTo: m.reply_to, createdAt: m.created_at, device: m.device }; },
     // La clé d'un accusé porte la FICHE de l'agent (jamais son identifiant local, qui diffère d'un ordinateur à l'autre).
     delivery: (key) => { const [mid, slug] = key.split('|'), aid = agentOfSlug(slug); const d = aid && get('SELECT * FROM comm_deliveries WHERE message_id = ? AND agent_id = ?', mid, aid); return d && { messageId: mid, agent: slug, status: d.status, detail: d.detail, updatedAt: d.updated_at }; },
     task: (id) => {
       const t = get('SELECT * FROM comm_tasks WHERE id = ?', id); if (!t) return null;
       const m = get('SELECT * FROM missions WHERE id = ?', t.mission_id);
-      return { id: t.id, missionId: t.mission_id, rootTaskId: t.root_task_id, parentTaskId: t.parent_task_id, threadId: t.thread_id, kind: t.kind, title: t.title, instruction: t.instruction, requestedBy: t.requested_by === 'user' ? 'user' : slugOf(t.requested_by), assignee: slugOf(t.assignee_id), depth: t.depth, state: t.state, stateNote: t.state_note, dependsOn: parseJsonList(t.depends_on), allowWeb: Boolean(t.allow_web), requiresSources: Boolean(t.requires_sources), withCatalog: Boolean(t.with_catalog), budgetUsd: t.budget_usd ?? null, dedupeKey: t.dedupe_key, dueAt: t.due_at, notBefore: t.not_before, attempts: t.attempts, maxAttempts: t.max_attempts, device: t.device, createdAt: t.created_at, updatedAt: t.updated_at, startedAt: t.started_at, finishedAt: t.finished_at,
-        mission: m && { id: m.id, title: m.title, objective: m.objective, expectedResult: m.expected_result, contextText: m.context_text, priority: m.priority, requiresApproval: Boolean(m.requires_approval), requestedBy: m.requested_by ? slugOf(m.requested_by) : null, assignedTo: m.assigned_to ? slugOf(m.assigned_to) : null, createdAt: m.created_at } };
+      return { id: t.id, missionId: t.mission_id, rootTaskId: t.root_task_id, parentTaskId: t.parent_task_id, threadId: t.thread_id, kind: t.kind, title: redactAgentAsk(t.id, t.title), instruction: redactAgentAsk(t.id, t.instruction), requestedBy: t.requested_by === 'user' ? 'user' : slugOf(t.requested_by), assignee: slugOf(t.assignee_id), depth: t.depth, state: t.state, stateNote: t.state_note ? redactFor(t.id, t.state_note) : t.state_note, dependsOn: parseJsonList(t.depends_on), allowWeb: Boolean(t.allow_web), requiresSources: Boolean(t.requires_sources), withCatalog: Boolean(t.with_catalog), withIntegrations: parseJsonList(t.with_integrations), budgetUsd: t.budget_usd ?? null, dedupeKey: t.dedupe_key, dueAt: t.due_at, notBefore: t.not_before, attempts: t.attempts, maxAttempts: t.max_attempts, device: t.device, createdAt: t.created_at, updatedAt: t.updated_at, startedAt: t.started_at, finishedAt: t.finished_at,
+        mission: m && { id: m.id, title: redactAgentAsk(t.id, m.title), objective: redactAgentAsk(t.id, m.objective), expectedResult: redactAgentAsk(t.id, m.expected_result), contextText: redactAgentAsk(t.id, m.context_text), priority: m.priority, requiresApproval: Boolean(m.requires_approval), requestedBy: m.requested_by ? slugOf(m.requested_by) : null, assignedTo: m.assigned_to ? slugOf(m.assigned_to) : null, createdAt: m.created_at } };
     },
-    result: (id) => { const r = get('SELECT * FROM comm_results WHERE id = ?', id); return r && { id: r.id, taskId: r.task_id, agent: slugOf(r.agent_id), runId: r.run_id, summary: r.summary, body: r.body, sources: parseJsonList(r.sources), observed: (() => { try { return JSON.parse(r.observed); } catch { return {}; } })(), verified: Boolean(r.verified), level: r.level, verification: r.verification, verifiedBy: r.verified_by, createdAt: r.created_at }; },
+    result: (id) => { const r = get('SELECT * FROM comm_results WHERE id = ?', id); return r && { id: r.id, taskId: r.task_id, agent: slugOf(r.agent_id), runId: r.run_id, summary: redactFor(r.task_id, r.summary), body: redactFor(r.task_id, r.body), sources: redactFor(r.task_id, 'x') === LOCAL_ONLY ? [] : parseJsonList(r.sources), observed: (() => { try { return JSON.parse(r.observed); } catch { return {}; } })(), verified: Boolean(r.verified), level: r.level, verification: r.verification, verifiedBy: r.verified_by, createdAt: r.created_at }; },
     run: (id) => { const r = get('SELECT * FROM comm_runs WHERE id = ?', id); return r && { id: r.id, agent: slugOf(r.agent_id), kind: r.kind, taskId: r.task_id, threadId: r.thread_id, model: r.model, web: Boolean(r.web), state: r.state, error: r.error, costUsd: r.cost_usd, inputTokens: r.input_tokens, outputTokens: r.output_tokens, durationMs: r.duration_ms, device: r.device, startedAt: r.started_at, finishedAt: r.finished_at }; }
   };
   const bump = (kind, key) => { const prev = get('SELECT rev FROM comm_versions WHERE kind = ? AND key = ?', kind, key); const rev = (prev?.rev ?? 0) + 1, at = now(); run('INSERT INTO comm_versions (kind, key, at, rev, device) VALUES (?, ?, ?, ?, ?) ON CONFLICT(kind, key) DO UPDATE SET at = excluded.at, rev = excluded.rev, device = excluded.device', kind, key, at, rev, device); return { at, rev }; };
@@ -366,7 +378,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
   const mapTask = (t) => {
     if (!t) return null;
     const res = get('SELECT * FROM comm_results WHERE task_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1', t.id);
-    return { id: t.id, missionId: t.mission_id, rootTaskId: t.root_task_id, parentTaskId: t.parent_task_id, threadId: t.thread_id, kind: t.kind, title: t.title, instruction: t.instruction, requestedBy: t.requested_by, assigneeId: t.assignee_id, depth: t.depth, state: t.state, stateNote: t.state_note, dependsOn: parseJsonList(t.depends_on), allowWeb: Boolean(t.allow_web), requiresSources: Boolean(t.requires_sources), withCatalog: Boolean(t.with_catalog), budgetUsd: t.budget_usd ?? null, spentUsd: t.budget_usd == null ? null : spentOf(t.root_task_id), unreportedRuns: t.budget_usd == null ? null : unreportedOf(t.root_task_id), dueAt: t.due_at, notBefore: t.not_before, attempts: t.attempts, maxAttempts: t.max_attempts, device: t.device, createdAt: t.created_at, updatedAt: t.updated_at, startedAt: t.started_at, finishedAt: t.finished_at, resultId: res?.id ?? null, verified: res ? Boolean(res.verified) : false };
+    return { id: t.id, missionId: t.mission_id, rootTaskId: t.root_task_id, parentTaskId: t.parent_task_id, threadId: t.thread_id, kind: t.kind, title: t.title, instruction: t.instruction, requestedBy: t.requested_by, assigneeId: t.assignee_id, depth: t.depth, state: t.state, stateNote: t.state_note, dependsOn: parseJsonList(t.depends_on), allowWeb: Boolean(t.allow_web), requiresSources: Boolean(t.requires_sources), withCatalog: Boolean(t.with_catalog), withIntegrations: parseJsonList(t.with_integrations), budgetUsd: t.budget_usd ?? null, spentUsd: t.budget_usd == null ? null : spentOf(t.root_task_id), unreportedRuns: t.budget_usd == null ? null : unreportedOf(t.root_task_id), dueAt: t.due_at, notBefore: t.not_before, attempts: t.attempts, maxAttempts: t.max_attempts, device: t.device, createdAt: t.created_at, updatedAt: t.updated_at, startedAt: t.started_at, finishedAt: t.finished_at, resultId: res?.id ?? null, verified: res ? Boolean(res.verified) : false };
   };
   const task = (id) => { const t = get('SELECT * FROM comm_tasks WHERE id = ?', id); if (!t) throw notFound('Tâche'); return mapTask(t); };
   const mapResult = (r) => !r ? null : { id: r.id, taskId: r.task_id, agentId: r.agent_id, runId: r.run_id, summary: r.summary, body: r.body, sources: parseJsonList(r.sources), observed: (() => { try { return JSON.parse(r.observed); } catch { return {}; } })(), verified: Boolean(r.verified), level: r.level, verification: r.verification, verifiedBy: r.verified_by, createdAt: r.created_at };
@@ -397,7 +409,10 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     if (rootId && get('SELECT COUNT(*) AS n FROM comm_tasks WHERE root_task_id = ?', rootId).n >= LIMITS.maxPerRoot) throw bad(`Limite de ${LIMITS.maxPerRoot} tâches pour une même demande atteinte.`, 409, { limit: 'root' });
     const allowWeb = Boolean(input.allowWeb) && (by.type === 'user' || Boolean(parent?.allowWeb)); // un agent ne peut jamais élargir l'accès web
     const withCatalog = Boolean(input.withCatalog) && (by.type === 'user' || Boolean(parent?.withCatalog));
-    const key = fingerprint(assignee.slug, instruction, allowWeb, withCatalog);
+    // Intégrations : un agent ne peut jamais élargir ce que le propriétaire a demandé ; seules les intégrations connues sont retenues.
+    const wantedInts = [...new Set(Array.isArray(input.withIntegrations) ? input.withIntegrations.filter((x) => ['dsers', 'track17'].includes(x)) : [])];
+    const withIntegrations = by.type === 'user' ? wantedInts : wantedInts.filter((x) => (parent?.withIntegrations ?? []).includes(x));
+    const key = fingerprint(assignee.slug, instruction, allowWeb, withCatalog, withIntegrations);
     if (!input.forceFresh) {
       const open = get(`SELECT * FROM comm_tasks WHERE dedupe_key = ? AND state IN (${OPEN_STATES.map(() => '?').join(',')}) ${rootId ? 'AND root_task_id = ?' : ''} ORDER BY created_at LIMIT 1`, key, ...OPEN_STATES, ...(rootId ? [rootId] : []));
       if (open) return { task: mapTask(open), created: false, reused: 'open' };
@@ -428,7 +443,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
       run('INSERT INTO comm_tasks (id, mission_id, root_task_id, parent_task_id, thread_id, kind, title, instruction, requested_by, assignee_id, depth, state, depends_on, allow_web, requires_sources, dedupe_key, due_at, attempts, max_attempts, device, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)',
         id, missionId, rootId ?? id, parent?.id ?? null, threadId, kind, short(mission.title, LIMITS.title), instruction, requesterId ?? 'user', assignee.id, depth, stateNow, JSON.stringify(deps.map((d) => d.id)), Number(allowWeb), Number(input.requiresSources ?? allowWeb), key, due, LIMITS.maxAttempts, device, t0, t0);
       for (const a of [assignee.id, requesterId].filter(Boolean)) { const th = thread(threadId); if (!th.members.includes(a)) run('INSERT INTO comm_thread_members (thread_id, agent_id) VALUES (?, ?)', threadId, a); }
-      run('UPDATE comm_tasks SET with_catalog = ?, budget_usd = ? WHERE id = ?', Number(withCatalog), budget, id); // même transaction : jamais de tâche sans ses champs v2
+      run('UPDATE comm_tasks SET with_catalog = ?, budget_usd = ?, with_integrations = ? WHERE id = ?', Number(withCatalog), budget, JSON.stringify(withIntegrations), id); // même transaction : jamais de tâche sans ses champs v2
     });
     setMissionState(missionId, stateNow);
     assertFitsOrUndoTask(id);
@@ -620,6 +635,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
       // Champs de la migration v2 : absents des journaux écrits avant elle (valeurs par défaut).
       // Un champ ABSENT (journal écrit avant la v2) ne remet jamais à zéro un plafond ou un catalogue déjà connus ici.
       if (Object.hasOwn(d, 'withCatalog')) run('UPDATE comm_tasks SET with_catalog = ? WHERE id = ?', Number(Boolean(d.withCatalog)), d.id);
+      if (Object.hasOwn(d, 'withIntegrations')) run('UPDATE comm_tasks SET with_integrations = ? WHERE id = ?', JSON.stringify(Array.isArray(d.withIntegrations) ? d.withIntegrations.filter((x) => ['dsers', 'track17'].includes(x)) : []), d.id);
       if (Object.hasOwn(d, 'budgetUsd')) run('UPDATE comm_tasks SET budget_usd = ? WHERE id = ?', Number.isFinite(d.budgetUsd) && d.budgetUsd >= 0.1 && d.budgetUsd <= LIMITS.maxBudgetUsd ? d.budgetUsd : null, d.id);
     },
     result(d) {

@@ -13,6 +13,7 @@ import {
 const TRANSIENT = /surcharg|à temps|n’a pas pu répondre|n'a pas pu répondre|réponse vide|code de sortie/i;
 const short = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
+const NOT_SHARED = '[Résultat issu de données DSers/17TRACK : non transmis (accès différent ou tâche qui lit le web).]';
 export function createOrchestrator({ studio, profiles = () => [], runner = realClaude, memoryFor = () => '', maxActive = LIMITS.maxActive, pumpEveryMs = 0 } = {}) {
   const comm = studio.comm;
   const active = new Map();      // clé d'exécution → { agentId, runId, taskId, threadId, kind, startedAt }
@@ -35,24 +36,34 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
     const requester = task.requestedBy === 'user' ? { type: 'user' } : { type: 'agent', name: comm.nameOf(task.requestedBy) };
     const deps = task.dependsOn.map((id) => {
       const d = comm.task(id), r = comm.resultOf(id);
-      return { agentName: comm.nameOf(d.assigneeId), title: d.title, state: d.state === 'done' ? 'done' : 'review', verified: Boolean(r?.verified), report: r?.body ?? '', resultId: r?.id ?? null, sources: r?.sources ?? [] };
+      return { agentName: comm.nameOf(d.assigneeId), title: d.title, state: d.state === 'done' ? 'done' : 'review', verified: Boolean(r?.verified), report: r?.body ?? '', resultId: r?.id ?? null, sources: r?.sources ?? [], integrations: d.withIntegrations ?? [] };
     });
     // Seulement ce qui a été ADRESSÉ à cet agent (ou écrit par lui) : un participant ajouté après coup ne reçoit pas l'historique du fil.
     const visible = comm.visibleMessages(task.threadId, task.assigneeId, 100);
     const shown = visible.filter((m) => !(m.taskId === task.id && m.kind === 'delegation')).slice(-8);
-    const recent = shown.map((m) => ({ who: m.senderType === 'agent' ? comm.nameOf(m.senderAgentId) : 'Propriétaire', at: m.createdAt, body: m.body }));
+    const recent = shown.map((m) => ({ who: m.senderType === 'agent' ? comm.nameOf(m.senderAgentId) : 'Propriétaire', at: m.createdAt, body: m.body, kind: m.kind, integrations: (m.taskId && comm.task(m.taskId)?.withIntegrations) || [] }));
     // Messages réellement présents dans le prompt (fil récent, résultats des tâches attendues, demande elle-même) : seuls ceux-là seront accusés.
     const included = new Set([...shown.map((m) => m.id), ...visible.filter((m) => (m.kind === 'result' && task.dependsOn.includes(m.taskId)) || (m.kind === 'delegation' && m.taskId === task.id)).map((m) => m.id)]);
     const web = task.allowWeb ? webToolsOf(profile) : [];
     const catalog = task.withCatalog ? studio.shop?.latest() ?? null : null;
+    // Intégrations (DSers, 17TRACK) : accès vérifié ICI, côté serveur, agent par agent ; relevés déjà en cache (aucun appel réseau, aucun quota consommé).
+    // Une exécution qui lit le web n'en reçoit aucune : une page piégée ne doit pas pouvoir faire sortir des données fournisseur.
+    const wantsInts = (task.withIntegrations ?? []).length > 0 && Boolean(studio.integrations);
+    const ints = wantsInts && !web.length ? studio.integrations.promptFor({ agentSlug: profile.slug, integrations: task.withIntegrations }) : null;
+    const intsNote = wantsInts && web.length ? '[Données DSers/17TRACK NON fournies : cette tâche lit le web, ce qui interdit de leur donner accès. N\'en invente aucune.]' : '';
+    // Provenance : un résultat ou un message issu de données DSers/17TRACK n'est transmis qu'à une tâche qui a la MÊME demande, l'accès accordé,
+    // et ne lit pas le web ; sinon seul un avis est donné (les données ne se propagent pas par les rapports).
+    const mayRead = (need = []) => need.length === 0 || (!web.length && need.every((i) => (task.withIntegrations ?? []).includes(i) && (ints?.used ?? []).includes(i)));
+    const depsSafe = deps.map((d) => (mayRead(d.integrations) ? d : { ...d, title: 'tâche issue de données DSers/17TRACK', report: NOT_SHARED, sources: [], resultId: null }));
+    const recentSafe = recent.map((m) => (m.kind !== 'delegation' && !mayRead(m.integrations) ? { ...m, body: NOT_SHARED } : m));
     const canDelegate = task.depth < LIMITS.maxDepth && task.kind !== 'consolidation';
     // Une exécution qui lit le web ne reçoit pas la mémoire : une page piégée ne doit pas pouvoir la lui faire exfiltrer.
     const memoryText = web.length ? '' : memoryFor(participants(thread), { missionId: task.missionId, query: `${mission?.title ?? ''} ${task.instruction}` });
     const peers = canDelegate ? roster().filter((a) => a.id !== task.assigneeId && mayDelegate(profile, a.slug)) : [];
     return {
-      web, included, provided: task.withCatalog ? (catalog?.sourceUrls ?? []) : [],
-      system: taskSystemPrompt(fichePrompt(profile), { name: me.name, role: me.role, department: me.department, web: web.length > 0, canDelegate, catalog: task.withCatalog }),
-      prompt: taskPrompt({ task, requester, deps, thread: recent, memoryText, catalogText: task.withCatalog ? catalogPrompt(catalog) : '', roster: peers, web: web.length > 0, canDelegate, mission })
+      web, included, provided: [...(task.withCatalog ? (catalog?.sourceUrls ?? []) : []), ...(ints?.provided ?? [])],
+      system: taskSystemPrompt(fichePrompt(profile), { name: me.name, role: me.role, department: me.department, web: web.length > 0, canDelegate, catalog: task.withCatalog, integrations: wantsInts }),
+      prompt: taskPrompt({ task, requester, deps: depsSafe, thread: recentSafe, memoryText, catalogText: task.withCatalog ? catalogPrompt(catalog) : '', integrationsText: ints?.text || intsNote, roster: peers, web: web.length > 0, canDelegate, mission })
     };
   }
 
@@ -69,15 +80,20 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
       if (!target) { out.rejected.push(`« ${d.to} » : agent inconnu ou ambigu.`); continue; }
       if (!mayDelegate(profile, target.slug)) { out.rejected.push(`${target.name} : non autorisé par la fiche de ${comm.nameOf(task.assigneeId)} (champ « collaborates »).`); continue; }
       const hasWeb = webToolsOf(profileOf(target.id)).length > 0;
+      // Données DSers/17TRACK : jamais déléguées à un agent sans accès ni vers une tâche qui lit le web (l'instruction écrite par l'agent pourrait en contenir).
+      if ((task.withIntegrations ?? []).length) {
+        const missing = task.withIntegrations.filter((i) => !studio.integrations?.store.hasGrant(i, target.slug));
+        if (missing.length || (task.allowWeb && hasWeb)) { out.rejected.push(`${target.name} : délégation refusée — la demande découle de données DSers/17TRACK (${missing.length ? `${target.name} n'a pas reçu l'accès` : 'tâche avec recherche web'}).`); continue; }
+      }
       try {
-        const r = comm.createTask({ assigneeId: target.id, instruction: d.task, parentTaskId: task.id, allowWeb: task.allowWeb && hasWeb, requiresSources: task.allowWeb && hasWeb, withCatalog: task.withCatalog, dueAt: task.dueAt }, by);
+        const r = comm.createTask({ assigneeId: target.id, instruction: d.task, parentTaskId: task.id, allowWeb: task.allowWeb && hasWeb, requiresSources: task.allowWeb && hasWeb, withCatalog: task.withCatalog, withIntegrations: task.withIntegrations, dueAt: task.dueAt }, by);
         (r.created ? out.created : out.reused).push(r.task);
       } catch (e) { out.rejected.push(`${target.name} : ${e.message}`); }
     }
     if (ask.length > LIMITS.maxPerRun) out.rejected.push(`${ask.length - LIMITS.maxPerRun} demande(s) au-delà de ${LIMITS.maxPerRun} par exécution : ignorée(s).`);
     const awaited = [...out.created, ...out.reused];
     if (parsed.consolidate && awaited.length) {
-      try { const r = comm.createTask({ assigneeId: task.assigneeId, kind: 'consolidation', instruction: parsed.consolidate, parentTaskId: task.id, withCatalog: task.withCatalog, dependsOn: awaited.map((t) => t.id), dueAt: task.dueAt }, by); out.consolidation = r.task; }
+      try { const r = comm.createTask({ assigneeId: task.assigneeId, kind: 'consolidation', instruction: parsed.consolidate, parentTaskId: task.id, withCatalog: task.withCatalog, withIntegrations: task.withIntegrations, dependsOn: awaited.map((t) => t.id), dueAt: task.dueAt }, by); out.consolidation = r.task; }
       catch (e) { out.rejected.push(`Consolidation : ${e.message}`); }
     } else if (parsed.consolidate && !awaited.length) out.rejected.push('Consolidation demandée sans aucune tâche à attendre : ignorée.');
     return out;
@@ -88,6 +104,11 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
     let run = null;
     try {
       if (!profile) { comm.setTaskState(task.id, 'blocked', 'Fiche de l’agent introuvable dans .claude/agents.'); return; }
+      // Une tâche DÉLÉGUÉE par un agent à partir de données DSers/17TRACK ne s'exécute que chez un agent qui a lui-même reçu l'accès et ne lit pas le web.
+      if ((task.withIntegrations ?? []).length && task.requestedBy !== 'user') {
+        const missing = task.withIntegrations.filter((i) => !studio.integrations?.store.hasGrant(i, profile.slug)), web = task.allowWeb && webToolsOf(profile).length > 0;
+        if (missing.length || web) { comm.setTaskState(task.id, 'blocked', web ? 'Demande issue de données DSers/17TRACK : refusée pour une tâche qui lit le web. Le propriétaire doit la relancer sans web.' : `Demande issue de données DSers/17TRACK : ${profile.displayName ?? profile.slug} n'a pas reçu l'accès (${missing.join(', ')}). Accordez-le dans l'Integration Center ou reformulez.`); return; }
+      }
       if (task.withCatalog) await studio.shop?.ensureFresh(); // relevé en lecture seule, daté ; ne lève jamais
       const built = buildTask(task);
       run = comm.startRun({ agentId, kind: 'task', taskId: task.id, threadId: task.threadId, model: profile.model, web: built.web.length > 0 });
@@ -184,13 +205,14 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
     const key = `reply:${threadId}:${agentId}`;
     active.set(key, { agentId, runId: run.id, taskId: null, threadId, kind: 'reply', startedAt: run.startedAt });
     setActivity(agentId, 'working', `Répond dans « ${short(t.title, 60)} »`);
+    const msgsSafe = msgs.map((m) => (m.taskId && (comm.task(m.taskId)?.withIntegrations ?? []).length ? { ...m, body: NOT_SHARED } : m)); // une réponse libre n'a aucune intégration : rien de ce qui en provient ne lui est transmis
     const shownIds = new Set(msgs.map((m) => m.id)), inbox = comm.pendingFor(agentId, threadId).filter((id) => shownIds.has(id));
     for (const id of inbox) comm.markDelivery(id, agentId, 'received');
     const seen = observeTools();
     const p = (async () => {
       try {
-        const memoryText = memoryFor(participants(t), { missionId: t.missionId, query: msgs.slice(-3).map((m) => m.body).join(' ') });
-        const prompt = replyPrompt({ agentName: a.name, title: t.title, memoryText, thread: msgs.map((m) => ({ sender: m.senderType === 'user' ? 'user' : 'agent', who: m.senderAgentId ? comm.nameOf(m.senderAgentId) : 'Propriétaire', at: m.createdAt, body: m.body })) });
+        const memoryText = memoryFor(participants(t), { missionId: t.missionId, query: msgsSafe.slice(-3).map((m) => m.body).join(' ') });
+        const prompt = replyPrompt({ agentName: a.name, title: t.title, memoryText, thread: msgsSafe.map((m) => ({ sender: m.senderType === 'user' ? 'user' : 'agent', who: m.senderAgentId ? comm.nameOf(m.senderAgentId) : 'Propriétaire', at: m.createdAt, body: m.body })) });
         const text = await runner({ model: profile.model, system: systemPrompt(profile, studio.getInstructions(agentId)), prompt, tools: [], onEvent: seen.feed, timeoutMs: LIMITS.plainTimeoutMs });
         const ended = comm.endRun(run.id, { state: 'done', costUsd: seen.state.cost, usage: seen.state.usage });
         comm.postMessage(threadId, { kind: 'message', body: short(String(text).trim(), LIMITS.body), replyTo: msgs.at(-1)?.id ?? null }, { type: 'agent', agentId, runId: ended.id });

@@ -13,6 +13,7 @@ import { createConversation } from './conversation.js';
 import { agentSkillsTab, skillsCenter } from './skills-ui.js';
 import { agentMemoryTab, memoryCenter } from './memory-ui.js';
 import { agentCommTab, commCenter } from './comm-ui.js';
+import { integrationsCenter } from './integrations-ui.js';
 import { missionsTab } from './missions.js';
 import { instructionsBlock } from './instructions.js';
 
@@ -284,7 +285,7 @@ loadUserSprites();
 const pop = $('#pop'); let current = null;
 const anchorEl = () => current && overlay.querySelector(`[data-key="${current.key}"]`);
 function positionPop() {
-  if (current?.kind === 'agent' || current?.kind === 'skills' || current?.kind === 'memory') { pop.style.left = pop.style.top = ''; return; }
+  if (current?.kind === 'agent' || current?.kind === 'skills' || current?.kind === 'memory' || current?.kind === 'integrations') { pop.style.left = pop.style.top = ''; return; }
   if (matchMedia('(max-width: 700px)').matches) { pop.style.left = pop.style.top = ''; return; }
   const a = anchorEl(); if (!a) return;
   const r = a.getBoundingClientRect(), w = pop.offsetWidth, hh = pop.offsetHeight;
@@ -295,12 +296,12 @@ function positionPop() {
 let closeHook = null; // l'éditeur d'île y met l'annulation de son aperçu non enregistré
 let liveDraft = null; // { id, get } tant que le formulaire de personnalisation est ouvert
 const runCloseHook = () => { const f = closeHook; closeHook = null; liveDraft = null; f?.(); };
-export function close(restore = true) { runCloseHook(); if (pop.hidden) return; const key = current?.key; pop.hidden = true; current = null; announce('Fenêtre fermée'); if (restore && key) (key.startsWith('skills:') ? $('#skills-btn') : key.startsWith('memory:') ? $('#memory-btn') : key.startsWith('comm:') ? $('#comm-btn') : overlay.querySelector(`[data-key="${key}"]`))?.focus(); }
+export function close(restore = true) { runCloseHook(); if (pop.hidden) return; const key = current?.key; pop.hidden = true; current = null; announce('Fenêtre fermée'); if (restore && key) (key.startsWith('skills:') ? $('#skills-btn') : key.startsWith('memory:') ? $('#memory-btn') : key.startsWith('comm:') ? $('#comm-btn') : key.startsWith('integrations:') ? $('#integrations-btn') : overlay.querySelector(`[data-key="${key}"]`))?.focus(); }
 export function show(kind, id, opts = {}) {
   runCloseHook();
   const key = opts.recruit ? `plot:${id}` : `${kind}:${id}`; current = { kind, id, key };
-  pop.classList.toggle('agent-panel', kind === 'agent' || kind === 'skills' || kind === 'memory' || kind === 'comm');
-  const view = { island: islandView, agent: agentView, hub: hubView, skills: skillsView, memory: memoryView, comm: commView }[kind](id, opts);
+  pop.classList.toggle('agent-panel', kind === 'agent' || kind === 'skills' || kind === 'memory' || kind === 'comm' || kind === 'integrations');
+  const view = { island: islandView, agent: agentView, hub: hubView, skills: skillsView, memory: memoryView, comm: commView, integrations: integrationsView }[kind](id, opts);
   pop.replaceChildren(h('button', { class: 'x', type: 'button', 'aria-label': 'Fermer', onclick: () => close() }, '×'), view);
   pop.scrollTop = 0; pop.hidden = false; positionPop(); pop.focus(); announce(`${pop.querySelector('h2')?.textContent ?? ''} ouvert`);
 }
@@ -474,6 +475,7 @@ const agentRef = (a) => state.profiles.get(a.id)?.slug ?? `id:${a.id}`;
 function memoryView(_id, opts = {}) {
   return memoryCenter({ ui: UI, agents: state.agents, departments: state.departments.map((d) => d.name), missions: state.missions, refOf: agentRef, initial: opts.item ?? null });
 }
+function integrationsView() { return integrationsCenter({ ui: UI, setLeave: (fn) => { closeHook = fn; } }); }
 function commView(_id, opts = {}) {
   return commCenter({ ui: UI, agents: state.agents, departments: state.departments.map((d) => d.name), missions: state.missions, profiles: state.profiles, openMemory: (item) => show('memory', 'center', { item }), setLeave: (fn) => { closeHook = fn; }, initial: opts });
 }
@@ -512,6 +514,7 @@ const toggleSettings = () => { const s = $('#settings'); s.hidden = !s.hidden; i
 $('#skills-btn').addEventListener('click', () => (current?.kind === 'skills' ? close() : show('skills', 'library')));
 $('#memory-btn').addEventListener('click', () => (current?.kind === 'memory' ? close() : show('memory', 'center')));
 $('#comm-btn').addEventListener('click', () => (current?.kind === 'comm' ? close() : show('comm', 'center')));
+$('#integrations-btn').addEventListener('click', () => (current?.kind === 'integrations' ? close() : show('integrations', 'center')));
 setInterval(() => { if (!document.hidden) pollComm(); }, 4000); pollComm();
 $('#settings-btn').addEventListener('click', toggleSettings); $('#phase-pill').addEventListener('click', toggleSettings);
 

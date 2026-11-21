@@ -8,6 +8,9 @@ import { createCommStore } from './studio-comm.js';
 import { createShopStore } from './studio-shop.js';
 import { createShopConnector } from './shop-readonly.js';
 import { findSecret } from './memory-core.js';
+import { createIntegrationService } from './integrations.js';
+import { createSecretStore } from './secret-store.js';
+import { dirname, join } from 'node:path';
 
 const DEPARTMENTS = [
   ['Direction', 'Pilotage et validations'], ['Catalogue', 'Produits et collections'],
@@ -416,5 +419,9 @@ export function createStudio(filename = 'data/workeda.db', options = {}) {
   // Catalogue Shopify : relevés datés en LECTURE SEULE (le connecteur n'a aucune écriture). Injectable pour les tests ; sans jeton, pages publiques.
   let connector = options.shopConnector; if (connector === undefined) { try { connector = createShopConnector(); } catch { connector = null; } }
   api.shop = createShopStore(db, { connector, clock: options.clock });
+  // Integration Center (DSers, 17TRACK) : lecture seule, réseau réel désactivé par défaut, jetons chiffrés hors base et hors git.
+  const secretsDir = options.secretsDir ?? (filename === ':memory:' ? null : join(dirname(filename), 'secrets'));
+  const secrets = options.secrets ?? createSecretStore({ dir: secretsDir }); // sans dossier (base en mémoire) : stockage indisponible, jamais de repli en clair
+  api.integrations = createIntegrationService({ db, secrets, shop: api.shop, env: options.env ?? process.env, fetchImpl: options.integrationsFetch, now: options.nowMs, redirectUri: options.redirectUri, sleep: options.integrationsSleep });
   return api;
 }
