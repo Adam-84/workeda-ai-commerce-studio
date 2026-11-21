@@ -8,7 +8,7 @@ export const deliveryLabel = (s) => DELIVERY[s] ?? s;
 export const TASK_STATES = { pending_approval: 'À valider', queued: 'En file', running: 'En cours', review: 'À vérifier', done: 'Terminée', failed: 'Échec', blocked: 'Bloquée', cancelled: 'Annulée', expired: 'Expirée' };
 export const taskStateLabel = (s) => TASK_STATES[s] ?? s;
 export const NOTIFICATION = { approval: 'À valider', review: 'À vérifier', blocked: 'Bloquée', failed: 'Échec', expired: 'Expirée', message: 'Message' };
-export const LEVEL_LABEL = { observed: 'Sources confirmées par consultation réelle', derived: 'Dérivé de résultats vérifiés', run: 'Exécution réelle, sans source exigée', manual: 'Validé par le propriétaire', none: 'Non vérifié' };
+export const LEVEL_LABEL = { provided: 'Relevé Shopify daté fourni par le Studio (non consulté par l’agent)', observed: 'Sources confirmées par consultation réelle', derived: 'Dérivé de résultats vérifiés', run: 'Exécution réelle, sans source exigée', manual: 'Validé par le propriétaire', none: 'Non vérifié' };
 export const levelLabel = (l) => LEVEL_LABEL[l] ?? l;
 
 const fold = (s) => String(s ?? '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
@@ -61,7 +61,7 @@ export function dueLabel(task, now = Date.now()) {
 export const attemptsLabel = (t) => (t.attempts ? `essai ${t.attempts}/${t.maxAttempts}` : '');
 
 export function sourceLine(s) {
-  const mark = s.resultId ? '' : s.checked ? ' ✔ consultée' : s.url ? ' ✖ non confirmée' : '';
+  const mark = s.resultId ? '' : s.provided ? ' ✔ relevé fourni par le Studio' : s.checked ? ' ✔ consultée' : s.url ? ' ✖ non confirmée' : '';
   return `${s.label || s.url}${s.url && s.label ? ` — ${s.url}` : ''}${s.date ? ` (${s.date})` : ''}${mark}`;
 }
 export const verificationLine = (r) => (r ? `${r.verified ? 'Vérifié' : 'Non vérifié'} · ${levelLabel(r.level)} — ${r.verification}` : 'Aucun résultat.');

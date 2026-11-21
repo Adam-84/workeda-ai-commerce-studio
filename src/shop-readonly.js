@@ -7,7 +7,7 @@
 import { createHash } from 'node:crypto';
 import { untrusted } from './comm-core.js';
 
-export const SHOP_LIMITS = { timeoutMs: 15_000, maxBytes: 5_000_000, pages: 4, perPage: 250, minIntervalMs: 5 * 60_000, staleMs: 24 * 3_600_000, descChars: 300, promptProducts: 40, promptChars: 7000 };
+export const SHOP_LIMITS = { timeoutMs: 15_000, maxBytes: 5_000_000, pages: 4, perPage: 250, minIntervalMs: 5 * 60_000, staleMs: 24 * 3_600_000, descChars: 300, promptProducts: 120, promptChars: 14_000 };
 export const ADMIN_VERSION = '2025-01';
 const HOST_RE = /^(?=.{4,253}$)([a-z0-9-]+\.)+[a-z]{2,}$/i;
 
@@ -144,8 +144,16 @@ export function catalogPrompt(snap) {
   const lines = [`Catalogue Shopify de ${snap.domain} — relevé par le Studio le ${snap.fetchedAt} en LECTURE SEULE (${snap.mode === 'admin' ? 'API Admin' : 'pages publiques'}). Tu ne peux rien modifier dans la boutique.`];
   lines.push(`${snap.collections.length} collection(s) : ${snap.collections.slice(0, 30).map((c) => `${c.title} [${c.handle}] (${c.count} produit(s))`).join(' ; ') || 'aucune'}`);
   if (snap.products.length) {
-    lines.push(`${snap.products.length} produit(s) relevé(s)${snap.products.length > SHOP_LIMITS.promptProducts ? ` (les ${SHOP_LIMITS.promptProducts} premiers ci-dessous)` : ''} :`);
-    for (const p of snap.products.slice(0, SHOP_LIMITS.promptProducts)) lines.push(`- ${p.title} | ${p.type || 'type ?'} | ${p.priceMin == null ? 'prix ?' : `${p.priceMin}${p.priceMax !== p.priceMin ? `–${p.priceMax}` : ''}${p.currency ? ` ${p.currency}` : ''}`} | ${p.available ? 'en stock' : 'indisponible ou stock inconnu'} | ${p.images} image(s) | description ${p.descChars} car. | tags : ${p.tags.join(', ') || '—'} | ${p.url}`);
+    lines.push(`${snap.products.length} produit(s) relevé(s) (domaine ${snap.domain} ; adresse d'un produit = https://${snap.domain}/products/<identifiant>) :`);
+    // Une ligne COMPACTE par produit ; on s'arrête avant de dépasser le budget et on le DIT (jamais de coupure silencieuse en milieu de ligne).
+    let used = lines.join('\n').length, listed = 0;
+    for (const p of snap.products.slice(0, SHOP_LIMITS.promptProducts)) {
+      const price = p.priceMin == null ? 'prix ?' : `${p.priceMin}${p.priceMax !== p.priceMin ? `–${p.priceMax}` : ''}${p.currency ? ` ${p.currency}` : ''}`;
+      const line = `- ${p.title.slice(0, 80)} | ${p.type || 'type ?'} | ${price} | ${p.available ? 'stock' : 'indispo'} | ${p.images} img | desc ${p.descChars} car. | ${p.tags.length} tag(s)${p.tags.length ? ': ' + p.tags.slice(0, 4).join(', ') : ''} | ${p.handle}`;
+      if (used + line.length + 1 > SHOP_LIMITS.promptChars - 700) break;
+      lines.push(line); used += line.length + 1; listed += 1;
+    }
+    if (listed < snap.products.length) lines.push(`ATTENTION : ${snap.products.length - listed} produit(s) NON listé(s) faute de place : ton audit est partiel pour eux, dis-le.`);
   } else lines.push('Produits : non relevés.');
   if (snap.errors.length) lines.push(`Limites de ce relevé : ${snap.errors.join(' ; ')}. Ne comble pas ces manques par des données inventées.`);
   return untrusted('catalogue Shopify', lines.join('\n'), SHOP_LIMITS.promptChars);

@@ -43,7 +43,7 @@ test('catalogue : fourni à la demande du propriétaire, daté, cadré non fiabl
   assert.match(c.prompt, /<donnees-non-fiables origine="catalogue Shopify">/); assert.match(c.prompt, /LECTURE SEULE/); assert.match(c.prompt, /Support écran/);
   assert.match(c.system, /catalogue Shopify relevé par le Studio en LECTURE SEULE/); assert.deepEqual(c.tools, [], 'le catalogue n’ouvre aucun outil');
   const r = comm.resultOf(t.id);
-  assert.equal(comm.task(t.id).state, 'done'); assert.equal(r.level, 'observed'); assert.match(r.verification, /catalogue Shopify daté fourni par le Studio/); assert.deepEqual(r.observed.provided, URLS);
+  assert.equal(comm.task(t.id).state, 'done'); assert.equal(r.level, 'provided'); assert.match(r.verification, /relevé daté fourni par le Studio/); assert.deepEqual(r.observed.provided, URLS);
   assert.equal(r.sources[0].checked, true);
   // sans demande : aucun catalogue, aucun relevé
   const other = setup({ Lucas: () => J({ report: 'ok' }) });

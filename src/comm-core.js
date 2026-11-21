@@ -221,8 +221,15 @@ export function evaluateResult({ task, parsed, observed = {}, deps = [] }) {
   const report = (parsed.report ?? '').trim();
   if (!report) return { verified: false, level: 'none', verification: 'Aucun contenu rendu par l’agent.', sources: [] };
   // « provided » : sources fournies par le Studio lui-même (relevé Shopify daté), pas consultées par l'agent.
-  const seen = new Set([...(observed.fetched ?? []), ...(observed.found ?? []), ...(observed.provided ?? [])]);
-  const claimed = (parsed.sources ?? []).map((s) => ({ ...s, checked: Boolean(s.url && seen.has(s.url)) }));
+  const seen = new Set([...(observed.fetched ?? []), ...(observed.found ?? [])]);
+  // Une source du MÊME SITE que le relevé fourni compte comme « fournie par le Studio » (jamais comme une consultation de l'agent).
+  const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return null; } };
+  const providedHosts = new Set((observed.provided ?? []).map(hostOf).filter(Boolean));
+  const claimed = (parsed.sources ?? []).map((s) => {
+    const consulted = Boolean(s.url && seen.has(s.url));
+    const provided = !consulted && Boolean(s.url && (observed.provided ?? []).includes(s.url) || (s.url && providedHosts.has(hostOf(s.url))));
+    return { ...s, checked: consulted || provided, provided };
+  });
   if (task.kind === 'consolidation') {
     const sources = deps.map((d) => ({ label: `Résultat de ${d.agentName} — ${d.title}`, url: null, date: '', note: d.verified ? 'vérifié' : 'non vérifié', checked: Boolean(d.verified), resultId: d.resultId }));
     const unverified = deps.filter((d) => !d.verified);
@@ -233,7 +240,8 @@ export function evaluateResult({ task, parsed, observed = {}, deps = [] }) {
   if (task.requiresSources) {
     const ok = claimed.filter((s) => s.checked), notOk = claimed.length - ok.length;
     const reads = `${(observed.fetched ?? []).length} page(s) lue(s), ${(observed.searched ?? []).length} recherche(s)${(observed.provided ?? []).length ? `, catalogue Shopify daté fourni par le Studio` : ''}`;
-    if (ok.length) return { verified: true, level: 'observed', verification: `${ok.length} source(s) confirmée(s) par les consultations réelles de l'agent (${reads})${notOk ? ` ; ${notOk} source(s) déclarée(s) non confirmée(s)` : ''}.`, sources: claimed };
+    if (ok.some((s) => !s.provided)) return { verified: true, level: 'observed', verification: `${ok.length} source(s) confirmée(s) par les consultations réelles de l'agent (${reads})${notOk ? ` ; ${notOk} source(s) déclarée(s) non confirmée(s)` : ''}.`, sources: claimed };
+    if (ok.length) return { verified: true, level: 'provided', verification: `Source(s) du relevé daté fourni par le Studio (lecture seule), non consultée(s) par l'agent lui-même : ${ok.length} confirmée(s)${notOk ? ` ; ${notOk} non confirmée(s)` : ''}. Le contenu du rapport reste à relire.`, sources: claimed };
     return { verified: false, level: 'none', verification: `Aucune source citée n'est confirmée par une consultation réelle (${reads}) : à vérifier par le propriétaire.`, sources: claimed };
   }
   return { verified: true, level: 'run', verification: 'Exécution réelle de l’agent ; aucun fait externe attendu, aucune source exigée.', sources: claimed };
