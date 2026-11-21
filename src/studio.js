@@ -4,6 +4,7 @@ import { isValidAppearance } from '../public/sprites.js';
 import { isValidIslandStyle, normalizeIslandStyle } from '../public/island-style.js';
 import { SKILL_SCHEMA, createSkillStore } from './studio-skills.js';
 import { createMemoryStore } from './studio-memory.js';
+import { createCommStore } from './studio-comm.js';
 import { findSecret } from './memory-core.js';
 
 const DEPARTMENTS = [
@@ -91,8 +92,10 @@ export function createStudio(filename = 'data/workeda.db', options = {}) {
   }
 
   const emit = (agentId, kind, detail, source = 'manual', verified = true) => {
+    const id = randomUUID();
     db.prepare('INSERT INTO events (id, agent_id, kind, detail, source, verified, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(randomUUID(), agentId ?? null, kind, detail, source, Number(verified), now());
+      .run(id, agentId ?? null, kind, detail, source, Number(verified), now());
+    return id;
   };
   const one = (sql, id, map = (x) => x) => { const result = db.prepare(sql).get(id); return result && map(result); };
 
@@ -148,7 +151,7 @@ export function createStudio(filename = 'data/workeda.db', options = {}) {
 
   const memory = createMemoryStore(db, { filename, journalDir: options.memoryJournalDir ?? null, device: options.device ?? process.env.WORKEDA_DEVICE ?? null });
 
-  return {
+  const api = {
     ...createSkillStore(db),
     memory,
     listDepartments: () => db.prepare('SELECT * FROM departments ORDER BY created_at').all().map(mapDepartment),
@@ -207,6 +210,13 @@ export function createStudio(filename = 'data/workeda.db', options = {}) {
         setCollaborators(id, m.collaborators);
       });
       if (m.assignedTo) emit(m.assignedTo, m.assignedTo === existing.assignedTo ? 'mission.updated' : 'mission.assigned', m.title, 'manual', true);
+      return getMission(id);
+    },
+    // État d'une mission déléguée : simple reflet de l'état réel de sa tâche (aucune autre écriture sur la mission).
+    setMissionState(id, state) {
+      if (typeof state !== 'string' || !/^[a-z_]{1,20}$/.test(state)) throw bad('État de mission invalide.');
+      requireMission(id);
+      db.prepare('UPDATE missions SET state = ?, updated_at = ? WHERE id = ?').run(state, now(), id);
       return getMission(id);
     },
     // Mémoire : notes saisies à la main, corrigées ou archivées, jamais effacées. Aucun agent ne la lit pour l'instant.
@@ -399,4 +409,7 @@ export function createStudio(filename = 'data/workeda.db', options = {}) {
     },
     close: () => db.close()
   };
+  // Communication entre agents : tables à part, chaque tâche déléguée est une mission (moteur existant), le journal voyage avec git.
+  api.comm = createCommStore(db, { journalDir: options.commJournalDir ?? null, device: memory.device, memory, emit, backup: memory.backup, clock: options.clock, missions: { create: (m) => api.createMission(m), setState: (id, st) => api.setMissionState(id, st) } });
+  return api;
 }

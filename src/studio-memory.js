@@ -294,6 +294,8 @@ export function createMemoryStore(db, { filename = ':memory:', journalDir = null
       const live = all("SELECT * FROM memory_items WHERE state IN ('active', 'pending')").map(mapItem).map((i) => freshness(i));
       return { total: get("SELECT COUNT(*) AS n FROM memory_items WHERE state != 'deleted'").n, byLevel: by('level'), byState: by('state'), byNature: by('nature'), pending: get("SELECT COUNT(*) AS n FROM memory_items WHERE state = 'pending'").n, stale: live.filter((f) => f.stale).length, expired: live.filter((f) => f.expired).length };
     },
+    // Tous ces agents peuvent-ils lire ce souvenir (actif) ? Sert à contrôler les références jointes à un message de fil.
+    readableBy(id, agentIds) { const i = item(id); return i.state === 'active' && agentIds.map(whoFor).every((w) => canRead(i, w)); },
     status: () => ({ schemaVersion: schemaVersion(), device, journalDir: journalDir ? resolve(journalDir) : null, journalError, lastMigration, onDisk }),
     owners: () => all("SELECT DISTINCT owner FROM memory_items WHERE owner IS NOT NULL AND state != 'deleted' ORDER BY owner").map((r) => r.owner),
 

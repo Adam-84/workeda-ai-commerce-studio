@@ -175,6 +175,24 @@ npm run memory:backup  # copie la base dans data/backups
 
 Limites assumées : la recherche est lexicale, elle ne comprend pas les synonymes ; les statistiques de « souvenir utilisé » ne comptent que les injections faites par Archipel, pas ce que le modèle en a réellement fait.
 
+## Communication entre agents
+
+Les agents échangent, se délèguent du travail et remontent leurs résultats ; vous gardez la main. Conception, audit et limites : `docs/COMMUNICATION.md`.
+
+- **Dans l'app** : le bouton **Comms** (avec le nombre de notifications ; un point vert quand un agent travaille réellement) ouvre le Comms Center : **Fils** (privés, départements, missions, groupes, avec statut envoyé / reçu / traité / erreur), **Délégations** (arbre des sous-missions, validation, résultat à vérifier, relance, annulation), **Notifications**, **Activité** (exécutions réelles, coûts rapportés, quota, synchro). L'onglet **Comms** d'une fiche agent résume ses fils et ses tâches.
+- **Rien ne part tout seul** : écrire un message n'appelle aucune IA. Un agent travaille seulement sur une tâche approuvée, ou si vous cliquez « Faire répondre ». Deux agents actifs au maximum, 60 exécutions par jour.
+- **Les agents demandent, le Studio contrôle** : un agent ne contacte jamais un collègue directement ; il demande, et le Studio vérifie les droits de sa fiche (`collaborates`), la profondeur (3), les boucles, les doublons. Selon la mission, vous validez ses demandes.
+- **Pas de « terminé » sans preuve** : une tâche n'est terminée qu'avec un résultat vérifié (sources réellement consultées par l'agent, ou consolidation de résultats vérifiés). Sinon elle passe « À vérifier » et c'est vous qui la validez.
+- **Recherche web, lecture seule** : à votre demande (case à cocher), et seulement pour un agent dont la fiche prévoit `WebSearch`/`WebFetch`. Aucune écriture Shopify, aucune API payante (Claude Code, abonnement existant).
+- **Plusieurs ordinateurs** : journal `comm/journal/<appareil>.jsonl` (git). Un import recopie des données et **ne lance rien** ; une tâche reçue d'un autre PC se reprend explicitement (« Exécuter ici »).
+
+```powershell
+npm run comm:check              # contrôle en lecture seule
+npm run comm:sync               # importe les journaux reçus par git
+npm run comm:inbox -- sophia    # ce qui attend un agent (utilisable depuis Codex)
+npm run comm:tasks              # liste des délégations
+```
+
 ## Prérequis Windows
 
 Node.js 24 ou plus récent. Vérifier dans PowerShell :

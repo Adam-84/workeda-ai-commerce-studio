@@ -5,6 +5,7 @@ import { join, extname, resolve, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { connectorState, MAX_PRELOADED } from './agent-files.js';
 import { runClaude as realClaude, systemPrompt, conversationPrompt, missionsPrompt, teamPrompt, planRequestPrompt, parsePlan, memoryPrompt, memoryProposalPrompt, parseMemoryProposals } from './claude-reply.js';
+import { createOrchestrator } from './comm-run.js';
 
 // Détection réelle d'un binaire dans le PATH (« détecté » ne veut pas dire « connecté »).
 export const cliPresent = (command, run = execFileSync) => {
@@ -30,6 +31,9 @@ const SKILL_PATH = /^\/api\/(?:skills(?:\/|$)|agents\/[^/]+\/skills)/;
 // La mémoire est lue par les agents comme une référence : seule cette machine peut l'écrire, valider ou supprimer.
 // Y compris les anciennes notes de mission (« /memory »), que les agents relisent aussi.
 const MEMORY_PATH = /^\/api\/(?:memory(?:\/|$)|missions\/[^/]+\/(?:memory-proposals$|memory(?:\/|$)))/;
+// Communication entre agents : lancer une tâche fait travailler un agent (Claude Code) et écrire dans les fils lus par les autres.
+// Tout est réservé à cette machine, lectures comprises (les fils contiennent le travail de l'entreprise).
+const COMM_PATH = /^\/api\/comm(?:\/|$)/;
 // Lecture : la mémoire contient le savoir de l'entreprise — réservée à cette machine (même contrôle, sans l'origine).
 function assertLocalWrite(req, { checkOrigin = true } = {}) {
   const deny = (why) => Object.assign(new Error(`${checkOrigin ? 'Modification' : 'Lecture'} refusée : ${why}.`), { status: 403 });
@@ -46,7 +50,7 @@ function assertLocalWrite(req, { checkOrigin = true } = {}) {
   }
 }
 
-export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPresent, runClaude = realClaude, agentFiles: { profiles = [], warnings = [] } = {} }) {
+export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPresent, runClaude = realClaude, agentFiles: { profiles = [], warnings = [] } = {}, pumpEveryMs = 0 }) {
   // La détection lance un processus synchrone : on garde le résultat quelques secondes.
   const seen = new Map();
   const detect = (command) => {
@@ -157,6 +161,45 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
     ['PUT', /^\/api\/departments\/([^/]+)\/style$/, (m, data) => studio.setIslandStyle(decodeURIComponent(m[1]), data)],
     ['DELETE', /^\/api\/departments\/([^/]+)\/style$/, (m) => studio.clearIslandStyle(decodeURIComponent(m[1]))]
   ];
+  const comm = studio.comm;
+  // L'orchestrateur ne démarre rien tout seul ici : seules les routes ci-dessous (ou server.js) le sollicitent.
+  let orch = null;
+  if (comm) {
+    const id = (m, i = 1) => decodeURIComponent(m[i]);
+    const delegationInput = (d = {}) => Object.fromEntries(['assigneeId', 'instruction', 'title', 'missionId', 'parentTaskId', 'dependsOn', 'dueAt', 'allowWeb', 'requiresSources', 'requiresApproval', 'priority', 'forceFresh'].filter((k) => d[k] !== undefined).map((k) => [k, d[k]]));
+    Object.assign(routes, {
+      'GET /api/comm/status': () => ({ ...comm.status(), maxActive: orch.activity().maxActive, engines: { claudeCode: detect('claude'), codexCli: detect('codex') } }),
+      'GET /api/comm/check': () => comm.check(),
+      'GET /api/comm/threads': (_, q) => comm.listThreads({ agentId: q.get('agentId') || null, kind: q.get('kind') || null, missionId: q.get('missionId') || null }),
+      'GET /api/comm/tasks': (_, q) => comm.listTasks({ missionId: q.get('missionId') || null, state: q.get('state') || null, agentId: q.get('agentId') || null, rootTaskId: q.get('rootTaskId') || null }),
+      'GET /api/comm/notifications': () => comm.notifications(),
+      'GET /api/comm/activity': () => ({ ...orch.activity(), notifications: comm.notifications().length }),
+      'GET /api/comm/usage': () => comm.usage(),
+      'GET /api/comm/runs': (_, q) => comm.recentRuns(q.get('limit') ?? 50),
+      // Échanges entre agents au format des anciens messages : les faisceaux de la carte les reconnaissent tels quels.
+      'GET /api/comm/exchanges': (_, q) => comm.exchanges(q.get('limit') ?? 200),
+      'POST /api/comm/threads': (d) => comm.createThread(d ?? {}),
+      // Le propriétaire délègue : la tâche est mise en file et démarrera si un agent est libre. Aucune IA n'est lancée pour un simple message.
+      'POST /api/comm/delegations': (d) => { const r = comm.createTask(delegationInput(d), { type: 'user' }); orch.pump(); return r; },
+      'POST /api/comm/notifications/seen': () => comm.markSeen(),
+      'POST /api/comm/import': () => comm.importJournal(),
+      'POST /api/comm/pump': () => { orch.pump(); return orch.activity(); }
+    });
+    paramRoutes.push(
+      ['GET', /^\/api\/comm\/threads\/([^/]+)$/, (m) => comm.thread(id(m))],
+      ['GET', /^\/api\/comm\/threads\/([^/]+)\/messages$/, (m, _, q) => comm.listMessages(id(m), q.get('before'), q.get('limit') ?? 50)],
+      // Un client HTTP ne peut écrire qu'en son nom propre (propriétaire) : jamais au nom d'un agent.
+      ['POST', /^\/api\/comm\/threads\/([^/]+)\/messages$/, (m, d) => comm.postMessage(id(m), { kind: ['message', 'decision'].includes(d?.kind) ? d.kind : 'message', body: d?.body, refs: d?.refs }, { type: 'user' })],
+      ['POST', /^\/api\/comm\/threads\/([^/]+)\/reply$/, (m, d) => orch.replyInThread(id(m), d?.agentId)],
+      ['GET', /^\/api\/comm\/tasks\/([^/]+)$/, (m) => { const task = comm.task(id(m)); return { task, results: comm.results(task.id), dependsOn: task.dependsOn.map((t) => comm.task(t)), children: comm.listTasks({ rootTaskId: task.rootTaskId }).filter((t) => t.parentTaskId === task.id) }; }],
+      ['POST', /^\/api\/comm\/tasks\/([^/]+)\/(approve|cancel|retry|verify|adopt)$/, (m, d) => {
+        const action = m[2], tid = id(m);
+        const out = action === 'approve' ? comm.approveTask(tid) : action === 'cancel' ? comm.cancelTask(tid, typeof d?.reason === 'string' && d.reason.trim() ? d.reason.trim().slice(0, 200) : undefined) : action === 'retry' ? comm.retryTask(tid) : action === 'adopt' ? comm.adoptTask(tid) : comm.verifyTask(tid, typeof d?.note === 'string' ? d.note.slice(0, 300) : '');
+        orch.pump();
+        return out;
+      }]
+    );
+  }
   // Réponse IA diffusée en NDJSON : {type:'text'} au fil de l'eau, puis {type:'done', message} ou {type:'error', error}.
   const replying = new Set();
   const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
@@ -231,7 +274,8 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
       `${recalled}${memoryProposalPrompt(mission, studio.listDiscussion(missionId).slice(-50), nameOf, notes, studio.currentPlan(missionId), profile.displayName)}`,
       (text) => memory.propose(agentId, parseMemoryProposals(text), { missionId }));
   }
-  return createServer(async (req, res) => {
+  if (comm) orch = createOrchestrator({ studio, profiles: () => profiles, runner: runClaude, memoryFor, pumpEveryMs });
+  const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://localhost');
       const key = `${req.method} ${url.pathname}`;
@@ -242,7 +286,8 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
       const planMatch = req.method === 'POST' && url.pathname.match(/^\/api\/missions\/([^/]+)\/plan\/propose$/);
       if (planMatch) return await proposePlan(decodeURIComponent(planMatch[1]), await body(req), res);
       const hasBody = req.method === 'POST' || req.method === 'PUT';
-      if (MEMORY_PATH.test(url.pathname)) assertLocalWrite(req, { checkOrigin: req.method !== 'GET' });
+      if (MEMORY_PATH.test(url.pathname) || COMM_PATH.test(url.pathname)) assertLocalWrite(req, { checkOrigin: req.method !== 'GET' });
+      if (req.method === 'POST' && url.pathname === '/api/messages') assertLocalWrite(req); // enregistrement manuel d'un échange : jamais depuis une autre page web
       const memMatch = req.method === 'POST' && url.pathname.match(/^\/api\/missions\/([^/]+)\/memory-proposals$/);
       if (memMatch) return await proposeMemory(decodeURIComponent(memMatch[1]), await body(req), res);
       if (skills && req.method !== 'GET' && SKILL_PATH.test(url.pathname)) assertLocalWrite(req);
@@ -256,4 +301,7 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
       res.end(await readFile(real));
     } catch (error) { send(res, error.status ?? 400, { error: error.message }); }
   });
+  server.orchestrator = orch; // server.js le démarre (reprise après arrêt, passage régulier) ; les tests le pilotent à la main
+  server.on('close', () => orch?.stop());
+  return server;
 }

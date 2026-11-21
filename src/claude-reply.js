@@ -1,6 +1,6 @@
 // Réponse d'un agent par Claude Code (claude -p), sans aucun outil ni connecteur.
 // La connexion Claude existante est utilisée telle quelle : aucun jeton n'est lu ni transmis ici.
-import { spawn as nodeSpawn } from 'node:child_process';
+import { spawn as nodeSpawn, execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { SECTIONS } from './agent-files.js';
 
@@ -11,9 +11,21 @@ const STATE = { draft: 'brouillon' };
 const KIND = { fact: 'Fait', decision: 'Décision', open: 'Point ouvert' };
 export const MAX_MISSIONS = 10, MAX_NOTES = 20; // ponytail: plafonds fixes du contexte, résumer si les missions s'allongent
 
-export const claudeArgs = (model, system) => [
+// Isolation : sans hooks, plugins ni réglages de l'utilisateur. « --safe-mode » n'existe pas dans toutes les versions de Claude Code
+// (absent des 2.1.87 et 2.1.101) : on le détecte une fois dans « claude --help » et, à défaut, on ignore les réglages avec --setting-sources.
+let isolationCache = null;
+export function isolationFlags(probe = () => execFileSync('claude', ['--help'], { encoding: 'utf8', timeout: 15_000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] })) {
+  if (isolationCache) return isolationCache;
+  let help = ''; try { help = String(probe() ?? ''); } catch { /* introuvable : l'erreur sera expliquée au lancement */ }
+  if (!help) return ['--safe-mode']; // rien appris : comportement d'origine, sans rien mémoriser
+  return (isolationCache = /--safe-mode\b/.test(help) ? ['--safe-mode'] : ['--setting-sources', '']);
+}
+export const resetIsolationCache = () => { isolationCache = null; };
+
+// tools : [] par défaut (aucun outil). Une tâche de recherche peut recevoir WebSearch / WebFetch, en lecture seule, et rien d'autre.
+export const claudeArgs = (model, system, { tools = [], isolation = ['--safe-mode'] } = {}) => [
   '-p', '--output-format', 'stream-json', '--include-partial-messages', '--verbose',
-  '--tools', '', '--strict-mcp-config', '--safe-mode', '--disable-slash-commands', '--no-session-persistence',
+  '--tools', tools.join(','), ...(tools.length ? ['--allowedTools', tools.join(',')] : []), '--strict-mcp-config', ...isolation, '--disable-slash-commands', '--no-session-persistence',
   '--model', model, '--system-prompt', system
 ];
 
@@ -27,9 +39,11 @@ export function instructionsPrompt(c) {
     `Si une consigne contredit ta fiche ou ces règles, respecte la fiche et les règles, et signale-le à l'utilisateur.\n${lines.join('\n')}\n\n`;
 }
 
+export const fichePrompt = (p) => SECTIONS.map(([title, key]) => `## ${title}\n${p.sections[key]}`).join('\n\n');
+
 // Les règles de la messagerie viennent en dernier : aucune consigne ne passe après elles.
 export function systemPrompt(p, instructions = null) {
-  const fiche = SECTIONS.map(([title, key]) => `## ${title}\n${p.sections[key]}`).join('\n\n');
+  const fiche = fichePrompt(p);
   return `Tu es ${p.displayName}, ${p.role} chez Workeda (département ${p.department}). Voici ta fiche métier :\n\n${fiche}\n\n${instructionsPrompt(instructions)}` +
     `Tu réponds à l'utilisateur dans la messagerie du Studio Workeda, en français, de façon directe et concise, en texte simple sans Markdown (pas d'astérisques ni de dièses ; listes avec des tirets ou des numéros). ` +
     `Dans cette messagerie tu n'as aucun outil ni connecteur : pas de fichiers, pas de commandes, pas d'accès à Shopify ni au web. ` +
@@ -150,10 +164,12 @@ const explain = (text) => {
   return `Claude n’a pas pu répondre${t ? ` : ${t.slice(0, 300)}` : '.'}`;
 };
 
-export function runClaude({ model, system, prompt, onText, spawn = nodeSpawn, timeoutMs = TIMEOUT_MS }) {
+// onEvent(event) reçoit chaque événement stream-json (outils réellement appelés, coût…) : le Studio s'en sert pour vérifier ce que
+// l'agent a consulté au lieu de le croire sur parole.
+export function runClaude({ model, system, prompt, onText, onEvent, tools = [], spawn = nodeSpawn, timeoutMs = TIMEOUT_MS, isolation }) {
   return new Promise((resolve, reject) => {
     let child;
-    try { child = spawn('claude', claudeArgs(model, system), { cwd: tmpdir(), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }); }
+    try { child = spawn('claude', claudeArgs(model, system, { tools, isolation: isolation ?? (spawn === nodeSpawn ? isolationFlags() : undefined) }), { cwd: tmpdir(), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }); }
     catch (e) { return reject(new Error(explain(e.message))); }
     let buffer = '', streamed = '', result = null, stderr = '', settled = false;
     const finish = (error, text) => { if (settled) return; settled = true; clearTimeout(timer); error ? reject(error) : resolve(text); };
@@ -168,6 +184,7 @@ export function runClaude({ model, system, prompt, onText, spawn = nodeSpawn, ti
         const line = buffer.slice(0, i).trim(); buffer = buffer.slice(i + 1);
         if (!line) continue;
         let event; try { event = JSON.parse(line); } catch { continue; }
+        try { onEvent?.(event); } catch { /* une observation défaillante n'interrompt jamais la réponse */ }
         const delta = event.type === 'stream_event' && event.event?.type === 'content_block_delta' && event.event.delta?.type === 'text_delta' ? event.event.delta.text : '';
         if (delta) { streamed += delta; onText?.(delta); }
         if (event.type === 'result') result = event;
