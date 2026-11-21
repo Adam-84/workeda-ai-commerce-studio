@@ -5,7 +5,7 @@ import { createIntegrationStore } from './studio-integrations.js';
 import { createDsersConnector } from './dsers-connector.js';
 import { createTrack17Connector, TRACK17_DEFAULT_CAP } from './track17-connector.js';
 import { networkGate, realNetworkAllowed, IntegrationError } from './mcp-client.js';
-import { INTEGRATION_IDS, REGISTRY, DEFAULT_DAILY_CAP, SNAPSHOT_STALE_MS, integrationPrompt, analyzeLogistics, containsPii } from './integrations-core.js';
+import { INTEGRATION_IDS, REGISTRY, DEFAULT_DAILY_CAP, MAX_DAILY_CAP, SNAPSHOT_STALE_MS, integrationPrompt, analyzeLogistics, containsPii } from './integrations-core.js';
 
 const bad = (m, status = 400) => Object.assign(new Error(m), { status });
 export const STATE_LABELS = { not_configured: 'Non configuré', configured: 'Configuré', authenticated: 'Authentifié', tested: 'Testé', unavailable: 'Indisponible' };
@@ -13,7 +13,7 @@ export const STATE_LABELS = { not_configured: 'Non configuré', configured: 'Con
 export function createIntegrationService({ db, secrets, shop = null, env = process.env, fetchImpl = globalThis.fetch, now = () => Date.now(), redirectUri = 'http://127.0.0.1:4318/api/integrations/dsers/callback', sleep }) {
   const iso = () => new Date(now()).toISOString();
   const envCap = Number(env.ARCHIPEL_DSERS_DAILY_CAP);
-  const store = createIntegrationStore(db, { clock: iso, defaultCaps: { dsers: Number.isInteger(envCap) && envCap >= 1 ? envCap : DEFAULT_DAILY_CAP, track17: TRACK17_DEFAULT_CAP } });
+  const store = createIntegrationStore(db, { clock: iso, defaultCaps: { dsers: Number.isInteger(envCap) && envCap >= 1 ? Math.min(envCap, MAX_DAILY_CAP) : DEFAULT_DAILY_CAP, track17: TRACK17_DEFAULT_CAP } });
   const gate = networkGate({ env, fetchImpl });
   const dsers = createDsersConnector({ store, secrets, fetchImpl: gate, now, redirectUri });
   const track17 = createTrack17Connector({ store, secrets, fetchImpl: gate, now, ...(sleep ? { sleep } : {}) });

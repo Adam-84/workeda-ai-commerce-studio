@@ -5,7 +5,7 @@
 //   - ce module ne déclenche AUCUNE connexion à lui seul : tout passe par un fetch injecté (réseau réel désactivé par défaut).
 import { createHash, randomBytes } from 'node:crypto';
 import { DSERS_READ_SCOPES } from './integrations-core.js';
-import { IntegrationError } from './mcp-client.js';
+import { IntegrationError, readCapped } from './mcp-client.js';
 
 export const DSERS_ORIGIN = 'https://ai.dsers.com';
 export const METADATA_URL = `${DSERS_ORIGIN}/.well-known/oauth-authorization-server`;
@@ -14,7 +14,7 @@ const b64u = (buf) => Buffer.from(buf).toString('base64url');
 export function assertReadScopes(scopes) {
   if (!Array.isArray(scopes) || !scopes.length) throw new IntegrationError('forbidden', 'Aucune portée demandée.');
   const refused = scopes.filter((s) => !DSERS_READ_SCOPES.includes(s));
-  if (refused.length) throw new IntegrationError('forbidden', `Portée(s) refusée(s) (lecture seule exigée, liste fixe) : ${refused.slice(0, 5).join(', ')}.`);
+  if (refused.length) throw new IntegrationError('forbidden', 'Portées refusées : lecture seule exigée (liste fixe).');
   return [...new Set(scopes)];
 }
 export function assertDsersEndpoint(url, label) {
@@ -44,14 +44,18 @@ async function postJson(fetchImpl, url, body, label, { form = false } = {}) {
   try { res = await fetchImpl(url, { method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(20_000), headers: { 'content-type': form ? 'application/x-www-form-urlencoded' : 'application/json', accept: 'application/json' }, body: form ? new URLSearchParams(body).toString() : JSON.stringify(body) }); }
   catch (e) { if (e instanceof IntegrationError) throw e; throw new IntegrationError('network', `${label} : service injoignable.`); }
   if (res.status >= 300 && res.status < 400) throw new IntegrationError('protocol', `${label} : redirection refusée.`);
-  let j = {}; try { j = JSON.parse(await res.text()) ?? {}; } catch { /* corps non JSON */ }
-  if (res.status >= 400) throw new IntegrationError(res.status === 401 || j.error === 'invalid_grant' ? 'auth' : 'http', `${label} : refusé (${String(j.error ?? res.status).slice(0, 60)}).`);
+  const text = await readCapped(res);
+  if (text === null) throw new IntegrationError('protocol', `${label} : réponse trop volumineuse.`);
+  let j = {}; try { j = JSON.parse(text) ?? {}; } catch { /* corps non JSON */ }
+  if (res.status >= 400) throw new IntegrationError(res.status === 401 || j.error === 'invalid_grant' ? 'auth' : 'http', `${label} : refusé (HTTP ${res.status}).`);
   return j;
 }
 export async function fetchMetadata(fetchImpl) {
   let res; try { res = await fetchImpl(METADATA_URL, { redirect: 'manual', signal: AbortSignal.timeout(15_000), headers: { accept: 'application/json' } }); } catch (e) { if (e instanceof IntegrationError) throw e; throw new IntegrationError('network', 'Métadonnées OAuth injoignables.'); }
   if (res.status !== 200) throw new IntegrationError('http', `Métadonnées OAuth : réponse ${res.status}.`);
-  const j = JSON.parse(await res.text());
+  const text = await readCapped(res);
+  if (text === null) throw new IntegrationError('protocol', 'Métadonnées OAuth trop volumineuses.');
+  let j; try { j = JSON.parse(text); } catch { throw new IntegrationError('protocol', 'Métadonnées OAuth illisibles.'); }
   for (const k of ['authorization_endpoint', 'token_endpoint', 'registration_endpoint']) assertDsersEndpoint(j[k], k);
   return j;
 }
@@ -64,7 +68,7 @@ export async function registerClient({ fetchImpl, metadata, redirectUri }) {
 export function grantedScopes(tokenResponse, requested) {
   const granted = typeof tokenResponse.scope === 'string' && tokenResponse.scope.trim() ? tokenResponse.scope.trim().split(/\s+/) : requested;
   const extra = granted.filter((s) => !DSERS_READ_SCOPES.includes(s));
-  if (extra.length) throw new IntegrationError('forbidden', `DSers a accordé des portées hors lecture seule (${extra.slice(0, 4).join(', ')}) : connexion refusée et jetons supprimés.`);
+  if (extra.length) throw new IntegrationError('forbidden', 'DSers a accordé des portées hors lecture seule : connexion refusée et jetons supprimés.');
   return granted;
 }
 const shape = (j, requested, now) => {

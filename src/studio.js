@@ -1,3 +1,4 @@
+import { scrubContacts } from './catalog-privacy.js';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { isValidAppearance } from '../public/sprites.js';
@@ -99,7 +100,7 @@ export function createStudio(filename = 'data/workeda.db', options = {}) {
   const emit = (agentId, kind, detail, source = 'manual', verified = true) => {
     const id = randomUUID();
     db.prepare('INSERT INTO events (id, agent_id, kind, detail, source, verified, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(id, agentId ?? null, kind, detail, source, Number(verified), now());
+      .run(id, agentId ?? null, kind, scrubContacts(detail), source, Number(verified), now());
     return id;
   };
   const one = (sql, id, map = (x) => x) => { const result = db.prepare(sql).get(id); return result && map(result); };

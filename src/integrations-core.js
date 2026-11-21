@@ -3,6 +3,7 @@
 //   - projection anti-données personnelles (liste blanche de champs, jamais liste noire) et masquage des numéros de suivi ;
 //   - analyse logistique, correspondance Shopify ↔ DSers (jamais approximative), bloc de données donné aux agents.
 import { createHash } from 'node:crypto';
+import { scrubContacts, scrubContactData } from './catalog-privacy.js';
 import { untrusted } from './comm-core.js';
 
 export const INTEGRATION_IDS = ['dsers', 'track17'];
@@ -50,7 +51,7 @@ export function classifyTrack17Endpoint(name) {
   if (TRACK17_FORBIDDEN_ENDPOINTS.includes(name)) return { allowed: false, kind: 'write', reason: name === 'register' ? 'enregistrement payant : interdit sans accord explicite' : 'point d’accès modifiant ou payant : interdit' };
   return { allowed: false, kind: 'unknown', reason: 'point d’accès inconnu : refusé par défaut' };
 }
-export class ForbiddenToolError extends Error { constructor(integration, name, verdict) { super(`${integration} : « ${String(name).slice(0, 60)} » refusé (${verdict.reason}).`); this.name = 'ForbiddenToolError'; this.kind = 'forbidden'; this.status = 403; this.verdict = verdict; } }
+export class ForbiddenToolError extends Error { constructor(integration, name, verdict) { super(`${integration} : outil refusé (${verdict.reason}).`); this.name = 'ForbiddenToolError'; this.kind = 'forbidden'; this.status = 403; this.verdict = verdict; } }
 export function assertAllowed(integration, name) {
   const verdict = integration === 'dsers' ? classifyDsersTool(name) : integration === 'track17' ? classifyTrack17Endpoint(name) : { allowed: false, kind: 'unknown', reason: 'intégration inconnue' };
   if (!verdict.allowed) throw new ForbiddenToolError(integration, name, verdict);
@@ -190,24 +191,26 @@ export function analyzeLogistics(packages, { now = Date.now(), delayDays = 20, s
 const norm = (s) => String(s ?? '').trim().toLowerCase();
 export function matchCatalog(shopProducts, dsersProducts) {
   const byId = new Map(), byHandle = new Map();
-  for (const d of dsersProducts) { if (d.shopifyId) byId.set(d.shopifyId, [...(byId.get(d.shopifyId) ?? []), d]); if (d.handle) byHandle.set(norm(d.handle), [...(byHandle.get(norm(d.handle)) ?? []), d]); }
+  for (const d of dsersProducts) { if (d.shopifyId) byId.set(d.shopifyId, [...(byId.get(d.shopifyId) ?? []), d]); if (d.handle && scrubContacts(d.handle) === d.handle && !/[\[*]/.test(d.handle)) byHandle.set(norm(d.handle), [...(byHandle.get(norm(d.handle)) ?? []), d]); }
   const matched = [], unmatchedShop = [], ambiguous = [], used = new Set();
   for (const p of shopProducts) {
-    const byid = byId.get(String(p.id)) ?? [], byh = byHandle.get(norm(p.handle)) ?? [], hits = byid.length ? byid : byh, basis = byid.length ? 'id' : 'handle';
+    const byid = byId.get(String(p.id)) ?? [], byh = (scrubContacts(p.handle) === p.handle && !/[\[*]/.test(p.handle) ? byHandle.get(norm(p.handle)) : null) ?? [], hits = byid.length ? byid : byh, basis = byid.length ? 'id' : 'handle';
     if (hits.length === 1) { const d = hits[0]; used.add(d.id); matched.push({ shopId: String(p.id), handle: p.handle, title: p.title, shopPrice: p.priceMin ?? null, dsersId: d.id, supplierName: d.supplierName, supplierCost: d.supplierCost, supplierCurrency: d.supplierCurrency, basis, mapped: d.mapped }); }
     else if (hits.length > 1) ambiguous.push({ shopId: String(p.id), handle: p.handle, title: p.title, candidates: hits.map((h) => h.id) });
     else unmatchedShop.push({ shopId: String(p.id), handle: p.handle, title: p.title });
   }
   const unmatchedDsers = dsersProducts.filter((d) => !used.has(d.id) && !ambiguous.some((a) => a.candidates.includes(d.id))).map((d) => ({ dsersId: d.id, title: d.title, handle: d.handle }));
   const missing = { noSupplierCost: matched.filter((m) => m.supplierCost == null).length, noSupplier: matched.filter((m) => !m.supplierName).length, noShopPrice: matched.filter((m) => m.shopPrice == null).length, notMapped: matched.filter((m) => !m.mapped).length };
-  return { matched, unmatchedShop, unmatchedDsers, ambiguous, missing, counts: { shop: shopProducts.length, dsers: dsersProducts.length, matched: matched.length } };
+  const cleanRows = (rows) => rows.map((r) => ({ ...r, title: scrubContacts(r.title), handle: scrubContacts(r.handle), ...(Object.hasOwn(r, 'supplierName') ? { supplierName: scrubContacts(r.supplierName) } : {}) }));
+  return { matched: cleanRows(matched), unmatchedShop: cleanRows(unmatchedShop), unmatchedDsers: cleanRows(unmatchedDsers), ambiguous: cleanRows(ambiguous), missing, counts: { shop: shopProducts.length, dsers: dsersProducts.length, matched: matched.length } };
 }
 
 // --- bloc donné aux agents ------------------------------------------------------------------------------------------------------------------------------
 export const INTEGRATION_PROMPT_CHARS = 12_000;
 const money = (n, c) => (n == null ? '?' : `${n}${c ? ` ${c}` : ''}`);
 export function integrationPrompt({ dsers = null, track17 = null, notes = [] } = {}) {
-  const lines = ['Données fournisseurs et logistiques relevées par le Studio en LECTURE SEULE. Noms, adresses, e-mails et téléphones ont été retirés ; les numéros de suivi sont masqués. Chaque relevé est daté : cite sa date.'];
+  ({ dsers, track17, notes } = scrubContactData({ dsers, track17, notes }));
+  const lines = ['Données fournisseurs et logistiques relevées par le Studio en LECTURE SEULE. Les données clients structurées sont exclues ; e-mails, téléphones et numéros de suivi des champs libres sont neutralisés. Les noms et adresses éventuellement présents dans les textes commerciaux sont conservés. Chaque relevé est daté : cite sa date.'];
   const provided = [];
   for (const n of notes) lines.push(n);
   if (dsers) {

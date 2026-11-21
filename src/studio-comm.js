@@ -6,6 +6,7 @@
 //   - profondeur, nombre de tâches, cycles, doublons et messages automatiques sont bornés.
 // Synchronisation entre ordinateurs : journal comm/journal/<appareil>.jsonl (versionné dans git). Les agents y sont désignés
 // par leur fiche (slug), jamais par leur identifiant local. Un import ne lance jamais rien : il ne fait que recopier des données.
+import { scrubContacts, scrubContactData } from './catalog-privacy.js';
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -64,7 +65,7 @@ const MAX_FUTURE_MS = 24 * 3_600_000;
 const DEVICE_RE = /^[a-z0-9_-]{1,32}$/i;
 const cmpVersion = (a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.rev - b.rev || (a.device < b.device ? -1 : a.device > b.device ? 1 : 0));
 const notFound = (what) => bad(`${what} introuvable.`, 404);
-const short = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+const short = (s, n) => { s = scrubContacts(s); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
 
 export function createCommStore(db, { journalDir = null, device = 'inconnu', memory = null, missions, emit = () => null, backup = () => null, clock = () => new Date().toISOString(), readOnly = false } = {}) {
   const get = (sql, ...a) => db.prepare(sql).get(...a);
@@ -119,22 +120,23 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
   const redactFor = (taskId, text) => (taskId && parseJsonList(get('SELECT with_integrations FROM comm_tasks WHERE id = ?', taskId)?.with_integrations).length ? LOCAL_ONLY : text);
   // Une instruction déléguée PAR UN AGENT à partir de données DSers/17TRACK peut en contenir : elle reste locale aussi.
   const redactAgentAsk = (taskId, text) => { const t = taskId && get('SELECT requested_by, with_integrations FROM comm_tasks WHERE id = ?', taskId); return t && t.requested_by !== 'user' && parseJsonList(t.with_integrations).length ? LOCAL_ONLY : text; };
+  const jsonObserved = (text) => { try { return JSON.parse(text); } catch { return {}; } };
   const portable = {
     thread: (id) => { const t = get('SELECT * FROM comm_threads WHERE id = ?', id); return t && { id: t.id, kind: t.kind, title: t.title, missionId: t.mission_id, department: t.department, createdBy: t.created_by === 'user' ? 'user' : slugOf(t.created_by), createdAt: t.created_at, closedAt: t.closed_at, members: all('SELECT agent_id FROM comm_thread_members WHERE thread_id = ? ORDER BY rowid', id).map((m) => slugOf(m.agent_id)).filter(Boolean) }; },
-    message: (id) => { const m = get('SELECT * FROM comm_messages WHERE id = ?', id); return m && { id: m.id, threadId: m.thread_id, senderType: m.sender_type, sender: m.sender_agent_id ? slugOf(m.sender_agent_id) : null, kind: m.kind, body: m.kind === 'delegation' ? redactAgentAsk(m.task_id, m.body) : redactFor(m.task_id, m.body), refs: parseJsonList(m.refs).map((r) => (r && typeof r === 'object' && r.label && redactAgentAsk(m.task_id, 'x') === LOCAL_ONLY ? { ...r, label: LOCAL_ONLY } : r)), taskId: m.task_id, runId: m.run_id, replyTo: m.reply_to, createdAt: m.created_at, device: m.device }; },
+    message: (id) => { const m = get('SELECT * FROM comm_messages WHERE id = ?', id); return m && { id: m.id, threadId: m.thread_id, senderType: m.sender_type, sender: m.sender_agent_id ? slugOf(m.sender_agent_id) : null, kind: m.kind, body: m.kind === 'delegation' ? redactAgentAsk(m.task_id, m.body) : redactFor(m.task_id, m.body), refs: parseJsonList(m.refs).map((r) => (r && typeof r === 'object' && r.label && redactFor(m.task_id, 'x') === LOCAL_ONLY ? { ...r, label: LOCAL_ONLY } : r)), taskId: m.task_id, runId: m.run_id, replyTo: m.reply_to, createdAt: m.created_at, device: m.device }; },
     // La clé d'un accusé porte la FICHE de l'agent (jamais son identifiant local, qui diffère d'un ordinateur à l'autre).
-    delivery: (key) => { const [mid, slug] = key.split('|'), aid = agentOfSlug(slug); const d = aid && get('SELECT * FROM comm_deliveries WHERE message_id = ? AND agent_id = ?', mid, aid); return d && { messageId: mid, agent: slug, status: d.status, detail: d.detail, updatedAt: d.updated_at }; },
+    delivery: (key) => { const [mid, slug] = key.split('|'), aid = agentOfSlug(slug); const d = aid && get('SELECT * FROM comm_deliveries WHERE message_id = ? AND agent_id = ?', mid, aid); return d && { messageId: mid, agent: slug, status: d.status, detail: redactFor(get('SELECT task_id FROM comm_messages WHERE id = ?', mid)?.task_id, d.detail), updatedAt: d.updated_at }; },
     task: (id) => {
       const t = get('SELECT * FROM comm_tasks WHERE id = ?', id); if (!t) return null;
       const m = get('SELECT * FROM missions WHERE id = ?', t.mission_id);
       return { id: t.id, missionId: t.mission_id, rootTaskId: t.root_task_id, parentTaskId: t.parent_task_id, threadId: t.thread_id, kind: t.kind, title: redactAgentAsk(t.id, t.title), instruction: redactAgentAsk(t.id, t.instruction), requestedBy: t.requested_by === 'user' ? 'user' : slugOf(t.requested_by), assignee: slugOf(t.assignee_id), depth: t.depth, state: t.state, stateNote: t.state_note ? redactFor(t.id, t.state_note) : t.state_note, dependsOn: parseJsonList(t.depends_on), allowWeb: Boolean(t.allow_web), requiresSources: Boolean(t.requires_sources), withCatalog: Boolean(t.with_catalog), withIntegrations: parseJsonList(t.with_integrations), budgetUsd: t.budget_usd ?? null, dedupeKey: t.dedupe_key, dueAt: t.due_at, notBefore: t.not_before, attempts: t.attempts, maxAttempts: t.max_attempts, device: t.device, createdAt: t.created_at, updatedAt: t.updated_at, startedAt: t.started_at, finishedAt: t.finished_at,
         mission: m && { id: m.id, title: redactAgentAsk(t.id, m.title), objective: redactAgentAsk(t.id, m.objective), expectedResult: redactAgentAsk(t.id, m.expected_result), contextText: redactAgentAsk(t.id, m.context_text), priority: m.priority, requiresApproval: Boolean(m.requires_approval), requestedBy: m.requested_by ? slugOf(m.requested_by) : null, assignedTo: m.assigned_to ? slugOf(m.assigned_to) : null, createdAt: m.created_at } };
     },
-    result: (id) => { const r = get('SELECT * FROM comm_results WHERE id = ?', id); return r && { id: r.id, taskId: r.task_id, agent: slugOf(r.agent_id), runId: r.run_id, summary: redactFor(r.task_id, r.summary), body: redactFor(r.task_id, r.body), sources: redactFor(r.task_id, 'x') === LOCAL_ONLY ? [] : parseJsonList(r.sources), observed: (() => { try { return JSON.parse(r.observed); } catch { return {}; } })(), verified: Boolean(r.verified), level: r.level, verification: r.verification, verifiedBy: r.verified_by, createdAt: r.created_at }; },
-    run: (id) => { const r = get('SELECT * FROM comm_runs WHERE id = ?', id); return r && { id: r.id, agent: slugOf(r.agent_id), kind: r.kind, taskId: r.task_id, threadId: r.thread_id, model: r.model, web: Boolean(r.web), state: r.state, error: r.error, costUsd: r.cost_usd, inputTokens: r.input_tokens, outputTokens: r.output_tokens, durationMs: r.duration_ms, device: r.device, startedAt: r.started_at, finishedAt: r.finished_at }; }
+    result: (id) => { const r = get('SELECT * FROM comm_results WHERE id = ?', id); return r && { id: r.id, taskId: r.task_id, agent: slugOf(r.agent_id), runId: r.run_id, summary: redactFor(r.task_id, r.summary), body: redactFor(r.task_id, r.body), sources: redactFor(r.task_id, 'x') === LOCAL_ONLY ? [] : parseJsonList(r.sources), observed: redactFor(r.task_id, 'x') === LOCAL_ONLY ? {} : jsonObserved(r.observed), verified: Boolean(r.verified), level: r.level, verification: redactFor(r.task_id, r.verification), verifiedBy: r.verified_by, createdAt: r.created_at }; },
+    run: (id) => { const r = get('SELECT * FROM comm_runs WHERE id = ?', id); return r && { id: r.id, agent: slugOf(r.agent_id), kind: r.kind, taskId: r.task_id, threadId: r.thread_id, model: r.model, web: Boolean(r.web), state: r.state, error: r.error ? redactFor(r.task_id, r.error) : null, costUsd: r.cost_usd, inputTokens: r.input_tokens, outputTokens: r.output_tokens, durationMs: r.duration_ms, device: r.device, startedAt: r.started_at, finishedAt: r.finished_at }; }
   };
   const bump = (kind, key) => { const prev = get('SELECT rev FROM comm_versions WHERE kind = ? AND key = ?', kind, key); const rev = (prev?.rev ?? 0) + 1, at = now(); run('INSERT INTO comm_versions (kind, key, at, rev, device) VALUES (?, ?, ?, ?, ?) ON CONFLICT(kind, key) DO UPDATE SET at = excluded.at, rev = excluded.rev, device = excluded.device', kind, key, at, rev, device); return { at, rev }; };
-  const lineOf = (e) => `${JSON.stringify(e)}\n`;
+  const lineOf = (e) => `${JSON.stringify({ ...e, data: scrubContactData(e.data) })}\n`;
   const append = (e) => {
     mkdirSync(journalDir, { recursive: true });
     const line = lineOf(e);
@@ -287,14 +289,14 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     const id = randomUUID(), createdAt = now();
     // Sans destinataires précisés, tout le fil reçoit ; un résultat ou un blocage n'est adressé qu'à celui qui l'a demandé.
     const recipients = by.type === 'system' ? [] : t.members.filter((m) => m !== senderAgent && (to === null || (Array.isArray(to) && to.includes(m))));
-    const eventId = emit(senderAgent, 'comm.message.posted', `${short(text, 140)}`, by.type === 'agent' ? 'claude' : 'manual', true);
+    const eventId = emit(senderAgent, 'comm.message.posted', redactFor(taskId, short(text, 140)), by.type === 'agent' ? 'claude' : 'manual', true);
     tx(() => {
       run('INSERT INTO comm_messages (id, thread_id, sender_type, sender_agent_id, kind, body, refs, task_id, run_id, reply_to, event_id, device, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', id, threadId, by.type, senderAgent, kind, text, JSON.stringify(list), taskId, runId, replyTo, eventId, device, createdAt);
       for (const a of recipients) run("INSERT INTO comm_deliveries (message_id, agent_id, status, detail, updated_at) VALUES (?, ?, 'sent', '', ?)", id, a, createdAt);
     });
     assertFitsOrUndo(id);
     journal('message', id);
-    for (const a of recipients) { journal('delivery', `${id}|${slugOf(a)}`); emit(a, 'comm.message.received', `${t.title} : ${short(text, 120)}`, 'manual', true); }
+    for (const a of recipients) { journal('delivery', `${id}|${slugOf(a)}`); emit(a, 'comm.message.received', redactFor(taskId, `${t.title} : ${short(text, 120)}`), 'manual', true); }
     return getMessage(id);
   };
   // Un message trop gros pour le journal est annulé tout de suite plutôt que d'exister seulement sur cet ordinateur.

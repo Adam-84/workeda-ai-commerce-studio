@@ -13,13 +13,13 @@ import { createSimDsers, createSimTrack17, shopCatalog, PII } from './helpers/si
 
 const { profiles } = loadAgentFiles(fileURLToPath(new URL('../.claude/agents', import.meta.url)));
 const OPEN = { ARCHIPEL_ALLOW_REAL_NETWORK: '1' };
-function setup({ dsers = {}, track = {}, env = OPEN, clockMs } = {}) {
+function setup({ dsers = {}, track = {}, env = OPEN, clockMs, wrapFetch = (f) => f } = {}) {
   const clock = { t: clockMs ?? Date.parse('2026-11-21T10:00:00Z') };
   const sim = createSimDsers({ nowMs: () => clock.t, ...dsers }), t17 = createSimTrack17({ clock: () => clock.t, ...track });
   const secretsDir = mkdtempSync(join(tmpdir(), 'archipel-int-'));
   const secrets = createSecretStore({ dir: secretsDir, protector: testProtector() });
   const fetchImpl = (url, init) => (String(url).includes('17track') ? t17.fetch(url, init) : sim.fetch(url, init));
-  const studio = createStudio(':memory:', { secrets, env, integrationsFetch: fetchImpl, nowMs: () => clock.t, integrationsSleep: async () => { clock.t += 400; }, redirectUri: 'http://127.0.0.1:4318/api/integrations/dsers/callback' });
+  const studio = createStudio(':memory:', { secrets, env, integrationsFetch: wrapFetch(fetchImpl), nowMs: () => clock.t, integrationsSleep: async () => { clock.t += 400; }, redirectUri: 'http://127.0.0.1:4318/api/integrations/dsers/callback' });
   studio.syncAgentFiles(profiles);
   const items = shopCatalog(38);
   studio.shop.latest = () => ({ id: 'shop1', fetchedAt: new Date(clock.t).toISOString(), products: items });
@@ -37,6 +37,75 @@ test('réseau réel désactivé par défaut : aucune connexion, aucun appel, ét
   assert.equal(c.flags.authenticated, false);
   assert.equal(svc.card('track17').state, 'configured' === svc.card('track17').state ? 'configured' : svc.card('track17').state); // jamais « testé »
   assert.equal(svc.card('track17').flags.tested, false);
+});
+
+test('actualisation forcée : les devis sont relus pour le pays demandé', async () => {
+  const { svc, sim, connect } = setup(); await connect();
+  await svc.sync('dsers', { force: true });
+  svc.setSettings('dsers', { shipCountry: 'DE' });
+  const before = sim.calls.length;
+  await svc.sync('dsers', { force: true });
+  assert.ok(sim.calls.slice(before).some((c) => c.name === 'list_supplier_product_shipping_methods_and_cost' && c.args.country === 'DE'));
+  assert.ok(svc.store.latest('dsers', 'shipping').payload.quotes.every((q) => q.quotes.every((x) => x.country === 'DE')));
+});
+
+test('cache des devis : un changement de pays invalide les frais précédents', async () => {
+  const { svc, connect, sim } = setup(); await connect(); await svc.sync('dsers');
+  svc.setSettings('dsers', { shipCountry: 'DE' });
+  const before = sim.calls.length; await svc.sync('dsers');
+  assert.ok(sim.calls.slice(before).some((c) => c.name === 'list_supplier_product_shipping_methods_and_cost' && c.args.country === 'DE'));
+});
+
+test('quota configuré par environnement : le maximum de 2 000 reste appliqué', () => {
+  const { svc } = setup({ env: { ARCHIPEL_DSERS_DAILY_CAP: '999999' } });
+  assert.equal(svc.card('dsers').quota.cap, 2000);
+});
+
+test('cartes : les noms d’outils inconnus et les quotas ne transportent aucun texte distant', async () => {
+  const marker = 'Jean Dupont, 12 rue des Lilas';
+  const { svc, connect, t17 } = setup({ dsers: { extraTools: [marker] }, track: { total: marker } });
+  await connect(); svc.setKey('track17', t17.key);
+  await svc.test('dsers'); await svc.test('track17');
+  assert.ok(!JSON.stringify(svc.cards()).includes(marker));
+  const bad = setup({ wrapFetch: () => async () => new Response(JSON.stringify({ code: marker })) });
+  bad.svc.setKey('track17', bad.t17.key);
+  await assert.rejects(() => bad.svc.test('track17'), (e) => !e.message.includes(marker));
+  assert.ok(!JSON.stringify(bad.svc.cards()).includes(marker));
+});
+
+test('authentification refusée après succès : les cartes retirent le drapeau authentifié', async () => {
+  const { svc, connect, sim, t17, secrets } = setup(); await connect();
+  svc.setKey('track17', t17.key); await svc.test('dsers'); await svc.test('track17');
+  sim.expireAccessTokens(); secrets.set('track17.key', 'cle-factice-refusee');
+  for (const id of ['dsers', 'track17']) {
+    await assert.rejects(() => svc.test(id), (e) => e.kind === 'auth');
+    assert.equal(svc.card(id).flags.authenticated, false, id);
+  }
+});
+
+test('17TRACK : une réponse trop volumineuse est refusée avant projection', async () => {
+  const { svc, t17 } = setup({ wrapFetch: () => async () => new Response(JSON.stringify({ code: 0, data: { quota_total: 100, extra: 'x'.repeat(2_000_001) } })) });
+  svc.setKey('track17', t17.key);
+  await assert.rejects(() => svc.test('track17'), (e) => e.kind === 'protocol');
+  assert.equal(svc.store.latest('track17', 'quota'), null);
+});
+
+test('révocation pendant une synchronisation : aucun relevé ni état authentifié ne revient', async () => {
+  for (const id of ['dsers', 'track17']) {
+    let hold = false, started, release;
+    const entered = new Promise((r) => { started = r; });
+    const wait = new Promise((r) => { release = r; });
+    const { svc, t17, connect } = setup({ wrapFetch: (fetch) => async (u, i) => {
+      const res = await fetch(u, i);
+      if (!hold) return res;
+      return { ...res, text: async () => { started(); await wait; return res.text(); } };
+    } });
+    await connect(); svc.setKey('track17', t17.key); hold = true;
+    const pending = svc.sync(id, { force: true }); await entered;
+    svc.revoke(id, { purge: true }); release(); await pending;
+    for (const kind of ['stores', 'products', 'packages', 'shipping', 'tracklist']) assert.equal(svc.store.latest(id, kind), null, `${id}/${kind}`);
+    assert.equal(svc.card(id).flags.authenticated, false);
+  }
 });
 
 test('OAuth PKCE : portées de lecture exactes, PKCE S256, jetons chiffrés hors base', async () => {

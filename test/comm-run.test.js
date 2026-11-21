@@ -340,3 +340,22 @@ test('un résultat n’est adressé qu’à son demandeur et passe « traité »
   const delegation = msgs.find((m) => m.kind === 'delegation' && m.deliveries.some((d) => d.agentId === ids.sophia));
   assert.deepEqual(delegation.deliveries.map((d) => d.agentId), [ids.sophia]);
 });
+
+
+test('anciens textes de catalogue dans Comms et mémoire : contacts filtrés avant chaque appel agent', async () => {
+  const dirty = 'Lampe aluminium client@example.invalid +33 6 00 00 00 00 RR000000000CN';
+  const { studio, comm, ids, orch, calls } = setup({ Lucas: json({ report: 'Analyse du catalogue', status: 'done' }) }, {}, { memoryFor: () => dirty });
+  try {
+    studio.shop.ensureFresh = async () => null;
+    studio.shop.latest = () => null;
+    const task = comm.createTask({ assigneeId: ids.lucas, instruction: dirty, withCatalog: true }).task;
+    orch.pump(); await orch.idle();
+    comm.postMessage(task.threadId, { body: dirty });
+    orch.replyInThread(task.threadId, ids.lucas); await orch.idle();
+    assert.equal(calls.length, 2);
+    for (const c of calls) {
+      assert.doesNotMatch(c.prompt, /client@example\.invalid|\+33 6 00 00 00 00|RR000000000CN/);
+      assert.match(c.prompt, /Lampe aluminium/);
+    }
+  } finally { orch.stop(); studio.close(); }
+});

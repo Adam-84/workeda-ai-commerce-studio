@@ -35,6 +35,40 @@ async function setup(script, { connect = true, grants = [], dsers = {}, file = '
 }
 const ok = J({ report: 'Analyse faite à partir des relevés fournis.', status: 'done' });
 
+test('journal : erreurs, observations, références et accusés des intégrations restent locaux', async () => {
+  const marker = 'DETAIL-FOURNISSEUR-LOCAL-UNIQUEMENT';
+  const dir = mkdtempSync(join(tmpdir(), 'archipel-journal-'));
+  const s = await setup({}, { connect: false, journalDir: dir });
+  const task = s.comm.createTask({ assigneeId: s.ids.lucas, instruction: 'Analyser', withIntegrations: ['dsers'] }).task;
+  const run = s.comm.startRun({ agentId: s.ids.lucas, kind: 'task', taskId: task.id, threadId: task.threadId });
+  const result = s.comm.recordResult(task.id, { agentId: s.ids.lucas, runId: run.id, body: 'Résultat', summary: '', level: 'none', verified: false, observed: { provided: [marker] }, verification: marker });
+  s.comm.postMessage(task.threadId, { body: 'Résultat', taskId: task.id, refs: [{ type: 'result', id: result.id, label: marker }] }, { type: 'agent', agentId: s.ids.lucas, runId: run.id });
+  s.comm.endRun(run.id, { state: 'error', error: marker });
+  const { readFileSync, readdirSync } = await import('node:fs');
+  const journal = readdirSync(dir).map((f) => readFileSync(join(dir, f), 'utf8')).join('\n');
+  assert.ok(!journal.includes(marker), 'métadonnée ou erreur copiée dans le journal git');
+});
+
+test('une tâche intégration ne crée aucune mémoire sans provenance', async () => {
+  const s = await setup({ Lucas: () => J({ report: 'Analyse faite.', memory: [{ title: 'Coût fournisseur local', body: 'Le fournisseur propose ce coût confidentiel.', nature: 'hypothesis', level: 'mission' }] }) }, { grants: [['dsers', 'lucas']] });
+  s.comm.createTask({ assigneeId: s.ids.lucas, instruction: 'Analyser', withIntegrations: ['dsers'] });
+  s.orch.pump(); await s.orch.idle();
+  assert.equal(s.studio.memory.stats().total, 0, 'la mémoire ne conserve pas les restrictions des intégrations');
+});
+
+test('une consigne déléguée issue des intégrations ne revient pas dans une tâche sans accès', async () => {
+  const marker = 'CONSIGNE-FOURNISSEUR-LOCALE';
+  const s = await setup({ Alexander: () => J({ report: 'Je confie.', delegate: [{ to: 'Lucas', task: marker }] }), Lucas: () => ok }, { grants: [['dsers', 'lucas'], ['dsers', 'alexander']] });
+  const root = s.comm.createTask({ assigneeId: s.ids.alexander, instruction: 'Coordonner', withIntegrations: ['dsers'], requiresApproval: false }).task;
+  s.orch.pump(); await s.orch.idle();
+  s.svc.revokeGrant('dsers', 'lucas');
+  const child = s.comm.listTasks({ rootTaskId: root.id }).find((t) => t.id !== root.id);
+  s.comm.createTask({ assigneeId: s.ids.lucas, missionId: child.missionId, threadId: child.threadId, instruction: 'Nouvelle analyse sans intégration' });
+  const before = s.calls.length; s.orch.pump(); await s.orch.idle();
+  assert.ok(s.calls.length > before);
+  assert.ok(!s.calls.at(-1).prompt.includes(marker));
+});
+
 test('tâche avec DSers : sans accès accordé, aucune donnée ; avec accès, relevé daté sans PII, outils vides', async () => {
   const a = await setup({ Lucas: () => ok });
   a.comm.createTask({ assigneeId: a.ids.lucas, instruction: 'Rapprocher le catalogue Shopify et DSers', withIntegrations: ['dsers'] });

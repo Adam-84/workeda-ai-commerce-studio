@@ -1,7 +1,7 @@
 // src/studio-shop.js — relevés datés du catalogue Shopify (cache LOCAL : chaque PC relève lui-même, rien n'est synchronisé par git).
 // Aucune écriture vers Shopify n'existe ici. Un relevé est refait au plus toutes les 5 minutes, échecs compris (jamais de martèlement).
 import { randomUUID } from 'node:crypto';
-import { SHOP_LIMITS, snapshotHash } from './shop-readonly.js';
+import { SHOP_LIMITS, snapshotHash, sanitizeCatalog } from './shop-readonly.js';
 
 const json = (t, d) => { try { return JSON.parse(t) ?? d; } catch { return d; } };
 const KEEP = 8;
@@ -12,7 +12,7 @@ export function createShopStore(db, { connector, clock = () => new Date().toISOS
   const get = (sql, ...a) => db.prepare(sql).get(...a);
   const meta = (k) => get('SELECT value FROM shop_meta WHERE key = ?', k)?.value ?? null;
   const setMeta = (k, v) => db.prepare('INSERT INTO shop_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(k, String(v));
-  const map = (r) => !r ? null : { id: r.id, fetchedAt: r.fetched_at, mode: r.mode, domain: r.domain, ok: Boolean(r.ok), partial: Boolean(r.partial), errors: json(r.errors, []), collections: json(r.collections, []), products: json(r.products, []), sourceUrls: json(r.source_urls, []), hash: r.hash };
+  const map = (r) => !r ? null : sanitizeCatalog({ id: r.id, fetchedAt: r.fetched_at, mode: r.mode, domain: r.domain, ok: Boolean(r.ok), partial: Boolean(r.partial), errors: json(r.errors, []), collections: json(r.collections, []), products: json(r.products, []), sourceUrls: json(r.source_urls, []), hash: r.hash });
   const latest = () => map(get('SELECT * FROM shop_snapshots WHERE ok = 1 ORDER BY fetched_at DESC, rowid DESC LIMIT 1'));
   let running = null;
 
@@ -26,7 +26,7 @@ export function createShopStore(db, { connector, clock = () => new Date().toISOS
     setMeta('last_attempt', clock()); // l'essai compte même s'il échoue
     running = (async () => {
       try {
-        const r = await connector.fetchCatalog();
+        const r = sanitizeCatalog(await connector.fetchCatalog());
         const id = randomUUID(), snap = { ...r, id, fetchedAt: clock() };
         db.prepare('INSERT INTO shop_snapshots (id, fetched_at, mode, domain, ok, partial, errors, collections, products, source_urls, hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
           .run(id, snap.fetchedAt, r.mode, r.domain, Number(r.ok), Number(r.partial), JSON.stringify(r.errors), JSON.stringify(r.collections), JSON.stringify(r.products), JSON.stringify(r.sourceUrls), snapshotHash(r));

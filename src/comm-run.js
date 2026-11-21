@@ -5,13 +5,14 @@
 //   - tout ce qui vient d'un autre agent, d'un message ou du web est cadré comme donnée non fiable ;
 //   - un résultat n'est « vérifié » que si le Studio le constate (outils réellement appelés), jamais sur parole.
 import { runClaude as realClaude, fichePrompt, systemPrompt } from './claude-reply.js';
+import { scrubContacts } from './catalog-privacy.js';
 import { catalogPrompt } from './shop-readonly.js';
 import {
   LIMITS, WEB_TOOLS, bad, taskSystemPrompt, taskPrompt, replyPrompt, parseAgentOutput, observeTools, evaluateResult, resolveAgent
 } from './comm-core.js';
 
 const TRANSIENT = /surcharg|à temps|n’a pas pu répondre|n'a pas pu répondre|réponse vide|code de sortie/i;
-const short = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+const short = (s, n) => { s = scrubContacts(s); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
 
 const NOT_SHARED = '[Résultat issu de données DSers/17TRACK : non transmis (accès différent ou tâche qui lit le web).]';
 export function createOrchestrator({ studio, profiles = () => [], runner = realClaude, memoryFor = () => '', maxActive = LIMITS.maxActive, pumpEveryMs = 0 } = {}) {
@@ -29,10 +30,13 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
   const participants = (t) => [...new Set([...t.members])];
   // Le résultat d'une tâche revient à l'agent qui l'a demandée ; une tâche demandée par le propriétaire n'a pas de destinataire agent.
   const asker = (task) => (task.requestedBy !== 'user' && task.requestedBy !== task.assigneeId ? [task.requestedBy] : []);
+  const privateMission = (missionId) => Boolean(missionId) && comm.listTasks({ missionId }).some((t) => t.requestedBy !== 'user' && (t.withIntegrations ?? []).length);
 
   // --- tâches --------------------------------------------------------------------------------------------------------------------------------------
   function buildTask(task) {
-    const mission = studio.getMission(task.missionId), thread = comm.thread(task.threadId), me = comm.agentInfo(task.assigneeId), profile = profileOf(task.assigneeId);
+    const rawMission = studio.getMission(task.missionId);
+    const mission = privateMission(task.missionId) ? { ...rawMission, title: 'Sous-mission issue des intégrations', objective: '' } : rawMission;
+    const thread = comm.thread(task.threadId), me = comm.agentInfo(task.assigneeId), profile = profileOf(task.assigneeId);
     const requester = task.requestedBy === 'user' ? { type: 'user' } : { type: 'agent', name: comm.nameOf(task.requestedBy) };
     const deps = task.dependsOn.map((id) => {
       const d = comm.task(id), r = comm.resultOf(id);
@@ -55,10 +59,10 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
     // et ne lit pas le web ; sinon seul un avis est donné (les données ne se propagent pas par les rapports).
     const mayRead = (need = []) => need.length === 0 || (!web.length && need.every((i) => (task.withIntegrations ?? []).includes(i) && (ints?.used ?? []).includes(i)));
     const depsSafe = deps.map((d) => (mayRead(d.integrations) ? d : { ...d, title: 'tâche issue de données DSers/17TRACK', report: NOT_SHARED, sources: [], resultId: null }));
-    const recentSafe = recent.map((m) => (m.kind !== 'delegation' && !mayRead(m.integrations) ? { ...m, body: NOT_SHARED } : m));
+    const recentSafe = recent.map((m) => (!mayRead(m.integrations) ? { ...m, body: NOT_SHARED } : m));
     const canDelegate = task.depth < LIMITS.maxDepth && task.kind !== 'consolidation';
     // Une exécution qui lit le web ne reçoit pas la mémoire : une page piégée ne doit pas pouvoir la lui faire exfiltrer.
-    const memoryText = web.length ? '' : memoryFor(participants(thread), { missionId: task.missionId, query: `${mission?.title ?? ''} ${task.instruction}` });
+    const memoryText = web.length ? '' : scrubContacts(memoryFor(participants(thread), { missionId: task.missionId, query: `${mission?.title ?? ''} ${task.instruction}` }));
     const peers = canDelegate ? roster().filter((a) => a.id !== task.assigneeId && mayDelegate(profile, a.slug)) : [];
     return {
       web, included, provided: [...(task.withCatalog ? (catalog?.sourceUrls ?? []) : []), ...(ints?.provided ?? [])],
@@ -118,7 +122,7 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
       for (const id of inbox) comm.markDelivery(id, agentId, 'received');
       const seen = observeTools(); seen.state.provided = built.provided;
       let text;
-      try { text = await runner({ model: profile.model, system: built.system, prompt: built.prompt, tools: built.web, onEvent: seen.feed, timeoutMs: built.web.length ? LIMITS.webTimeoutMs : LIMITS.taskTimeoutMs }); }
+      try { text = await runner({ model: profile.model, system: built.system, prompt: scrubContacts(built.prompt), tools: built.web, onEvent: seen.feed, timeoutMs: built.web.length ? LIMITS.webTimeoutMs : LIMITS.taskTimeoutMs }); }
       catch (e) { return fail(task, run, e, inbox, seen.state); }
       const ended = comm.endRun(run.id, { state: 'done', costUsd: seen.state.cost, usage: seen.state.usage });
       succeed(task, ended, text, seen.state, inbox);
@@ -164,7 +168,7 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
     if (delegations.reused.length) lines.push(`Demandes déjà existantes ou résultats réutilisés : ${delegations.reused.map((t) => comm.nameOf(t.assigneeId)).join(', ')}.`);
     if (delegations.rejected.length) lines.push(`Demandes refusées : ${delegations.rejected.join(' ')}`);
     if (lines.length) comm.postMessage(task.threadId, { kind: 'system', body: lines.join('\n'), taskId: task.id }, { type: 'system' });
-    if (parsed.memory.length && studio.memory) { try { const r = studio.memory.propose(agentId, parsed.memory, { missionId: task.missionId }); if (r.created?.length) comm.postMessage(task.threadId, { kind: 'proposal', to: [], body: `${comm.nameOf(agentId)} propose ${r.created.length} souvenir(s) à valider dans le Memory Center (rien n'est enregistré avant votre accord).`, taskId: task.id }, by); } catch { /* proposition refusée : sans effet sur la tâche */ } }
+    if (parsed.memory.length && !(task.withIntegrations ?? []).length && studio.memory) { try { const r = studio.memory.propose(agentId, parsed.memory, { missionId: task.missionId }); if (r.created?.length) comm.postMessage(task.threadId, { kind: 'proposal', to: [], body: `${comm.nameOf(agentId)} propose ${r.created.length} souvenir(s) à valider dans le Memory Center (rien n'est enregistré avant votre accord).`, taskId: task.id }, by); } catch { /* proposition refusée : sans effet sur la tâche */ } }
     for (const id of inbox) comm.markDelivery(id, agentId, 'processed');
     setActivity(agentId, 'idle', `Tâche ${verdict.verified ? 'terminée' : 'à vérifier'}`);
   }
@@ -211,9 +215,9 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
     const seen = observeTools();
     const p = (async () => {
       try {
-        const memoryText = memoryFor(participants(t), { missionId: t.missionId, query: msgsSafe.slice(-3).map((m) => m.body).join(' ') });
-        const prompt = replyPrompt({ agentName: a.name, title: t.title, memoryText, thread: msgsSafe.map((m) => ({ sender: m.senderType === 'user' ? 'user' : 'agent', who: m.senderAgentId ? comm.nameOf(m.senderAgentId) : 'Propriétaire', at: m.createdAt, body: m.body })) });
-        const text = await runner({ model: profile.model, system: systemPrompt(profile, studio.getInstructions(agentId)), prompt, tools: [], onEvent: seen.feed, timeoutMs: LIMITS.plainTimeoutMs });
+        const memoryText = scrubContacts(memoryFor(participants(t), { missionId: t.missionId, query: msgsSafe.slice(-3).map((m) => m.body).join(' ') }));
+        const prompt = replyPrompt({ agentName: a.name, title: privateMission(t.missionId) ? 'Sous-mission issue des intégrations' : t.title, memoryText, thread: msgsSafe.map((m) => ({ sender: m.senderType === 'user' ? 'user' : 'agent', who: m.senderAgentId ? comm.nameOf(m.senderAgentId) : 'Propriétaire', at: m.createdAt, body: m.body })) });
+        const text = await runner({ model: profile.model, system: systemPrompt(profile, studio.getInstructions(agentId)), prompt: scrubContacts(prompt), tools: [], onEvent: seen.feed, timeoutMs: LIMITS.plainTimeoutMs });
         const ended = comm.endRun(run.id, { state: 'done', costUsd: seen.state.cost, usage: seen.state.usage });
         comm.postMessage(threadId, { kind: 'message', body: short(String(text).trim(), LIMITS.body), replyTo: msgs.at(-1)?.id ?? null }, { type: 'agent', agentId, runId: ended.id });
         for (const id of inbox) comm.markDelivery(id, agentId, 'processed');

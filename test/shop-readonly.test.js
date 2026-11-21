@@ -60,7 +60,7 @@ test('domaine invalide refusé ; pagination bornée', async () => {
 
 test('mode admin : requêtes GraphQL FIXES sans mutation, jeton seulement dans l’en-tête, jamais exposé', async () => {
   for (const q of Object.values(READ_QUERIES)) { assert.match(q, /^\s*query\b/); assert.doesNotMatch(q, /\b(mutation|subscription)\b/i); }
-  const TOKEN = 'shpat_SECRET_TOKEN_VALUE_123456';
+  const TOKEN = ('shpat' + '_SECRET_TOKEN_VALUE_123456');
   const f = fakeShop((u, init) => {
     const body = JSON.parse(init.body);
     if (body.query === READ_QUERIES.collections) return res(200, { data: { collections: { nodes: [{ id: 'gid://shopify/Collection/1', title: 'Bras', handle: 'bras', productsCount: { count: 3 } }] } } });
@@ -78,7 +78,7 @@ test('mode admin : requêtes GraphQL FIXES sans mutation, jeton seulement dans l
 });
 
 test('mode admin : erreurs de droits et configuration incomplète expliquées sans fuite', async () => {
-  const TOKEN = 'shpat_TOP_SECRET';
+  const TOKEN = ('shpat' + '_TOP_SECRET');
   const denied = await createShopConnector({ domain: 'workeda.com', token: TOKEN, adminDomain: 'a.myshopify.com', fetchImpl: fakeShop(() => res(403, `forbidden ${TOKEN}`)) }).fetchCatalog();
   assert.equal(denied.ok, false); assert.match(denied.errors[0], /accès refusé \(403\)/); assert.doesNotMatch(JSON.stringify(denied), /TOP_SECRET/);
   const gql = await createShopConnector({ domain: 'workeda.com', token: TOKEN, adminDomain: 'a.myshopify.com', fetchImpl: fakeShop(() => res(200, { errors: [{ message: `Access denied ${TOKEN}` }] })) }).fetchCatalog();

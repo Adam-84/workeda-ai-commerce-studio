@@ -5,6 +5,7 @@
 // Garanties : un seul hôte autorisé, HTTPS seulement, aucune redirection suivie (le jeton ne part jamais ailleurs), délai et taille bornés,
 // jamais de nouvel essai après un 429, aucune requête construite à partir d'un texte d'agent ou de message.
 import { createHash } from 'node:crypto';
+import { scrubContacts, scrubContactData } from './catalog-privacy.js';
 import { untrusted } from './comm-core.js';
 
 export const SHOP_LIMITS = { timeoutMs: 15_000, maxBytes: 5_000_000, pages: 4, perPage: 250, minIntervalMs: 5 * 60_000, staleMs: 24 * 3_600_000, descChars: 300, promptProducts: 120, promptChars: 14_000 };
@@ -18,28 +19,28 @@ export const READ_QUERIES = {
 };
 for (const [name, q] of Object.entries(READ_QUERIES)) if (!/^\s*query\b/.test(q) || /\b(mutation|subscription)\b/i.test(q)) throw new Error(`Requête Shopify « ${name} » : lecture seule exigée.`);
 
-const decode = (s) => String(s ?? '').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/\s+/g, ' ').trim();
+const decode = (s) => scrubContacts(String(s ?? '')).replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/\s+/g, ' ').trim();
 const money = (v) => { const n = Number(v); return Number.isFinite(n) ? Math.round(n * 100) / 100 : null; };
-const tagsOf = (t) => (Array.isArray(t) ? t : String(t ?? '').split(',')).map((x) => String(x).trim()).filter(Boolean).slice(0, 12);
+const tagsOf = (t) => (Array.isArray(t) ? t : String(t ?? '').split(',')).map((x) => scrubContacts(String(x)).trim()).filter(Boolean).slice(0, 12);
 const clip = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 // --- normalisation : même forme quel que soit le mode ---------------------------------------------------------------------------------
 export function normalizePublicProduct(p, domain) {
   const prices = (p.variants ?? []).map((v) => money(v.price)).filter((x) => x !== null);
   const desc = decode(p.body_html);
-  return { id: String(p.id), title: clip(decode(p.title), 160), handle: String(p.handle ?? ''), vendor: clip(decode(p.vendor), 80), type: clip(decode(p.product_type), 80), tags: tagsOf(p.tags),
+  return { id: String(p.id), title: clip(decode(p.title), 160), handle: scrubContacts(p.handle), vendor: clip(decode(p.vendor), 80), type: clip(decode(p.product_type), 80), tags: tagsOf(p.tags),
     status: 'active', priceMin: prices.length ? Math.min(...prices) : null, priceMax: prices.length ? Math.max(...prices) : null, currency: null,
     available: (p.variants ?? []).some((v) => v.available === true), images: (p.images ?? []).length, descChars: desc.length, desc: clip(desc, SHOP_LIMITS.descChars), seoTitle: '', updatedAt: p.updated_at ?? null,
-    url: `https://${domain}/products/${encodeURIComponent(p.handle ?? '')}` };
+    url: `https://${domain}/products/${encodeURIComponent(scrubContacts(p.handle))}` };
 }
 export function normalizeAdminProduct(p, domain) {
   const desc = decode(p.descriptionHtml);
-  return { id: String(p.id), title: clip(decode(p.title), 160), handle: String(p.handle ?? ''), vendor: clip(decode(p.vendor), 80), type: clip(decode(p.productType), 80), tags: tagsOf(p.tags),
+  return { id: String(p.id), title: clip(decode(p.title), 160), handle: scrubContacts(p.handle), vendor: clip(decode(p.vendor), 80), type: clip(decode(p.productType), 80), tags: tagsOf(p.tags),
     status: String(p.status ?? '').toLowerCase(), priceMin: money(p.priceRangeV2?.minVariantPrice?.amount), priceMax: money(p.priceRangeV2?.maxVariantPrice?.amount), currency: p.priceRangeV2?.minVariantPrice?.currencyCode ?? null,
     available: Number(p.totalInventory) > 0, images: Number(p.mediaCount?.count) || 0, descChars: desc.length, desc: clip(desc, SHOP_LIMITS.descChars), seoTitle: clip(decode(p.seo?.title), 120), updatedAt: p.updatedAt ?? null,
-    url: `https://${domain}/products/${encodeURIComponent(p.handle ?? '')}` };
+    url: `https://${domain}/products/${encodeURIComponent(scrubContacts(p.handle))}` };
 }
-const normalizeCollection = (c) => ({ id: String(c.id), title: clip(decode(c.title), 160), handle: String(c.handle ?? ''), count: Number(c.products_count ?? c.productsCount?.count) || 0, updatedAt: c.updated_at ?? c.updatedAt ?? null });
+const normalizeCollection = (c) => ({ id: String(c.id), title: clip(decode(c.title), 160), handle: scrubContacts(c.handle), count: Number(c.products_count ?? c.productsCount?.count) || 0, updatedAt: c.updated_at ?? c.updatedAt ?? null });
 
 // Lecture du corps AU FIL DE L'EAU, abandonnée dès que la taille maximale est dépassée (jamais de corps géant en mémoire).
 async function readCapped(res) {
@@ -141,6 +142,7 @@ export const snapshotHash = (s) => createHash('sha1').update(JSON.stringify([s.c
 // Texte donné à un agent : DONNÉES datées relevées par le Studio, cadrées comme non fiables (les textes viennent de la boutique et des fournisseurs).
 export function catalogPrompt(snap) {
   if (!snap) return 'Catalogue Shopify : non disponible (aucun relevé réussi). N\'invente aucune donnée du catalogue ; dis ce qui manque.';
+  snap = sanitizeCatalog(snap);
   const lines = [`Catalogue Shopify de ${snap.domain} — relevé par le Studio le ${snap.fetchedAt} en LECTURE SEULE (${snap.mode === 'admin' ? 'API Admin' : 'pages publiques'}). Tu ne peux rien modifier dans la boutique.`];
   lines.push(`${snap.collections.length} collection(s) : ${snap.collections.slice(0, 30).map((c) => `${c.title} [${c.handle}] (${c.count} produit(s))`).join(' ; ') || 'aucune'}`);
   if (snap.products.length) {
@@ -157,4 +159,10 @@ export function catalogPrompt(snap) {
   } else lines.push('Produits : non relevés.');
   if (snap.errors.length) lines.push(`Limites de ce relevé : ${snap.errors.join(' ; ')}. Ne comble pas ces manques par des données inventées.`);
   return untrusted('catalogue Shopify', lines.join('\n'), SHOP_LIMITS.promptChars);
+}
+
+export function sanitizeCatalog(snap) {
+  if (!snap) return snap;
+  const clean = (p) => Object.fromEntries(Object.entries(p).map(([k, v]) => [k, ['title', 'handle', 'vendor', 'type', 'tags', 'desc', 'seoTitle', 'url', 'body_html'].includes(k) ? scrubContactData(v) : v]));
+  return { ...snap, collections: (snap.collections ?? []).map(clean), products: (snap.products ?? []).map(clean), errors: scrubContactData(snap.errors ?? []), sourceUrls: scrubContactData(snap.sourceUrls ?? []) };
 }

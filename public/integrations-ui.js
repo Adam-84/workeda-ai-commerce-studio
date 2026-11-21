@@ -10,14 +10,14 @@ export function integrationsCenter({ ui, setLeave = () => {} }) {
   const root = h('div', { class: 'integrations-center' });
   const status = h('p', { class: 'note', role: 'status' }), err = h('p', { class: 'err', role: 'alert' });
   let data = null, busy = false;
-  const typing = () => { const a = document.activeElement; return Boolean(a && root.contains(a) && ['INPUT', 'SELECT', 'TEXTAREA'].includes(a.tagName)); };
+  const interacting = () => root.contains(document.activeElement);
 
   async function load() {
     try { data = await get('/api/integrations'); draw(); } catch (x) { put(root, h('p', { class: 'err', role: 'alert' }, x.message)); }
   }
   async function act(label, fn) {
     if (busy) return; busy = true; err.textContent = ''; status.textContent = `${label}…`;
-    try { const r = await fn(); status.textContent = ''; announce(`${label} : terminé`); return r; }
+    try { const r = await fn(); if (status.textContent === `${label}…`) status.textContent = `${label} : terminé`; announce(status.textContent); return r; }
     catch (x) { status.textContent = ''; err.textContent = x.message; announce(x.message); }
     finally { busy = false; await load(); }
   }
@@ -91,14 +91,20 @@ export function integrationsCenter({ ui, setLeave = () => {} }) {
   }
 
   function draw() {
-    put(root, h('h2', {}, 'Integration Center'),
+    const path = []; let focused = document.activeElement;
+    if (root.contains(focused)) while (focused !== root) { path.unshift(Array.from(focused.parentNode.childNodes).indexOf(focused)); focused = focused.parentNode; }
+    put(root, h('h2', { tabindex: '-1' }, 'Integration Center'),
       h('p', { class: 'note' }, 'Connexions en LECTURE SEULE : Archipel ne modifie jamais DSers, 17TRACK ni Shopify. Les agents ne reçoivent que des données nettoyées (sans nom, adresse, e-mail ni téléphone ; numéros de suivi masqués), uniquement s’ils ont reçu l’accès.'),
       !data.realNetworkAllowed ? h('p', { class: 'note', role: 'status' }, 'Mode hors ligne : aucune connexion réelle n’est possible tant que ARCHIPEL_ALLOW_REAL_NETWORK=1 n’est pas défini avec votre accord explicite.') : null,
       h('p', { class: 'note' }, `Stockage des jetons : ${data.storage.available ? `protégé (${data.storage.backend})` : 'indisponible (DPAPI sous Windows, ou ARCHIPEL_SECRET_KEY)'} · jamais synchronisé par git.`),
       status, err, data.cards.map(card));
+    if (path.length) {
+      const target = path.reduce((node, i) => node?.childNodes[i], root);
+      (target?.focus && !target.disabled ? target : root.childNodes[0]).focus();
+    }
   }
   setLeave(() => clearInterval(timer));
-  const timer = setInterval(() => { if (!busy && !typing()) load(); }, 20_000);
+  const timer = setInterval(() => { if (!busy && !interacting()) load(); }, 20_000);
   load();
   return root;
 }

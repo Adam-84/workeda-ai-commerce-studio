@@ -30,7 +30,12 @@ export const hasSecretShape = (text) => PATTERNS.some((re) => { re.lastIndex = 0
 // --- protecteurs -----------------------------------------------------------------------------------------------------------------------------
 // DPAPI : le texte clair passe par l'ENTRÉE STANDARD de PowerShell (jamais dans la ligne de commande, donc invisible dans la liste des processus).
 export function dpapiProtector({ run = execFileSync } = {}) {
-  const ps = (script, input) => run('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], { input, encoding: 'utf8', windowsHide: true, timeout: 20_000, stdio: ['pipe', 'pipe', 'pipe'] });
+  const ps = (script, input) => {
+    // Le PSModulePath hérité de PowerShell 7 peut charger un module incompatible dans Windows PowerShell.
+    const prelude = '$ErrorActionPreference = "Stop"; [Console]::InputEncoding = [Text.Encoding]::UTF8; [Console]::OutputEncoding = [Text.Encoding]::UTF8; Import-Module ($PSHOME + "/Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1"); ';
+    try { return run('powershell', ['-NoProfile', '-NonInteractive', '-Command', prelude + script], { input, encoding: 'utf8', windowsHide: true, timeout: 20_000, stdio: ['pipe', 'pipe', 'pipe'] }); }
+    catch { throw Object.assign(new Error('Protection DPAPI indisponible : vérifiez la session Windows et PowerShell.'), { status: 503 }); }
+  };
   return {
     id: 'dpapi', available: process.platform === 'win32',
     protect: (plain) => ps('$s = [Console]::In.ReadToEnd(); $ss = ConvertTo-SecureString -String $s -AsPlainText -Force; ConvertFrom-SecureString $ss', plain).trim(),

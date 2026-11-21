@@ -20,7 +20,7 @@ export function networkGate({ env = process.env, fetchImpl = globalThis.fetch } 
 export const realNetworkAllowed = (env = process.env) => env[REAL_NETWORK_ENV] === '1';
 
 const retryAfterOf = (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? Math.min(Math.ceil(n), 86_400) : null; };
-async function readCapped(res, max) {
+export async function readCapped(res, max = 2_000_000) {
   if (res.body?.getReader) {
     const r = res.body.getReader(), chunks = []; let n = 0;
     for (;;) { const { done, value } = await r.read(); if (done) break; n += value.byteLength; if (n > max) { try { await r.cancel(); } catch { /* fermé */ } return null; } chunks.push(value); }

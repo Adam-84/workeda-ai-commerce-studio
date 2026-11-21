@@ -65,3 +65,29 @@ Jamais : `billing:read`, `staff:read`, réglages, thème, `product:mapping` ni a
 - Du texte libre (noms de produits, libellés fournisseurs) peut en théorie contenir une donnée personnelle : la projection est par liste blanche mais ne peut pas garantir l'absence de nom dans un titre.
 - Les accès agents, jetons et relevés sont **locaux à chaque PC**.
 - La validation DPAPI réelle dépend de l'environnement PowerShell de l'ordinateur (testée ici sous Windows ; l'outil de revue indépendant n'a pas pu la charger dans son bac à sable).
+
+## Durcissement final du 22 novembre 2026
+
+- DPAPI charge explicitement le module de Windows PowerShell et utilise UTF-8 ; les erreurs du sous-processus ne sont jamais propagées avec leurs entrées/sorties. AES-GCM reste inchangé.
+- Les erreurs OAuth, noms d'outils inconnus et quotas 17TRACK ne recopient plus de texte libre distant. Les réponses OAuth et 17TRACK sont limitées à 2 Mo, comme MCP.
+- Une révocation invalide les opérations en cours et en attente. Un refus d'authentification retire le drapeau « authentifié ». Le plafond DSers de 2 000 s'applique aussi à la configuration par environnement.
+- Les devis forcés sont relus ; un changement de pays ou un cache expiré invalide les devis précédents. La limite de 15 produits par lot reste appliquée.
+- Observations, libellés de références, erreurs d'exécution et détails d'accusés liés aux intégrations restent hors du journal portable. Les événements de messages utilisent un libellé neutre.
+- Les consignes déléguées et métadonnées de sous-mission ne sont plus relues hors de leur contexte d'accès. Les tâches demandant une intégration ne proposent pas de mémoire générale, qui ne conserve pas cette provenance.
+- Le rafraîchissement automatique du panneau respecte la navigation au clavier ; une action restaure le focus et conserve son message de résultat réel.
+
+Les régressions sont exécutées contre les simulateurs et des réponses HTTP en mémoire, sans compte ni appel réseau externe. La vérification UI automatisée porte sur le contrôleur (focus et annonces) ; aucun audit avec lecteur d'écran réel n'a été effectué. La limite des champs libres de catalogue et les hypothèses de format DSers restent celles décrites ci-dessus.
+
+Validation finale : Node 24.13.1, tests ciblés **159/159**, suite `node --test` **430/430** (416 existants + 14 régressions), aucun échec ni test ignoré. `git diff --check` sans erreur ; fichiers modifiés en CRLF. Aucun commit ni push.
+
+
+## Champs libres du catalogue — complément du 22 novembre 2026
+
+- `catalog-privacy.js` neutralise uniquement les e-mails, téléphones et formats usuels de suivi (S10, UPS, préfixes alphabétiques et longues suites numériques), y compris les encodages HTML/URL courants. Noms, adresses, texte commercial, caractéristiques et dates restent conservés ; ce filtre ne constitue pas une anonymisation générale.
+- Shopify public/Admin : nettoyage des titres, descriptions, tags, fournisseurs, types, handles, titres SEO et URL avant troncature et stockage des nouveaux relevés. Les collections sont couvertes aussi. Les anciens `shop_snapshots` sont filtrés à la lecture et par `catalogPrompt`, sans réécriture des anciennes lignes SQL.
+- Le rapprochement conserve les identifiants Shopify et nettoie ses champs libres. Un handle sensible ou déjà neutralisé ne sert pas de clé de rapprochement : aucun lien artificiel entre deux marqueurs identiques. La correspondance exacte par identifiant reste possible.
+- Les blocs d’intégrations, les appels agent de Comms et le contexte mémoire filtrent aussi les anciennes données. Les journaux portables Comms/mémoire (y compris sources, observations et métadonnées textuelles imbriquées) et les nouveaux événements d’activité neutralisent ces coordonnées avant sérialisation ou troncature. Les bases locales et les journaux historiques ne sont pas purgés rétroactivement.
+- Les listes blanches DSers/17TRACK restent fermées. Les variantes de noms, chemins, casse, suffixes et objets coercibles sont refusés ; le refus ne recopie plus le nom libre fourni.
+- Contrôle du contenu des fichiers suivis avec `git ls-files` et expressions régulières : aucune donnée client réelle ni secret exploitable identifié ; coordonnées restantes dans des fixtures explicitement fictives ou adresses techniques. Six fichiers de tests contenant d’anciens faux jetons littéraux ont été convertis en assemblages à l’exécution. Le contrôle est heuristique et ne couvre pas l’historique Git.
+
+Validation de ce complément : **9 régressions**, tests ciblés **223/223**, suite `node --test` **439/439**, aucun échec ni test ignoré. Simulateurs et réponses en mémoire uniquement. Aucun réseau externe, compte réel, commit ou push.

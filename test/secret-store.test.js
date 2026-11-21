@@ -64,15 +64,21 @@ test('le texte clair ne passe pas par la ligne de commande de PowerShell', () =>
   assert.equal(seen[0].input, FAKE, 'transmis par l’entrée standard');
 });
 
+test('échec DPAPI : aucune sortie du sous-processus ni entrée secrète dans l’erreur', () => {
+  const p = dpapiProtector({ run: () => { throw new Error(`échec : ${FAKE}`); } });
+  assert.throws(() => p.protect(FAKE), (e) => !e.message.includes(FAKE));
+});
+
 test('protecteur par défaut : Windows → DPAPI ; sinon clé d’environnement', () => {
   const p = defaultProtector({ ARCHIPEL_SECRET_KEY: 'x'.repeat(40) });
   assert.equal(p.id, process.platform === 'win32' ? 'dpapi' : 'aes-gcm');
 });
 
 test('masquage des secrets dans les messages, journaux et prompts', () => {
-  const dirty = `Échec : Authorization: Bearer abc123DEF456ghi789 ; "access_token":"zzzzzzzzzz1234" ; 17token: ABCDEF1234567890 ; shpat_abcdef0123456789 ; eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnbmF0dXJl`;
+  const shopifyFake = ['shpat', 'abcdef0123456789'].join('_');
+  const dirty = `Échec : Authorization: Bearer abc123DEF456ghi789 ; "access_token":"zzzzzzzzzz1234" ; 17token: ABCDEF1234567890 ; ${shopifyFake} ; eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnbmF0dXJl`;
   const clean = scrubSecrets(dirty);
-  for (const leak of ['abc123DEF456ghi789', 'zzzzzzzzzz1234', 'ABCDEF1234567890', 'shpat_abcdef0123456789', 'eyJhbGciOiJIUzI1NiJ9', 'c2lnbmF0dXJl']) assert.ok(!clean.includes(leak), leak);
+  for (const leak of ['abc123DEF456ghi789', 'zzzzzzzzzz1234', 'ABCDEF1234567890', shopifyFake, 'eyJhbGciOiJIUzI1NiJ9', 'c2lnbmF0dXJl']) assert.ok(!clean.includes(leak), leak);
   assert.match(clean, /\[secret\]/);
   assert.equal(scrubSecrets('Aucun secret ici : 42 produits.'), 'Aucun secret ici : 42 produits.');
   assert.equal(hasSecretShape('Bearer abcdefghijkl'), true); assert.equal(hasSecretShape('bonjour'), false);

@@ -9,12 +9,25 @@ import { execFileSync } from 'node:child_process';
 import { DSERS_ALLOWED_TOOLS, DSERS_WRITE_TOOLS, DSERS_UNUSED_READ_TOOLS, assertAllowed, classifyDsersTool, classifyTrack17Endpoint, scrubText, containsPii } from '../src/integrations-core.js';
 import { scrubSecrets, hasSecretShape, createSecretStore, testProtector } from '../src/secret-store.js';
 import { createMcpClient, networkGate, IntegrationError } from '../src/mcp-client.js';
-import { assertReadScopes, assertDsersEndpoint, assertLoopbackRedirect, createPkce } from '../src/oauth-pkce.js';
+import { assertReadScopes, assertDsersEndpoint, assertLoopbackRedirect, createPkce, exchangeCode, grantedScopes, fetchMetadata } from '../src/oauth-pkce.js';
 import { createStudio } from '../src/studio.js';
 import { createSimDsers, createSimTrack17 } from './helpers/sim-servers.js';
 
 const src = (f) => readFileSync(fileURLToPath(new URL(`../src/${f}`, import.meta.url)), 'utf8');
 const FILES = ['integrations-core.js', 'mcp-client.js', 'oauth-pkce.js', 'dsers-connector.js', 'track17-connector.js', 'integrations.js', 'studio-integrations.js', 'secret-store.js'];
+
+test('OAuth : les erreurs et portées distantes ne reflètent aucun texte libre', async () => {
+  const reflected = 'valeur-opaque-confidentielle Jean Dupont 12 rue des Lilas';
+  await assert.rejects(() => exchangeCode({ fetchImpl: async () => ({ status: 400, text: async () => JSON.stringify({ error: reflected }) }), metadata: { token_endpoint: 'https://ai.dsers.com/oauth/token' }, scopes: ['store:read'] }), (e) => !e.message.includes(reflected));
+  assert.throws(() => grantedScopes({ scope: reflected }, ['store:read']), (e) => !/Jean|Dupont|Lilas|opaque/.test(e.message));
+});
+
+test('OAuth : métadonnées et réponse de jeton trop volumineuses refusées', async () => {
+  const metadata = { authorization_endpoint: 'https://ai.dsers.com/oauth/authorize', token_endpoint: 'https://ai.dsers.com/oauth/token', registration_endpoint: 'https://ai.dsers.com/oauth/register' };
+  const fetchImpl = async () => new Response(JSON.stringify({ ...metadata, access_token: 'factice', extra: 'x'.repeat(2_000_001) }));
+  await assert.rejects(() => fetchMetadata(fetchImpl), (e) => e.kind === 'protocol');
+  await assert.rejects(() => exchangeCode({ fetchImpl, metadata, scopes: ['store:read'] }), (e) => e.kind === 'protocol');
+});
 
 test('liste blanche : seuls 12 outils DSers de lecture passent ; écriture, lecture inutile et inconnus refusés', () => {
   assert.equal(DSERS_ALLOWED_TOOLS.length, 12);
@@ -55,7 +68,7 @@ test('OAuth : portées hors lecture refusées ; hôte hors ai.dsers.com refusé 
 });
 
 test('masquage des secrets : jetons, en-têtes, JWT, clés dans les erreurs et journaux', () => {
-  for (const raw of ['Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789', 'access_token=abcdefghijklmnop1234567890', '{"refresh_token":"abcdefghijklmnop1234567890"}', '17token: ABCDEFGH12345678ABCDEFGH', 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnopqrstuvwxyz', ['shpat', '0123456789abcdef0123456789abcdef'].join('_'), 'sk-abcdefghijklmnopqrstuvwxyz0123456789']) {
+  for (const raw of ['Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789', 'access_token=abcdefghijklmnop1234567890', '{"refresh_token":"abcdefghijklmnop1234567890"}', '17token: ABCDEFGH12345678ABCDEFGH', 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnopqrstuvwxyz', ['shpat', '0123456789abcdef0123456789abcdef'].join('_'), ('sk' + '-abcdefghijklmnopqrstuvwxyz0123456789')]) {
     const out = scrubSecrets(`erreur ${raw} fin`), value = raw.match(/[A-Za-z0-9._-]{20,}/)?.[0];
     assert.ok(value && !out.includes(value), `valeur sensible conservée : ${out}`);
   }

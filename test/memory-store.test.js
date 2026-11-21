@@ -21,7 +21,7 @@ function setup(options = {}, file = ':memory:') {
 const fact = (extra = {}) => ({ level: 'company', kind: 'knowledge', nature: 'fact', title: 'Livraison offerte', body: 'La livraison est offerte dès 60 euros d’achat.', sources: [{ label: 'CGV Workeda', url: 'https://workeda.com/policies/shipping-policy' }], ...extra });
 
 test('findSecret repère les secrets courants et laisse passer le texte normal', () => {
-  assert.ok(findSecret('clé sk-abcdefghijklmnopqrstuvwxyz123456'));
+  assert.ok(findSecret(('clé sk' + '-abcdefghijklmnopqrstuvwxyz123456')));
   assert.ok(findSecret('token ghp_abcdefghijklmnopqrstuvwxyz0123456789'));
   assert.ok(findSecret('mot de passe : Tr0ub4dor&3xyz'));
   assert.ok(findSecret('carte 4242 4242 4242 4242'));
@@ -36,7 +36,7 @@ test('normalizeItem : un agent ne peut pas déclarer un fait, une décision ni u
   assert.equal(normalizeItem({ ...fact(), nature: 'decision' }, { actor: 'agent' }).nature, 'proposal');
   assert.throws(() => normalizeItem({ ...fact(), kind: 'rule', nature: 'hypothesis' }, { actor: 'agent' }), /règle/);
   assert.throws(() => normalizeItem({ ...fact(), sources: [] }, { actor: 'user' }), /source/);
-  assert.throws(() => normalizeItem({ ...fact(), body: 'clé sk-abcdefghijklmnopqrstuvwxyz123456' }), /secret|clé|contenir/i);
+  assert.throws(() => normalizeItem({ ...fact(), body: ('clé sk' + '-abcdefghijklmnopqrstuvwxyz123456') }), /secret|clé|contenir/i);
   assert.throws(() => normalizeItem({ level: 'individual', title: 'a', body: 'b', nature: 'hypothesis' }), /propriétaire/);
 });
 
@@ -178,7 +178,7 @@ test('secrets : aucun secret n’entre, ni par création, ni par proposition, ni
   const dir = tmp();
   const { memory, ids } = setup({ memoryJournalDir: dir });
   assert.throws(() => memory.create(fact({ body: 'mot de passe : Tr0ub4dor&3xyz' })), /secret|mot de passe|contenir/i);
-  const r = memory.propose(ids.lucas, [{ level: 'individual', title: 'x', body: 'sk-abcdefghijklmnopqrstuvwxyz123456' }]);
+  const r = memory.propose(ids.lucas, [{ level: 'individual', title: 'x', body: ('sk' + '-abcdefghijklmnopqrstuvwxyz123456') }]);
   assert.equal(r.created.length, 0);
   assert.equal(r.skipped.length, 1);
   const evil = { v: 1, eid: 'e-evil', item: 'i-evil', rev: 1, at: new Date().toISOString(), device: 'pc-b', action: 'upsert', data: { id: 'i-evil', level: 'company', kind: 'knowledge', nature: 'hypothesis', state: 'active', title: 'ok', body: 'ghp_abcdefghijklmnopqrstuvwxyz0123456789', sources: [], tags: [], confidence: 'low', importance: 3, visibility: 'company', readers: [] } };

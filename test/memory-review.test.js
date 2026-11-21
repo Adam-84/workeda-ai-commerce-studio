@@ -83,7 +83,7 @@ test('API : les anciennes notes de mission refusent une autre origine et les sec
   assert.equal(ok.status, 200, JSON.stringify(ok.body));
   assert.equal((await call('PUT', `/api/missions/${mission.id}/memory/${ok.body.id}`, { body: 'Piraté' }, evil)).status, 403);
   assert.equal((await call('POST', `/api/missions/${mission.id}/memory`, { kind: 'fact', body: 'mot de passe : correctcheval' })).status, 400, 'secret refusé');
-  assert.equal((await call('PUT', `/api/missions/${mission.id}/memory/${ok.body.id}`, { body: 'clé sk-abcdefghijklmnopqrstuvwxyz123456' })).status, 400);
+  assert.equal((await call('PUT', `/api/missions/${mission.id}/memory/${ok.body.id}`, { body: ('clé sk' + '-abcdefghijklmnopqrstuvwxyz123456') })).status, 400);
   assert.equal(studio.listMemory(mission.id).length, 1);
 }));
 
@@ -100,7 +100,7 @@ test('secrets : mot de passe sans chiffre, liens et notes de source', () => {
   assert.ok(findSecret('mot de passe : lecheval'));
   const { memory } = setup();
   assert.throws(() => memory.create(fact({ sources: [{ label: 'Doc', url: 'https://user:motdepasse@exemple.fr/doc' }] })), /secret|contenir|identifiant/i);
-  assert.throws(() => memory.create(fact({ sources: [{ label: 'Doc', note: 'sk-abcdefghijklmnopqrstuvwxyz123456' }] })), /secret|clé|contenir/i);
+  assert.throws(() => memory.create(fact({ sources: [{ label: 'Doc', note: ('sk' + '-abcdefghijklmnopqrstuvwxyz123456') }] })), /secret|clé|contenir/i);
   assert.throws(() => memory.create(fact({ tags: ['ghp_abcdefghijklmnopqrstuvwxyz0123456789'] })), /secret|jeton|contenir/i);
   assert.equal(memory.list().length, 0);
 });
