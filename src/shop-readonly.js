@@ -149,7 +149,7 @@ export function catalogPrompt(snap) {
     let used = lines.join('\n').length, listed = 0;
     for (const p of snap.products.slice(0, SHOP_LIMITS.promptProducts)) {
       const price = p.priceMin == null ? 'prix ?' : `${p.priceMin}${p.priceMax !== p.priceMin ? `–${p.priceMax}` : ''}${p.currency ? ` ${p.currency}` : ''}`;
-      const line = `- ${p.title.slice(0, 80)} | ${p.type || 'type ?'} | ${price} | ${p.available ? 'stock' : 'indispo'} | ${p.images} img | desc ${p.descChars} car. | ${p.tags.length} tag(s)${p.tags.length ? ': ' + p.tags.slice(0, 4).join(', ') : ''} | ${p.handle}`;
+      const line = `- ${p.title.slice(0, 80)} | ${p.type || 'type ?'} | ${price} | ${p.available ? 'stock' : 'indispo'} | ${p.images} img | desc ${p.descChars} car. | ${p.tags.length} tag(s)${p.tags.length ? ': ' + p.tags.slice(0, 6).join(', ') + (p.tags.length > 6 ? ` (+${p.tags.length - 6} autres)` : '') : ''} | ${p.handle}`;
       if (used + line.length + 1 > SHOP_LIMITS.promptChars - 700) break;
       lines.push(line); used += line.length + 1; listed += 1;
     }

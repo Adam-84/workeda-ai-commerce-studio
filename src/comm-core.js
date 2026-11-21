@@ -25,7 +25,9 @@ export const LIMITS = {
   taskTtlMs: 24 * 3_600_000,      // délai par défaut avant expiration
   backoffMs: 60_000,              // attente avant une reprise
   reuseMs: 7 * 24 * 3_600_000,    // un résultat vérifié identique est réutilisé pendant 7 jours
-  webTimeoutMs: 600_000, plainTimeoutMs: 180_000
+  webTimeoutMs: 600_000, plainTimeoutMs: 180_000, // plainTimeoutMs : réponses dans un fil
+  taskTimeoutMs: 600_000,        // tâche sans web : un audit complet dépasse 3 minutes (mesuré : 372 s)
+  unreportedRunUsd: 0.25         // une exécution en erreur SANS coût rapporté compte pour cette somme dans le budget (estimation prudente, affichée comme telle)
 };
 
 export const TASK_TRANSITIONS = {
@@ -147,7 +149,9 @@ export function parseAgentOutput(textOut) {
   const start = raw.indexOf('{'), end = raw.lastIndexOf('}');
   let data = null;
   if (start >= 0 && end > start) { try { data = JSON.parse(raw.slice(start, end + 1)); } catch { /* texte libre */ } }
-  const empty = { structured: false, status: 'done', report: raw.slice(0, LIMITS.result), sources: [], delegate: [], consolidate: '', blocker: '', memory: [] };
+  // Un rapport trop long est coupé AVEC un marqueur visible et signalé (truncated) : jamais de coupure silencieuse.
+  const cap = (t) => (t.length > LIMITS.result ? { text: `${t.slice(0, LIMITS.result - 160).trimEnd()}\n\n[… RAPPORT TRONQUÉ PAR LE STUDIO : ${t.length} caractères produits, ${LIMITS.result} conservés au maximum]`, truncated: true } : { text: t, truncated: false });
+  const empty = { structured: false, status: 'done', report: cap(raw).text, truncated: cap(raw).truncated, sources: [], delegate: [], consolidate: '', blocker: '', memory: [] };
   if (!data || typeof data !== 'object' || Array.isArray(data)) return empty;
   const status = ['done', 'blocked'].includes(data.status) ? data.status : 'done';
   const sources = (Array.isArray(data.sources) ? data.sources : []).slice(0, 20).map((s) => {
@@ -157,7 +161,8 @@ export function parseAgentOutput(textOut) {
   }).filter((s) => s && (s.label || s.url));
   const delegate = (Array.isArray(data.delegate) ? data.delegate : []).filter((d) => d && typeof d === 'object').map((d) => ({ to: str(d.to, 60), task: str(d.task, LIMITS.instruction), why: str(d.why, 400) })).filter((d) => d.to && d.task);
   const memory = (Array.isArray(data.memory) ? data.memory : []).slice(0, 10).filter((p) => p && typeof p === 'object').map((p) => Object.fromEntries(PROPOSAL_FIELDS.filter((k) => p[k] !== undefined).map((k) => [k, p[k]])));
-  return { structured: true, status, report: str(data.report, LIMITS.result) || (status === 'blocked' ? '' : empty.report), summary: str(data.summary, 400), sources, delegate, consolidate: str(data.consolidate, LIMITS.instruction), blocker: str(data.blocker, 1000), memory };
+  const full = typeof data.report === 'string' ? data.report.trim() : '', capped = cap(full);
+  return { structured: true, status, truncated: capped.truncated, report: capped.text || (status === 'blocked' ? '' : empty.report), summary: str(data.summary, 400), sources, delegate, consolidate: str(data.consolidate, LIMITS.instruction), blocker: str(data.blocker, 1000), memory };
 }
 
 // Associe un prénom (ou une fiche) à un agent ; l'homonymie est refusée plutôt que devinée.
@@ -201,7 +206,7 @@ export function taskPrompt({ task, requester, deps = [], thread = [], memoryText
     `Réponds uniquement avec un objet JSON, sans texte autour ni Markdown :\n` +
     `{"status":"done|blocked","summary":"une phrase","report":"le résultat complet, en texte simple","sources":[{"label":"…","url":"https://…","date":"AAAA-MM-JJ","note":"…"}],` +
     `"delegate":[{"to":"Prénom","task":"demande précise","why":"pourquoi"}],"consolidate":"si tu délègues et dois ensuite assembler les retours : ce que tu feras avec eux","blocker":"…","memory":[]}\n` +
-    `"report" est obligatoire sauf si "status" vaut "blocked". Laisse vides les champs qui ne servent pas. "memory" : propositions de souvenirs (jamais enregistrées sans validation du propriétaire).`
+    `"report" : au plus 20 000 caractères ; si le sujet est trop vaste, hiérarchise, résume et annonce explicitement ce que tu n'as pas pu traiter (un rapport plus long serait coupé). "report" est obligatoire sauf si "status" vaut "blocked". Laisse vides les champs qui ne servent pas. "memory" : propositions de souvenirs (jamais enregistrées sans validation du propriétaire).`
   ];
   return parts.filter(Boolean).join('\n\n');
 }
@@ -220,6 +225,8 @@ export function replyPrompt({ agentName, title = '', thread, memoryText = '' }) 
 export function evaluateResult({ task, parsed, observed = {}, deps = [] }) {
   const report = (parsed.report ?? '').trim();
   if (!report) return { verified: false, level: 'none', verification: 'Aucun contenu rendu par l’agent.', sources: [] };
+  // Un rapport coupé n'est jamais « vérifié » : le propriétaire doit le relire ou redemander la fin.
+  if (parsed.truncated) return { verified: false, level: 'none', verification: `Rapport trop long, tronqué par le Studio (limite ${LIMITS.result} caractères) : la fin manque. À relire, ou à redemander par parties.`, sources: parsed.sources ?? [] };
   // « provided » : sources fournies par le Studio lui-même (relevé Shopify daté), pas consultées par l'agent.
   const seen = new Set([...(observed.fetched ?? []), ...(observed.found ?? [])]);
   // Une source du MÊME SITE que le relevé fourni compte comme « fournie par le Studio » (jamais comme une consultation de l'agent).

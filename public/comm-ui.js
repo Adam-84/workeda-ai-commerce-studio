@@ -188,7 +188,7 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
   function budgetForm(t) {
     const err = errBox(), input = h('input', { type: 'number', min: '0.1', max: '100', step: '0.1', value: String(t.budgetUsd), 'aria-label': 'Nouveau budget en dollars' });
     return h('form', { class: 'memory-form', onsubmit: async (e) => { e.preventDefault(); err.textContent = ''; try { await send('POST', `/api/comm/tasks/${enc(t.id)}/budget`, { usd: Number(input.value) }); announce('Budget mis à jour'); ui.pollComm?.(); await loadTasks(); } catch (x) { fail(err, x); } } },
-      h('p', { class: 'note' }, `Dépensé : ${(t.spentUsd ?? 0).toFixed(2)} $ sur ${t.budgetUsd.toFixed(2)} $ (coût rapporté par Claude Code ; une exécution sans coût rapporté compte pour 0).`),
+      h('p', { class: 'note' }, `Dépensé : ${(t.spentUsd ?? 0).toFixed(2)} $ sur ${t.budgetUsd.toFixed(2)} $ (coût rapporté par Claude Code${t.unreportedRuns ? `, dont ${t.unreportedRuns} exécution(s) interrompue(s) sans coût rapporté comptée(s) à 0,25 $ chacune : estimation prudente` : ''}).`),
       h('label', {}, 'Budget de la mission ($)', input), h('button', { type: 'submit' }, 'Modifier le budget'), err);
   }
   function delegateForm() {

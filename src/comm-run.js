@@ -97,7 +97,7 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
       for (const id of inbox) comm.markDelivery(id, agentId, 'received');
       const seen = observeTools(); seen.state.provided = built.provided;
       let text;
-      try { text = await runner({ model: profile.model, system: built.system, prompt: built.prompt, tools: built.web, onEvent: seen.feed, timeoutMs: built.web.length ? LIMITS.webTimeoutMs : LIMITS.plainTimeoutMs }); }
+      try { text = await runner({ model: profile.model, system: built.system, prompt: built.prompt, tools: built.web, onEvent: seen.feed, timeoutMs: built.web.length ? LIMITS.webTimeoutMs : LIMITS.taskTimeoutMs }); }
       catch (e) { return fail(task, run, e, inbox, seen.state); }
       const ended = comm.endRun(run.id, { state: 'done', costUsd: seen.state.cost, usage: seen.state.usage });
       succeed(task, ended, text, seen.state, inbox);

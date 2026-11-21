@@ -22,7 +22,7 @@ Domaine de la boutique : `WORKEDA_SHOP_DOMAIN` (défaut `workeda.com`). Ne mette
 - Le relevé est un cache **local** : chaque ordinateur relève le sien, rien n'est synchronisé par git.
 
 ## Budget par mission
-Chaque demande racine a un budget (3 $ par défaut, 0,10 à 100 $), réglable dans le Comms Center. Il compte le coût rapporté par Claude Code de **toutes** les exécutions de la demande : tâches, sous-tâches, consolidations, erreurs et réponses données dans le fil de la mission. Au-delà, plus aucune nouvelle exécution ne démarre (celles en cours finissent), les tâches concernées sont bloquées avec explication, et augmenter le budget les relance, consolidations comprises. Une exécution sans coût rapporté compte pour 0 : le budget est un garde-fou, pas une facture.
+Chaque demande racine a un budget (3 $ par défaut, 0,10 à 100 $), réglable dans le Comms Center. Il compte le coût rapporté par Claude Code de **toutes** les exécutions de la demande : tâches, sous-tâches, consolidations, erreurs et réponses données dans le fil de la mission. Au-delà, plus aucune nouvelle exécution ne démarre (celles en cours finissent), les tâches concernées sont bloquées avec explication, et augmenter le budget les relance, consolidations comprises. Une exécution **interrompue sans coût rapporté** (délai dépassé, arrêt) compte pour une estimation prudente de 0,25 $, affichée comme telle ; une exécution terminée sans coût rapporté compte pour 0. Le budget est un garde-fou, pas une facture.
 
 ## Migration
 `COMM_MIGRATIONS` v2 : colonnes `with_catalog` et `budget_usd` (additives, sauvegarde avant, réversible). Un journal écrit avant la v2 s'importe sans effacer un budget ou un catalogue déjà connus. Nouvelle table locale `shop_snapshots` (8 relevés conservés).
