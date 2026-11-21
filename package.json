@@ -7,7 +7,14 @@
     "start": "node src/server.js",
     "test": "node --test",
     "skills:check": "node src/skills-cli.js check",
-    "skills:sync": "node src/skills-cli.js sync"
+    "skills:sync": "node src/skills-cli.js sync",
+    "memory:check": "node src/memory-cli.js check",
+    "memory:backup": "node src/memory-cli.js backup",
+    "memory:sync": "node src/memory-cli.js sync",
+    "comm:check": "node src/comm-cli.js check",
+    "comm:sync": "node src/comm-cli.js sync",
+    "comm:inbox": "node src/comm-cli.js inbox",
+    "comm:tasks": "node src/comm-cli.js tasks"
   },
   "engines": {
     "node": ">=24"

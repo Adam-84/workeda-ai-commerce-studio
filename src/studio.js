@@ -3,6 +3,11 @@ import { randomUUID } from 'node:crypto';
 import { isValidAppearance } from '../public/sprites.js';
 import { isValidIslandStyle, normalizeIslandStyle } from '../public/island-style.js';
 import { SKILL_SCHEMA, createSkillStore } from './studio-skills.js';
+import { createMemoryStore } from './studio-memory.js';
+import { createCommStore } from './studio-comm.js';
+import { createShopStore } from './studio-shop.js';
+import { createShopConnector } from './shop-readonly.js';
+import { findSecret } from './memory-core.js';
 
 const DEPARTMENTS = [
   ['Direction', 'Pilotage et validations'], ['Catalogue', 'Produits et collections'],
@@ -52,7 +57,7 @@ const links = (list) => {
 };
 const mapMessage = (row) => ({ ...row, fromAgentId: row.from_agent_id, toAgentId: row.to_agent_id, missionId: row.mission_id });
 
-export function createStudio(filename = 'data/workeda.db') {
+export function createStudio(filename = 'data/workeda.db', options = {}) {
   const db = new DatabaseSync(filename);
   db.exec(`PRAGMA foreign_keys = ON;
     CREATE TABLE IF NOT EXISTS departments (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
@@ -89,8 +94,10 @@ export function createStudio(filename = 'data/workeda.db') {
   }
 
   const emit = (agentId, kind, detail, source = 'manual', verified = true) => {
+    const id = randomUUID();
     db.prepare('INSERT INTO events (id, agent_id, kind, detail, source, verified, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(randomUUID(), agentId ?? null, kind, detail, source, Number(verified), now());
+      .run(id, agentId ?? null, kind, detail, source, Number(verified), now());
+    return id;
   };
   const one = (sql, id, map = (x) => x) => { const result = db.prepare(sql).get(id); return result && map(result); };
 
@@ -139,11 +146,16 @@ export function createStudio(filename = 'data/workeda.db') {
   const memoryFields = (e) => {
     if (!MEMORY_KINDS.includes(e.kind)) throw bad('Type de note invalide.');
     const body = text(e.body, 'La note'); if (!body) throw bad('Écrivez la note avant de l’ajouter.');
+    const secret = findSecret(body); // ces notes sont relues par les agents : jamais de mot de passe, clé ou numéro sensible
+    if (secret) throw bad(`Cette note semble contenir ${secret} : retirez-le, la mémoire ne garde aucun secret.`);
     return { kind: e.kind, body, sourceAgentId: e.sourceAgentId ? agentRef(e.sourceAgentId) : null }; // source déclarée par la personne, pas par l'agent
   };
 
-  return {
+  const memory = createMemoryStore(db, { filename, journalDir: options.memoryJournalDir ?? null, device: options.device ?? process.env.WORKEDA_DEVICE ?? null });
+
+  const api = {
     ...createSkillStore(db),
+    memory,
     listDepartments: () => db.prepare('SELECT * FROM departments ORDER BY created_at').all().map(mapDepartment),
     createDepartment({ name, description = '' }) {
       if (!name?.trim()) throw new Error('Le nom du département est obligatoire.');
@@ -200,6 +212,13 @@ export function createStudio(filename = 'data/workeda.db') {
         setCollaborators(id, m.collaborators);
       });
       if (m.assignedTo) emit(m.assignedTo, m.assignedTo === existing.assignedTo ? 'mission.updated' : 'mission.assigned', m.title, 'manual', true);
+      return getMission(id);
+    },
+    // État d'une mission déléguée : simple reflet de l'état réel de sa tâche (aucune autre écriture sur la mission).
+    setMissionState(id, state) {
+      if (typeof state !== 'string' || !/^[a-z_]{1,20}$/.test(state)) throw bad('État de mission invalide.');
+      requireMission(id);
+      db.prepare('UPDATE missions SET state = ?, updated_at = ? WHERE id = ?').run(state, now(), id);
       return getMission(id);
     },
     // Mémoire : notes saisies à la main, corrigées ou archivées, jamais effacées. Aucun agent ne la lit pour l'instant.
@@ -392,4 +411,10 @@ export function createStudio(filename = 'data/workeda.db') {
     },
     close: () => db.close()
   };
+  // Communication entre agents : tables à part, chaque tâche déléguée est une mission (moteur existant), le journal voyage avec git.
+  api.comm = createCommStore(db, { journalDir: options.commJournalDir ?? null, device: memory.device, memory, emit, backup: memory.backup, clock: options.clock, missions: { create: (m) => api.createMission(m), setState: (id, st) => api.setMissionState(id, st) } });
+  // Catalogue Shopify : relevés datés en LECTURE SEULE (le connecteur n'a aucune écriture). Injectable pour les tests ; sans jeton, pages publiques.
+  let connector = options.shopConnector; if (connector === undefined) { try { connector = createShopConnector(); } catch { connector = null; } }
+  api.shop = createShopStore(db, { connector, clock: options.clock });
+  return api;
 }

@@ -11,6 +11,8 @@ import { OPTIONS as ISLAND_OPTIONS, LABELS_FR, LABEL_MAX, normalizeIslandStyle, 
 import { connectorText, modelLabel, colleagues, ignoredText, helpLine, FULL_SECTIONS } from './agent-profile.js';
 import { createConversation } from './conversation.js';
 import { agentSkillsTab, skillsCenter } from './skills-ui.js';
+import { agentMemoryTab, memoryCenter } from './memory-ui.js';
+import { agentCommTab, commCenter } from './comm-ui.js';
 import { missionsTab } from './missions.js';
 import { instructionsBlock } from './instructions.js';
 
@@ -249,7 +251,9 @@ $('#minimap-toggle').addEventListener('click', () => { const m = $('#minimap'); 
 
 // ---------- données ----------
 export async function refresh() {
-  const [departments, agents, missions, messages, appearances, styles, profiles] = await Promise.all([get('/api/departments'), get('/api/agents'), get('/api/missions'), get('/api/messages'), get('/api/appearances'), get('/api/island-styles'), get('/api/agent-profiles').catch(() => [])]);
+  // Les échanges réels entre agents (messages et délégations enregistrés par le Studio) alimentent les faisceaux de la carte : rien n'est inventé.
+  const [departments, agents, missions, recorded, appearances, styles, profiles, exchanges] = await Promise.all([get('/api/departments'), get('/api/agents'), get('/api/missions'), get('/api/messages'), get('/api/appearances'), get('/api/island-styles'), get('/api/agent-profiles').catch(() => []), get('/api/comm/exchanges').catch(() => [])]);
+  const messages = [...recorded, ...exchanges];
   Object.assign(state, { departments, agents, missions, messages, appearances: new Map(appearances.map((a) => [a.agentId, a])), styles: new Map(styles.map((s) => [s.departmentId, s])), profiles: new Map(profiles.map((p) => [p.agentId, p])) });
   const prevW = state.world?.width;
   state.world = computeWorld(departments, agents, state.styles); state.placed = placeAgents(state.world, agents);
@@ -280,7 +284,7 @@ loadUserSprites();
 const pop = $('#pop'); let current = null;
 const anchorEl = () => current && overlay.querySelector(`[data-key="${current.key}"]`);
 function positionPop() {
-  if (current?.kind === 'agent' || current?.kind === 'skills') { pop.style.left = pop.style.top = ''; return; }
+  if (current?.kind === 'agent' || current?.kind === 'skills' || current?.kind === 'memory') { pop.style.left = pop.style.top = ''; return; }
   if (matchMedia('(max-width: 700px)').matches) { pop.style.left = pop.style.top = ''; return; }
   const a = anchorEl(); if (!a) return;
   const r = a.getBoundingClientRect(), w = pop.offsetWidth, hh = pop.offsetHeight;
@@ -291,12 +295,12 @@ function positionPop() {
 let closeHook = null; // l'éditeur d'île y met l'annulation de son aperçu non enregistré
 let liveDraft = null; // { id, get } tant que le formulaire de personnalisation est ouvert
 const runCloseHook = () => { const f = closeHook; closeHook = null; liveDraft = null; f?.(); };
-export function close(restore = true) { runCloseHook(); if (pop.hidden) return; const key = current?.key; pop.hidden = true; current = null; announce('Fenêtre fermée'); if (restore && key) (key.startsWith('skills:') ? $('#skills-btn') : overlay.querySelector(`[data-key="${key}"]`))?.focus(); }
+export function close(restore = true) { runCloseHook(); if (pop.hidden) return; const key = current?.key; pop.hidden = true; current = null; announce('Fenêtre fermée'); if (restore && key) (key.startsWith('skills:') ? $('#skills-btn') : key.startsWith('memory:') ? $('#memory-btn') : key.startsWith('comm:') ? $('#comm-btn') : overlay.querySelector(`[data-key="${key}"]`))?.focus(); }
 export function show(kind, id, opts = {}) {
   runCloseHook();
   const key = opts.recruit ? `plot:${id}` : `${kind}:${id}`; current = { kind, id, key };
-  pop.classList.toggle('agent-panel', kind === 'agent' || kind === 'skills');
-  const view = { island: islandView, agent: agentView, hub: hubView, skills: skillsView }[kind](id, opts);
+  pop.classList.toggle('agent-panel', kind === 'agent' || kind === 'skills' || kind === 'memory' || kind === 'comm');
+  const view = { island: islandView, agent: agentView, hub: hubView, skills: skillsView, memory: memoryView, comm: commView }[kind](id, opts);
   pop.replaceChildren(h('button', { class: 'x', type: 'button', 'aria-label': 'Fermer', onclick: () => close() }, '×'), view);
   pop.scrollTop = 0; pop.hidden = false; positionPop(); pop.focus(); announce(`${pop.querySelector('h2')?.textContent ?? ''} ouvert`);
 }
@@ -432,6 +436,8 @@ function agentView(id, opts = {}) {
       save: async (method, path, data) => { const saved = await send(method, path, data); await refresh(); return saved; } }) },
     ...['Profil', 'Apparence'].map((label) => ({ label, render: () => TABS[label](a) })),
     { label: 'Skills', render: () => agentSkillsTab({ ui: UI, agent: a, openSkill: (name) => show('skills', 'library', { skill: name }) }) },
+    { label: 'Memory', render: () => agentMemoryTab({ ui: UI, agent: a, ref: agentRef(a), openItem: (itemId) => show('memory', 'center', { item: itemId }) }) },
+    { label: 'Comms', render: () => agentCommTab({ ui: UI, agent: a, nameOf: (id) => state.agents.find((x) => x.id === id)?.name ?? 'Agent', openThread: (threadId) => show('comm', 'center', { thread: threadId }), openCenter: () => show('comm', 'center') }) },
     { label: 'Activité', render: () => TABS.Journal(a) }
   ];
   const selected = opts.tab === 'Messages' ? 'Discussion' : opts.tab === 'Journal' ? 'Activité' : opts.tab;
@@ -462,8 +468,28 @@ const TABS = {
   },
   Journal: (a) => { const ul = h('ul', {}, h('li', {}, 'Chargement…')); get(`/api/events?agentId=${encodeURIComponent(a.id)}`).then((ev) => ul.replaceChildren(...ev.slice(0, 8).map((e) => h('li', {}, `${new Date(e.created_at).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })} · ${e.kind} · ${e.detail} (source : ${e.source})`)))).catch((x) => ul.replaceChildren(h('li', { class: 'err' }, x.message))); return ul; },
 };
-const UI = { h, get, send, announce, tabset, field };
+const UI = { h, get, send, announce, tabset, field, pollComm: () => pollComm() };
 function skillsView(_id, opts = {}) { return skillsCenter({ ui: UI, openAgent: (id) => show('agent', id, { tab: 'Skills' }), initial: opts.skill ?? null }); }
+const agentRef = (a) => state.profiles.get(a.id)?.slug ?? `id:${a.id}`;
+function memoryView(_id, opts = {}) {
+  return memoryCenter({ ui: UI, agents: state.agents, departments: state.departments.map((d) => d.name), missions: state.missions, refOf: agentRef, initial: opts.item ?? null });
+}
+function commView(_id, opts = {}) {
+  return commCenter({ ui: UI, agents: state.agents, departments: state.departments.map((d) => d.name), missions: state.missions, profiles: state.profiles, openMemory: (item) => show('memory', 'center', { item }), setLeave: (fn) => { closeHook = fn; }, initial: opts });
+}
+// ---------- communication : état réel des exécutions ----------
+// Le bouton et la carte ne montrent que ce que le serveur constate : exécutions en cours, notifications, échanges enregistrés.
+let commSig = null;
+export async function pollComm() {
+  try {
+    const act = await get('/api/comm/activity'), b = $('#comm-btn');
+    b.textContent = act.notifications ? `Comms · ${act.notifications}` : 'Comms';
+    b.classList.toggle('busy', act.active.length > 0);
+    b.title = act.active.length ? `${act.active.length} agent${act.active.length > 1 ? 's' : ''} au travail en ce moment` : 'Communication entre agents';
+    const sig = `${act.active.map((a) => a.runId ?? a.taskId).join(',')}|${act.notifications}`;
+    if (sig !== commSig) { const first = commSig === null; commSig = sig; if (!first) { dispatchEvent(new Event('comm:changed')); await refresh(); } }
+  } catch { /* serveur injoignable : l'affichage reste tel quel */ }
+}
 function hubView() {
   const d = (x) => (x ? 'détecté' : 'non détecté'), c = state.health?.connectors;
   return h('div', {}, h('h2', {}, 'Place centrale'), h('p', {}, `${state.departments.length} départements · ${state.agents.length} agents · ${state.missions.length} missions`),
@@ -484,6 +510,9 @@ $('#search').addEventListener('input', (e) => {
 });
 const toggleSettings = () => { const s = $('#settings'); s.hidden = !s.hidden; if (!s.hidden) $('#sky').focus(); };
 $('#skills-btn').addEventListener('click', () => (current?.kind === 'skills' ? close() : show('skills', 'library')));
+$('#memory-btn').addEventListener('click', () => (current?.kind === 'memory' ? close() : show('memory', 'center')));
+$('#comm-btn').addEventListener('click', () => (current?.kind === 'comm' ? close() : show('comm', 'center')));
+setInterval(() => { if (!document.hidden) pollComm(); }, 4000); pollComm();
 $('#settings-btn').addEventListener('click', toggleSettings); $('#phase-pill').addEventListener('click', toggleSettings);
 
 // ---------- barre de mission ----------
