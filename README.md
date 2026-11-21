@@ -193,6 +193,14 @@ npm run comm:inbox -- sophia    # ce qui attend un agent (utilisable depuis Code
 npm run comm:tasks              # liste des délégations
 ```
 
+## Shopify en lecture seule et budget
+
+Les agents peuvent s'appuyer sur le catalogue réel de workeda.com, **sans jamais pouvoir écrire dans la boutique**. Détails et garanties : `docs/SHOPIFY-LECTURE-SEULE.md`.
+
+- **Catalogue** : dans une délégation, cochez « Fournir le catalogue Shopify ». Le Studio le relève lui-même (pages publiques, sans identifiant ; l'API Admin en lecture seule est possible avec `SHOPIFY_ADMIN_TOKEN` et `SHOPIFY_ADMIN_DOMAIN` dans l'environnement, jamais dans le dépôt), le date et le donne à l'agent comme donnée non fiable. Section **Activité** du Comms Center : dernier relevé et bouton « Relever le catalogue maintenant » (au plus toutes les 5 minutes ; un `429` de la boutique est respecté).
+- **Budget** : chaque demande a un budget (3 $ par défaut) calculé sur le coût rapporté par Claude Code ; au-delà, plus aucune nouvelle exécution ne démarre, et vous pouvez l'augmenter.
+- Rien n'est écrit sur Shopify : une modification serait une proposition, que vous seul exécutez.
+
 ## Prérequis Windows
 
 Node.js 24 ou plus récent. Vérifier dans PowerShell :

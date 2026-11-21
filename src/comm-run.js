@@ -5,6 +5,7 @@
 //   - tout ce qui vient d'un autre agent, d'un message ou du web est cadré comme donnée non fiable ;
 //   - un résultat n'est « vérifié » que si le Studio le constate (outils réellement appelés), jamais sur parole.
 import { runClaude as realClaude, fichePrompt, systemPrompt } from './claude-reply.js';
+import { catalogPrompt } from './shop-readonly.js';
 import {
   LIMITS, WEB_TOOLS, bad, taskSystemPrompt, taskPrompt, replyPrompt, parseAgentOutput, observeTools, evaluateResult, resolveAgent
 } from './comm-core.js';
@@ -43,14 +44,15 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
     // Messages réellement présents dans le prompt (fil récent, résultats des tâches attendues, demande elle-même) : seuls ceux-là seront accusés.
     const included = new Set([...shown.map((m) => m.id), ...visible.filter((m) => (m.kind === 'result' && task.dependsOn.includes(m.taskId)) || (m.kind === 'delegation' && m.taskId === task.id)).map((m) => m.id)]);
     const web = task.allowWeb ? webToolsOf(profile) : [];
+    const catalog = task.withCatalog ? studio.shop?.latest() ?? null : null;
     const canDelegate = task.depth < LIMITS.maxDepth && task.kind !== 'consolidation';
     // Une exécution qui lit le web ne reçoit pas la mémoire : une page piégée ne doit pas pouvoir la lui faire exfiltrer.
     const memoryText = web.length ? '' : memoryFor(participants(thread), { missionId: task.missionId, query: `${mission?.title ?? ''} ${task.instruction}` });
     const peers = canDelegate ? roster().filter((a) => a.id !== task.assigneeId && mayDelegate(profile, a.slug)) : [];
     return {
-      web, included,
-      system: taskSystemPrompt(fichePrompt(profile), { name: me.name, role: me.role, department: me.department, web: web.length > 0, canDelegate }),
-      prompt: taskPrompt({ task, requester, deps, thread: recent, memoryText, roster: peers, web: web.length > 0, canDelegate, mission })
+      web, included, provided: task.withCatalog ? (catalog?.sourceUrls ?? []) : [],
+      system: taskSystemPrompt(fichePrompt(profile), { name: me.name, role: me.role, department: me.department, web: web.length > 0, canDelegate, catalog: task.withCatalog }),
+      prompt: taskPrompt({ task, requester, deps, thread: recent, memoryText, catalogText: task.withCatalog ? catalogPrompt(catalog) : '', roster: peers, web: web.length > 0, canDelegate, mission })
     };
   }
 
@@ -68,14 +70,14 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
       if (!mayDelegate(profile, target.slug)) { out.rejected.push(`${target.name} : non autorisé par la fiche de ${comm.nameOf(task.assigneeId)} (champ « collaborates »).`); continue; }
       const hasWeb = webToolsOf(profileOf(target.id)).length > 0;
       try {
-        const r = comm.createTask({ assigneeId: target.id, instruction: d.task, parentTaskId: task.id, allowWeb: task.allowWeb && hasWeb, requiresSources: task.allowWeb && hasWeb, dueAt: task.dueAt }, by);
+        const r = comm.createTask({ assigneeId: target.id, instruction: d.task, parentTaskId: task.id, allowWeb: task.allowWeb && hasWeb, requiresSources: task.allowWeb && hasWeb, withCatalog: task.withCatalog, dueAt: task.dueAt }, by);
         (r.created ? out.created : out.reused).push(r.task);
       } catch (e) { out.rejected.push(`${target.name} : ${e.message}`); }
     }
     if (ask.length > LIMITS.maxPerRun) out.rejected.push(`${ask.length - LIMITS.maxPerRun} demande(s) au-delà de ${LIMITS.maxPerRun} par exécution : ignorée(s).`);
     const awaited = [...out.created, ...out.reused];
     if (parsed.consolidate && awaited.length) {
-      try { const r = comm.createTask({ assigneeId: task.assigneeId, kind: 'consolidation', instruction: parsed.consolidate, parentTaskId: task.id, dependsOn: awaited.map((t) => t.id), dueAt: task.dueAt }, by); out.consolidation = r.task; }
+      try { const r = comm.createTask({ assigneeId: task.assigneeId, kind: 'consolidation', instruction: parsed.consolidate, parentTaskId: task.id, withCatalog: task.withCatalog, dependsOn: awaited.map((t) => t.id), dueAt: task.dueAt }, by); out.consolidation = r.task; }
       catch (e) { out.rejected.push(`Consolidation : ${e.message}`); }
     } else if (parsed.consolidate && !awaited.length) out.rejected.push('Consolidation demandée sans aucune tâche à attendre : ignorée.');
     return out;
@@ -86,16 +88,17 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
     let run = null;
     try {
       if (!profile) { comm.setTaskState(task.id, 'blocked', 'Fiche de l’agent introuvable dans .claude/agents.'); return; }
+      if (task.withCatalog) await studio.shop?.ensureFresh(); // relevé en lecture seule, daté ; ne lève jamais
       const built = buildTask(task);
       run = comm.startRun({ agentId, kind: 'task', taskId: task.id, threadId: task.threadId, model: profile.model, web: built.web.length > 0 });
       active.set(key, { agentId, runId: run.id, taskId: task.id, threadId: task.threadId, kind: 'task', startedAt: run.startedAt });
       setActivity(agentId, 'working', `Tâche : ${short(task.instruction, 100)}`);
       const inbox = comm.pendingFor(agentId, task.threadId).filter((id) => built.included.has(id));
       for (const id of inbox) comm.markDelivery(id, agentId, 'received');
-      const seen = observeTools();
+      const seen = observeTools(); seen.state.provided = built.provided;
       let text;
       try { text = await runner({ model: profile.model, system: built.system, prompt: built.prompt, tools: built.web, onEvent: seen.feed, timeoutMs: built.web.length ? LIMITS.webTimeoutMs : LIMITS.plainTimeoutMs }); }
-      catch (e) { return fail(task, run, e, inbox); }
+      catch (e) { return fail(task, run, e, inbox, seen.state); }
       const ended = comm.endRun(run.id, { state: 'done', costUsd: seen.state.cost, usage: seen.state.usage });
       succeed(task, ended, text, seen.state, inbox);
     } catch (e) {
@@ -104,9 +107,9 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
     } finally { active.delete(key); }
   }
 
-  function fail(task, run, error, inbox = []) {
+  function fail(task, run, error, inbox = [], observed = null) {
     const message = String(error?.message ?? error);
-    comm.endRun(run.id, { state: 'error', error: message });
+    comm.endRun(run.id, { state: 'error', error: message, costUsd: observed?.cost ?? null, usage: observed?.usage ?? null }); // un coût déjà rapporté avant l'erreur est conservé
     for (const id of inbox) { try { comm.markDelivery(id, task.assigneeId, 'error', message); } catch { /* distribution déjà traitée */ } }
     const retry = TRANSIENT.test(message) && task.attempts < task.maxAttempts;
     if (retry) comm.setTaskState(task.id, 'queued', `Nouvel essai après : ${short(message, 160)}`, { extra: { notBefore: new Date(Date.now() + LIMITS.backoffMs).toISOString() } });
@@ -129,7 +132,7 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
     const deps = task.dependsOn.map((id) => { const d = comm.task(id), r = comm.resultOf(id); return { agentName: comm.nameOf(d.assigneeId), title: d.title, verified: Boolean(r?.verified), resultId: r?.id ?? null }; });
     const verdict = evaluateResult({ task, parsed, observed, deps });
     if (!parsed.report.trim()) { comm.setTaskState(task.id, 'failed', 'Réponse sans résultat exploitable.'); setActivity(agentId, 'blocked', 'Réponse vide'); return; }
-    const result = comm.recordResult(task.id, { agentId, runId: run.id, summary: parsed.summary, body: parsed.report, sources: verdict.sources, observed: { fetched: observed.fetched, searched: observed.searched, found: observed.found.slice(0, 40) }, verified: verdict.verified, level: verdict.level, verification: verdict.verification });
+    const result = comm.recordResult(task.id, { agentId, runId: run.id, summary: parsed.summary, body: parsed.report, sources: verdict.sources, observed: { fetched: observed.fetched, searched: observed.searched, found: observed.found.slice(0, 40), provided: observed.provided ?? [] }, verified: verdict.verified, level: verdict.level, verification: verdict.verification });
     const delegations = applyDelegations(task, parsed, run);
     comm.setTaskState(task.id, verdict.verified ? 'done' : 'review', verdict.verified ? verdict.verification : `À vérifier : ${verdict.verification}`);
     const head = parsed.summary ? `${parsed.summary}\n\n` : '';
@@ -172,6 +175,7 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
     const profile = profileOf(agentId) ?? (() => { throw bad(`${a.name} n'a pas de fiche chargée : il ne peut pas répondre.`, 403); })();
     if (busyAgents().has(agentId)) throw bad(`${a.name} est déjà au travail.`, 409);
     if (active.size >= maxActive) throw bad(`${maxActive} agents travaillent déjà : réessayez dans un instant.`, 429);
+    const over = comm.budgetExceeded(t.missionId); if (over) throw bad(over, 409); // les réponses d'un fil de mission comptent dans son budget
     if (comm.quotaExceeded()) throw bad(`Quota quotidien de ${LIMITS.maxRunsPerDay} exécutions atteint : réessayez demain.`, 429);
     const msgs = comm.visibleMessages(threadId, agentId, 30); // seulement ce qui a été adressé à cet agent
     if (!msgs.length) throw bad('Écrivez d’abord un message dans le fil.');
@@ -193,7 +197,7 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
         for (const id of inbox) comm.markDelivery(id, agentId, 'processed');
         setActivity(agentId, 'idle', 'Réponse envoyée');
       } catch (e) {
-        comm.endRun(run.id, { state: 'error', error: e.message });
+        comm.endRun(run.id, { state: 'error', error: e.message, costUsd: seen.state.cost, usage: seen.state.usage });
         for (const id of inbox) { try { comm.markDelivery(id, agentId, 'error', e.message); } catch { /* déjà traité */ } }
         try { comm.postMessage(threadId, { kind: 'system', body: `${a.name} n'a pas pu répondre : ${short(e.message, 300)}` }, { type: 'system' }); } catch { /* fil clos */ }
         setActivity(agentId, 'blocked', short(e.message, 120));

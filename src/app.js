@@ -33,7 +33,7 @@ const SKILL_PATH = /^\/api\/(?:skills(?:\/|$)|agents\/[^/]+\/skills)/;
 const MEMORY_PATH = /^\/api\/(?:memory(?:\/|$)|missions\/[^/]+\/(?:memory-proposals$|memory(?:\/|$)))/;
 // Communication entre agents : lancer une tâche fait travailler un agent (Claude Code) et écrire dans les fils lus par les autres.
 // Tout est réservé à cette machine, lectures comprises (les fils contiennent le travail de l'entreprise).
-const COMM_PATH = /^\/api\/comm(?:\/|$)/;
+const COMM_PATH = /^\/api\/(?:comm|shop)(?:\/|$)/; // le catalogue Shopify aussi : lectures et relevés réservés à cette machine
 // Lecture : la mémoire contient le savoir de l'entreprise — réservée à cette machine (même contrôle, sans l'origine).
 function assertLocalWrite(req, { checkOrigin = true } = {}) {
   const deny = (why) => Object.assign(new Error(`${checkOrigin ? 'Modification' : 'Lecture'} refusée : ${why}.`), { status: 403 });
@@ -166,7 +166,7 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
   let orch = null;
   if (comm) {
     const id = (m, i = 1) => decodeURIComponent(m[i]);
-    const delegationInput = (d = {}) => Object.fromEntries(['assigneeId', 'instruction', 'title', 'missionId', 'parentTaskId', 'dependsOn', 'dueAt', 'allowWeb', 'requiresSources', 'requiresApproval', 'priority', 'forceFresh'].filter((k) => d[k] !== undefined).map((k) => [k, d[k]]));
+    const delegationInput = (d = {}) => Object.fromEntries(['assigneeId', 'instruction', 'title', 'missionId', 'parentTaskId', 'dependsOn', 'dueAt', 'allowWeb', 'requiresSources', 'requiresApproval', 'priority', 'forceFresh', 'withCatalog', 'budgetUsd'].filter((k) => d[k] !== undefined).map((k) => [k, d[k]]));
     Object.assign(routes, {
       'GET /api/comm/status': () => ({ ...comm.status(), maxActive: orch.activity().maxActive, engines: { claudeCode: detect('claude'), codexCli: detect('codex') } }),
       'GET /api/comm/check': () => comm.check(),
@@ -192,14 +192,20 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
       ['POST', /^\/api\/comm\/threads\/([^/]+)\/messages$/, (m, d) => comm.postMessage(id(m), { kind: ['message', 'decision'].includes(d?.kind) ? d.kind : 'message', body: d?.body, refs: d?.refs }, { type: 'user' })],
       ['POST', /^\/api\/comm\/threads\/([^/]+)\/reply$/, (m, d) => orch.replyInThread(id(m), d?.agentId)],
       ['GET', /^\/api\/comm\/tasks\/([^/]+)$/, (m) => { const task = comm.task(id(m)); return { task, results: comm.results(task.id), dependsOn: task.dependsOn.map((t) => comm.task(t)), children: comm.listTasks({ rootTaskId: task.rootTaskId }).filter((t) => t.parentTaskId === task.id) }; }],
-      ['POST', /^\/api\/comm\/tasks\/([^/]+)\/(approve|cancel|retry|verify|adopt)$/, (m, d) => {
+      ['POST', /^\/api\/comm\/tasks\/([^/]+)\/(approve|cancel|retry|verify|adopt|budget)$/, (m, d) => {
         const action = m[2], tid = id(m);
-        const out = action === 'approve' ? comm.approveTask(tid) : action === 'cancel' ? comm.cancelTask(tid, typeof d?.reason === 'string' && d.reason.trim() ? d.reason.trim().slice(0, 200) : undefined) : action === 'retry' ? comm.retryTask(tid) : action === 'adopt' ? comm.adoptTask(tid) : comm.verifyTask(tid, typeof d?.note === 'string' ? d.note.slice(0, 300) : '');
+        const out = action === 'approve' ? comm.approveTask(tid) : action === 'cancel' ? comm.cancelTask(tid, typeof d?.reason === 'string' && d.reason.trim() ? d.reason.trim().slice(0, 200) : undefined) : action === 'retry' ? comm.retryTask(tid) : action === 'adopt' ? comm.adoptTask(tid) : action === 'budget' ? comm.setBudget(tid, d?.usd) : comm.verifyTask(tid, typeof d?.note === 'string' ? d.note.slice(0, 300) : '');
         orch.pump();
         return out;
       }]
     );
   }
+  // Catalogue Shopify : LECTURE SEULE. Aucune route n'écrit dans la boutique ; le seul effet est un relevé daté dans la base locale.
+  if (studio.shop) Object.assign(routes, {
+    'GET /api/shop/status': () => studio.shop.status(),
+    'GET /api/shop/catalog': () => studio.shop.latest() ?? { snapshot: null, note: 'Aucun relevé réussi pour le moment.' },
+    'POST /api/shop/refresh': async () => { const r = await studio.shop.refresh(); return { ...r, status: studio.shop.status() }; }
+  });
   // Réponse IA diffusée en NDJSON : {type:'text'} au fil de l'eau, puis {type:'done', message} ou {type:'error', error}.
   const replying = new Set();
   const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
@@ -293,13 +299,14 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
       if (skills && req.method !== 'GET' && SKILL_PATH.test(url.pathname)) assertLocalWrite(req);
       if (routes[key]) return send(res, 200, await routes[key](hasBody ? await body(req) : undefined, url.searchParams));
       for (const [method, re, fn] of paramRoutes) { const m = req.method === method && url.pathname.match(re); if (m) return send(res, 200, await fn(m, hasBody ? await body(req) : undefined, url.searchParams)); }
+      if (req.method !== 'GET') { req.resume(); return send(res, 404, { error: 'Introuvable' }); } // le corps d'une route inconnue est vidé : la connexion reste saine
       const file = resolve(join(root, key === 'GET /' ? 'index.html' : decodeURIComponent(url.pathname)));
       if (req.method !== 'GET' || !file.startsWith(root + sep) || !existsSync(file) || !statSync(file).isFile()) return send(res, 404, { error: 'Introuvable' });
       const real = realpathSync(file); // un lien symbolique ou une jonction ne doit pas sortir de public/
       if (!real.startsWith(realRoot + sep)) return send(res, 404, { error: 'Introuvable' });
       res.writeHead(200, { 'content-type': TYPES[extname(real).toLowerCase()] || 'application/octet-stream' });
       res.end(await readFile(real));
-    } catch (error) { send(res, error.status ?? 400, { error: error.message }); }
+    } catch (error) { req.resume(); send(res, error.status ?? 400, { error: error.message }); } // corps non lu (refus avant lecture) : vidé
   });
   server.orchestrator = orch; // server.js le démarre (reprise après arrêt, passage régulier) ; les tests le pilotent à la main
   server.on('close', () => orch?.stop());

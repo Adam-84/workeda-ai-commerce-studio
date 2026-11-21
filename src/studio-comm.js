@@ -42,6 +42,13 @@ export const COMM_MIGRATIONS = [{
     DROP TABLE IF EXISTS comm_results; DROP TABLE IF EXISTS comm_tasks; DROP TABLE IF EXISTS comm_deliveries; DROP TABLE IF EXISTS comm_messages;
     DROP TABLE IF EXISTS comm_thread_members; DROP TABLE IF EXISTS comm_threads;
   `
+}, {
+  version: 2,
+  name: 'catalogue Shopify en lecture seule et budget par mission',
+  // with_catalog : le propriétaire a demandé que le catalogue (relevé en lecture seule par le Studio) soit fourni à la tâche.
+  // budget_usd : plafond de coût rapporté pour une demande racine (NULL pour les sous-tâches, qui comptent dans celui de leur racine).
+  up: `ALTER TABLE comm_tasks ADD COLUMN with_catalog INTEGER NOT NULL DEFAULT 0; ALTER TABLE comm_tasks ADD COLUMN budget_usd REAL;`,
+  down: `ALTER TABLE comm_tasks DROP COLUMN with_catalog; ALTER TABLE comm_tasks DROP COLUMN budget_usd;`
 }];
 export const COMM_SCHEMA_VERSION = COMM_MIGRATIONS.at(-1).version;
 
@@ -76,7 +83,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     const current = schemaVersion();
     if (!Number.isInteger(target) || target < 0 || target >= current) throw bad('Version cible invalide.');
     const saved = backup(`avant-retour-communication-v${target}`);
-    tx(() => { for (const m of [...COMM_MIGRATIONS].reverse()) if (m.version > target && m.version <= current) { db.exec(m.down); } });
+    tx(() => { for (const m of [...COMM_MIGRATIONS].reverse()) if (m.version > target && m.version <= current) { db.exec(m.down); } if (target > 0) setMeta('schema_version', target); });
     return { from: current, to: target, backup: saved };
   };
   if (!readOnly) db.exec('CREATE TABLE IF NOT EXISTS comm_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
@@ -108,7 +115,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     task: (id) => {
       const t = get('SELECT * FROM comm_tasks WHERE id = ?', id); if (!t) return null;
       const m = get('SELECT * FROM missions WHERE id = ?', t.mission_id);
-      return { id: t.id, missionId: t.mission_id, rootTaskId: t.root_task_id, parentTaskId: t.parent_task_id, threadId: t.thread_id, kind: t.kind, title: t.title, instruction: t.instruction, requestedBy: t.requested_by === 'user' ? 'user' : slugOf(t.requested_by), assignee: slugOf(t.assignee_id), depth: t.depth, state: t.state, stateNote: t.state_note, dependsOn: parseJsonList(t.depends_on), allowWeb: Boolean(t.allow_web), requiresSources: Boolean(t.requires_sources), dedupeKey: t.dedupe_key, dueAt: t.due_at, notBefore: t.not_before, attempts: t.attempts, maxAttempts: t.max_attempts, device: t.device, createdAt: t.created_at, updatedAt: t.updated_at, startedAt: t.started_at, finishedAt: t.finished_at,
+      return { id: t.id, missionId: t.mission_id, rootTaskId: t.root_task_id, parentTaskId: t.parent_task_id, threadId: t.thread_id, kind: t.kind, title: t.title, instruction: t.instruction, requestedBy: t.requested_by === 'user' ? 'user' : slugOf(t.requested_by), assignee: slugOf(t.assignee_id), depth: t.depth, state: t.state, stateNote: t.state_note, dependsOn: parseJsonList(t.depends_on), allowWeb: Boolean(t.allow_web), requiresSources: Boolean(t.requires_sources), withCatalog: Boolean(t.with_catalog), budgetUsd: t.budget_usd ?? null, dedupeKey: t.dedupe_key, dueAt: t.due_at, notBefore: t.not_before, attempts: t.attempts, maxAttempts: t.max_attempts, device: t.device, createdAt: t.created_at, updatedAt: t.updated_at, startedAt: t.started_at, finishedAt: t.finished_at,
         mission: m && { id: m.id, title: m.title, objective: m.objective, expectedResult: m.expected_result, contextText: m.context_text, priority: m.priority, requiresApproval: Boolean(m.requires_approval), requestedBy: m.requested_by ? slugOf(m.requested_by) : null, assignedTo: m.assigned_to ? slugOf(m.assigned_to) : null, createdAt: m.created_at } };
     },
     result: (id) => { const r = get('SELECT * FROM comm_results WHERE id = ?', id); return r && { id: r.id, taskId: r.task_id, agent: slugOf(r.agent_id), runId: r.run_id, summary: r.summary, body: r.body, sources: parseJsonList(r.sources), observed: (() => { try { return JSON.parse(r.observed); } catch { return {}; } })(), verified: Boolean(r.verified), level: r.level, verification: r.verification, verifiedBy: r.verified_by, createdAt: r.created_at }; },
@@ -335,10 +342,28 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
   };
 
   // --- tâches (délégations = sous-missions) --------------------------------------------------------------------------------------------------
+  // Coût rapporté par Claude Code pour toutes les exécutions d'une demande racine (une exécution sans coût rapporté compte pour 0).
+  const spentOf = (rootId) => {
+    // Toutes les exécutions de la demande : ses tâches ET les réponses données dans le fil de sa mission.
+    const root = get('SELECT mission_id FROM comm_tasks WHERE id = ?', rootId);
+    const c = get("SELECT COALESCE(SUM(r.cost_usd), 0) AS c FROM comm_runs r WHERE r.task_id IN (SELECT id FROM comm_tasks WHERE root_task_id = ?) OR (r.kind = 'reply' AND r.thread_id IN (SELECT id FROM comm_threads WHERE mission_id = ?))", rootId, root?.mission_id ?? '').c;
+    return Math.round(c * 1e4) / 1e4;
+  };
+  // Le budget d'une mission est-il épuisé ? (utilisé aussi pour les réponses dans son fil)
+  const budgetExceeded = (missionId) => {
+    for (const r of all('SELECT id, budget_usd FROM comm_tasks WHERE mission_id = ? AND root_task_id = id AND budget_usd IS NOT NULL', missionId || '')) if (spentOf(r.id) >= r.budget_usd) return `Budget de la mission atteint (${spentOf(r.id).toFixed(2)} sur ${r.budget_usd.toFixed(2)} $) : augmentez-le pour continuer.`;
+    return null;
+  };
+  // Les tâches bloquées parce qu'elles attendaient celle-ci repartent avec elle (récursif : consolidations en chaîne).
+  const unblockDependents = (id) => {
+    for (const d of all("SELECT id FROM comm_tasks WHERE state = 'blocked' AND state_note LIKE 'Une tâche dont elle dépend%'")) {
+      if (task(d.id).dependsOn.includes(id)) { setTaskState(d.id, 'queued', 'Relancée avec sa dépendance', { extra: { adopt: true } }); unblockDependents(d.id); }
+    }
+  };
   const mapTask = (t) => {
     if (!t) return null;
     const res = get('SELECT * FROM comm_results WHERE task_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1', t.id);
-    return { id: t.id, missionId: t.mission_id, rootTaskId: t.root_task_id, parentTaskId: t.parent_task_id, threadId: t.thread_id, kind: t.kind, title: t.title, instruction: t.instruction, requestedBy: t.requested_by, assigneeId: t.assignee_id, depth: t.depth, state: t.state, stateNote: t.state_note, dependsOn: parseJsonList(t.depends_on), allowWeb: Boolean(t.allow_web), requiresSources: Boolean(t.requires_sources), dueAt: t.due_at, notBefore: t.not_before, attempts: t.attempts, maxAttempts: t.max_attempts, device: t.device, createdAt: t.created_at, updatedAt: t.updated_at, startedAt: t.started_at, finishedAt: t.finished_at, resultId: res?.id ?? null, verified: res ? Boolean(res.verified) : false };
+    return { id: t.id, missionId: t.mission_id, rootTaskId: t.root_task_id, parentTaskId: t.parent_task_id, threadId: t.thread_id, kind: t.kind, title: t.title, instruction: t.instruction, requestedBy: t.requested_by, assigneeId: t.assignee_id, depth: t.depth, state: t.state, stateNote: t.state_note, dependsOn: parseJsonList(t.depends_on), allowWeb: Boolean(t.allow_web), requiresSources: Boolean(t.requires_sources), withCatalog: Boolean(t.with_catalog), budgetUsd: t.budget_usd ?? null, spentUsd: t.budget_usd == null ? null : spentOf(t.root_task_id), dueAt: t.due_at, notBefore: t.not_before, attempts: t.attempts, maxAttempts: t.max_attempts, device: t.device, createdAt: t.created_at, updatedAt: t.updated_at, startedAt: t.started_at, finishedAt: t.finished_at, resultId: res?.id ?? null, verified: res ? Boolean(res.verified) : false };
   };
   const task = (id) => { const t = get('SELECT * FROM comm_tasks WHERE id = ?', id); if (!t) throw notFound('Tâche'); return mapTask(t); };
   const mapResult = (r) => !r ? null : { id: r.id, taskId: r.task_id, agentId: r.agent_id, runId: r.run_id, summary: r.summary, body: r.body, sources: parseJsonList(r.sources), observed: (() => { try { return JSON.parse(r.observed); } catch { return {}; } })(), verified: Boolean(r.verified), level: r.level, verification: r.verification, verifiedBy: r.verified_by, createdAt: r.created_at };
@@ -356,6 +381,9 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     if (requesterId) { realAgent(requesterId, 'Demandeur'); if (requesterId === assignee.id && kind !== 'consolidation') throw bad('Un agent ne peut pas se déléguer une tâche à lui-même.', 409); }
     const parent = input.parentTaskId ? task(input.parentTaskId) : null;
     if (parent && TERMINAL_CLOSED.includes(parent.state)) throw bad('La tâche parente est close : aucune délégation possible.', 409);
+    // Budget : racine seulement, validé AVANT toute création (une demande refusée ne laisse jamais de tâche sans plafond).
+    const budget = parent ? null : Number(input.budgetUsd ?? LIMITS.defaultBudgetUsd);
+    if (budget !== null && !(budget >= 0.1 && budget <= LIMITS.maxBudgetUsd)) throw bad(`Le budget doit être compris entre 0,10 et ${LIMITS.maxBudgetUsd} $.`);
     const depth = parent ? parent.depth + (kind === 'consolidation' ? 0 : 1) : 0;
     if (depth > LIMITS.maxDepth) throw bad(`Profondeur de délégation maximale (${LIMITS.maxDepth}) atteinte : la demande n'est pas créée.`, 409, { limit: 'depth' });
     const rootId = parent ? parent.rootTaskId : null;
@@ -365,7 +393,8 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     }
     if (rootId && get('SELECT COUNT(*) AS n FROM comm_tasks WHERE root_task_id = ?', rootId).n >= LIMITS.maxPerRoot) throw bad(`Limite de ${LIMITS.maxPerRoot} tâches pour une même demande atteinte.`, 409, { limit: 'root' });
     const allowWeb = Boolean(input.allowWeb) && (by.type === 'user' || Boolean(parent?.allowWeb)); // un agent ne peut jamais élargir l'accès web
-    const key = fingerprint(assignee.slug, instruction, allowWeb);
+    const withCatalog = Boolean(input.withCatalog) && (by.type === 'user' || Boolean(parent?.withCatalog));
+    const key = fingerprint(assignee.slug, instruction, allowWeb, withCatalog);
     if (!input.forceFresh) {
       const open = get(`SELECT * FROM comm_tasks WHERE dedupe_key = ? AND state IN (${OPEN_STATES.map(() => '?').join(',')}) ${rootId ? 'AND root_task_id = ?' : ''} ORDER BY created_at LIMIT 1`, key, ...OPEN_STATES, ...(rootId ? [rootId] : []));
       if (open) return { task: mapTask(open), created: false, reused: 'open' };
@@ -396,6 +425,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
       run('INSERT INTO comm_tasks (id, mission_id, root_task_id, parent_task_id, thread_id, kind, title, instruction, requested_by, assignee_id, depth, state, depends_on, allow_web, requires_sources, dedupe_key, due_at, attempts, max_attempts, device, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)',
         id, missionId, rootId ?? id, parent?.id ?? null, threadId, kind, short(mission.title, LIMITS.title), instruction, requesterId ?? 'user', assignee.id, depth, stateNow, JSON.stringify(deps.map((d) => d.id)), Number(allowWeb), Number(input.requiresSources ?? allowWeb), key, due, LIMITS.maxAttempts, device, t0, t0);
       for (const a of [assignee.id, requesterId].filter(Boolean)) { const th = thread(threadId); if (!th.members.includes(a)) run('INSERT INTO comm_thread_members (thread_id, agent_id) VALUES (?, ?)', threadId, a); }
+      run('UPDATE comm_tasks SET with_catalog = ?, budget_usd = ? WHERE id = ?', Number(withCatalog), budget, id); // même transaction : jamais de tâche sans ses champs v2
     });
     setMissionState(missionId, stateNow);
     assertFitsOrUndoTask(id);
@@ -436,11 +466,22 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     const due = Date.parse(t.dueAt) <= Date.now() ? new Date(Date.now() + LIMITS.taskTtlMs).toISOString() : null;
     const out = setTaskState(id, 'queued', 'Relancée par le propriétaire', { extra: { attempts: 0, dueAt: due, adopt: true } });
     // Les tâches qui attendaient celle-ci et ont été bloquées à cause d'elle repartent avec elle.
-    for (const d of all("SELECT id FROM comm_tasks WHERE state = 'blocked' AND state_note LIKE 'Une tâche dont elle dépend%'")) if (task(d.id).dependsOn.includes(id)) setTaskState(d.id, 'queued', 'Relancée avec sa dépendance', { extra: { adopt: true } });
+    unblockDependents(id);
     return out;
   };
   // Une tâche reçue d'un autre ordinateur n'est JAMAIS exécutée ici d'office (deux machines ne doivent pas faire le même travail) :
   // le propriétaire la reprend explicitement sur cet ordinateur.
+  // Le propriétaire fixe le budget d'une demande racine ; les tâches bloquées pour budget repartent.
+  const setBudget = (id, usd) => {
+    const t = task(id);
+    if (t.rootTaskId !== t.id) throw bad('Le budget se règle sur la demande racine.', 409);
+    const v = Number(usd);
+    if (!(v >= 0.1 && v <= LIMITS.maxBudgetUsd)) throw bad(`Le budget doit être compris entre 0,10 et ${LIMITS.maxBudgetUsd} $.`);
+    run('UPDATE comm_tasks SET budget_usd = ?, updated_at = ? WHERE id = ?', v, now(), id);
+    journal('task', id);
+    for (const r of all("SELECT id FROM comm_tasks WHERE root_task_id = ? AND state = 'blocked' AND state_note LIKE 'Budget de la mission%'", id)) if (spentOf(id) < v) { setTaskState(r.id, 'queued', 'Budget augmenté par le propriétaire', { extra: { adopt: true } }); unblockDependents(r.id); }
+    return task(id);
+  };
   const adoptTask = (id) => {
     const t = task(id);
     if (!['queued', 'pending_approval', 'blocked'].includes(t.state)) throw bad('Seule une tâche en file, à valider ou bloquée peut être reprise ici.', 409);
@@ -474,6 +515,13 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
       if (failedDep) { setTaskState(t.id, 'blocked', 'Une tâche dont elle dépend est bloquée, en échec ou annulée : elle repartira quand vous la relancerez.'); continue; }
       if (waiting) continue;
       if (!available(t.assigneeId)) { setTaskState(t.id, 'blocked', 'Agent indisponible (désactivé ou sans fiche).'); postMessage(t.threadId, { kind: 'system', body: `${nameOf(t.assigneeId)} est indisponible : la tâche est bloquée.`, taskId: t.id }, { type: 'system' }); continue; }
+      // Budget de la demande racine : au-delà du coût rapporté, plus aucune nouvelle exécution ne démarre (celles en cours finissent).
+      const rootRow = get('SELECT budget_usd FROM comm_tasks WHERE id = ?', t.rootTaskId);
+      if (rootRow?.budget_usd != null && spentOf(t.rootTaskId) >= rootRow.budget_usd) {
+        setTaskState(t.id, 'blocked', `Budget de la mission atteint (${spentOf(t.rootTaskId).toFixed(2)} sur ${rootRow.budget_usd.toFixed(2)} $) : augmentez-le pour continuer.`);
+        postMessage(t.threadId, { kind: 'system', body: `Budget atteint : « ${short(t.instruction, 80)} » est bloquée. Vous pouvez augmenter le budget de la mission.`, taskId: t.id }, { type: 'system' });
+        continue;
+      }
       if (busy.has(t.assigneeId)) continue;
       if (runsToday() >= LIMITS.maxRunsPerDay) return { quota: true };
       return { task: setTaskState(t.id, 'running', '', { extra: { startedAt: now(), attempts: t.attempts + 1 } }) };
@@ -566,6 +614,10 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET state = excluded.state, state_note = excluded.state_note, not_before = excluded.not_before, attempts = excluded.attempts, due_at = excluded.due_at, device = excluded.device, updated_at = excluded.updated_at, started_at = excluded.started_at, finished_at = excluded.finished_at`,
       d.id, d.missionId, d.rootTaskId, d.parentTaskId ?? null, d.threadId, d.kind, d.title, d.instruction, agentOrUser(d.requestedBy), needAgent(d.assignee), d.depth, d.state, d.stateNote ?? '', JSON.stringify(d.dependsOn ?? []), Number(d.allowWeb), Number(d.requiresSources), d.dedupeKey, d.dueAt, d.notBefore ?? null, d.attempts, d.maxAttempts, d.device ?? '', d.createdAt, d.updatedAt, d.startedAt ?? null, d.finishedAt ?? null);
+      // Champs de la migration v2 : absents des journaux écrits avant elle (valeurs par défaut).
+      // Un champ ABSENT (journal écrit avant la v2) ne remet jamais à zéro un plafond ou un catalogue déjà connus ici.
+      if (Object.hasOwn(d, 'withCatalog')) run('UPDATE comm_tasks SET with_catalog = ? WHERE id = ?', Number(Boolean(d.withCatalog)), d.id);
+      if (Object.hasOwn(d, 'budgetUsd')) run('UPDATE comm_tasks SET budget_usd = ? WHERE id = ?', Number.isFinite(d.budgetUsd) && d.budgetUsd >= 0.1 && d.budgetUsd <= LIMITS.maxBudgetUsd ? d.budgetUsd : null, d.id);
     },
     result(d) {
       assertNoSecret('Le résultat', clean(d.body, 'Le résultat', LIMITS.result, { required: true }));
@@ -658,7 +710,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     createThread, addMember, thread, threadForMission, listThreads, postMessage, getMessage, listMessages, markDelivery, pendingFor,
     startRun, endRun, getRun, activeRuns, recentRuns, usage, available, agentInfo: (id) => agentRow(id), slugOf, agentOfSlug, realAgent, nameOf,
     visibleMessages, quotaExceeded: () => runsToday() >= LIMITS.maxRunsPerDay,
-    createTask, task, listTasks, setTaskState, approveTask, cancelTask, retryTask, adoptTask, verifyTask, expireDue, claimNext, recordResult, resultOf, results, recover,
+    createTask, task, listTasks, setTaskState, approveTask, cancelTask, retryTask, adoptTask, setBudget, spentOf, budgetExceeded, verifyTask, expireDue, claimNext, recordResult, resultOf, results, recover,
     notifications, markSeen: () => { setMeta('seen_at', now()); return { seenAt: meta('seen_at') }; }, exchanges,
     importJournal, check, flushOutbox
   };

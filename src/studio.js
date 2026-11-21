@@ -5,6 +5,8 @@ import { isValidIslandStyle, normalizeIslandStyle } from '../public/island-style
 import { SKILL_SCHEMA, createSkillStore } from './studio-skills.js';
 import { createMemoryStore } from './studio-memory.js';
 import { createCommStore } from './studio-comm.js';
+import { createShopStore } from './studio-shop.js';
+import { createShopConnector } from './shop-readonly.js';
 import { findSecret } from './memory-core.js';
 
 const DEPARTMENTS = [
@@ -411,5 +413,8 @@ export function createStudio(filename = 'data/workeda.db', options = {}) {
   };
   // Communication entre agents : tables à part, chaque tâche déléguée est une mission (moteur existant), le journal voyage avec git.
   api.comm = createCommStore(db, { journalDir: options.commJournalDir ?? null, device: memory.device, memory, emit, backup: memory.backup, clock: options.clock, missions: { create: (m) => api.createMission(m), setState: (id, st) => api.setMissionState(id, st) } });
+  // Catalogue Shopify : relevés datés en LECTURE SEULE (le connecteur n'a aucune écriture). Injectable pour les tests ; sans jeton, pages publiques.
+  let connector = options.shopConnector; if (connector === undefined) { try { connector = createShopConnector(); } catch { connector = null; } }
+  api.shop = createShopStore(db, { connector, clock: options.clock });
   return api;
 }

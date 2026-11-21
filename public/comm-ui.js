@@ -161,7 +161,7 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
       : a === 'verify' ? h('button', { type: 'button', onclick: () => detail(t, slot, true) }, label) : h('button', { type: 'button', onclick: () => act(a).catch(() => {}) }, label)));
     const detailBtn = h('button', { type: 'button', class: 'comm-detail-btn', onclick: () => detail(t, slot, false) }, 'Détails');
     return h('li', { class: 'skill-row comm-task', 'data-task': t.id, style: `margin-left:${Math.min(level, 3) * 16}px` }, h('div', {},
-      h('div', { class: 'skill-chips' }, h('strong', {}, short(t.instruction, 110)), stateChip(t), chip(nameOf(t.assigneeId)), t.kind === 'consolidation' && chip('Consolidation'), t.allowWeb && chip('Web en lecture seule')),
+      h('div', { class: 'skill-chips' }, h('strong', {}, short(t.instruction, 110)), stateChip(t), chip(nameOf(t.assigneeId)), t.kind === 'consolidation' && chip('Consolidation'), t.withCatalog && chip('Catalogue Shopify (lecture seule)'), t.budgetUsd != null && chip(`Budget ${(t.spentUsd ?? 0).toFixed(2)} / ${t.budgetUsd.toFixed(2)} $`), t.allowWeb && chip('Web en lecture seule')),
       h('p', { class: 'note' }, [`${t.requestedBy === 'user' ? 'Vous' : nameOf(t.requestedBy)} → ${nameOf(t.assigneeId)}`, `niveau ${t.depth}`, dueLabel(t), attemptsLabel(t), t.verified ? 'résultat vérifié' : ''].filter(Boolean).join(' · ')),
       t.stateNote && h('p', { class: 'note' }, t.stateNote), slot, err), h('div', { class: 'comm-actions' }, detailBtn, buttons));
   }
@@ -175,6 +175,7 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
       } }, h('label', {}, 'Ce que vous avez vérifié (facultatif)', h('input', { name: 'note', maxlength: 300 })), h('button', { type: 'submit', class: 'primary' }, 'J’ai relu ce résultat : le valider'), err);
       put(slot, h('div', { class: 'comm-detail' },
         h('h4', {}, 'Demande'), h('p', { class: 'memory-body' }, d.task.instruction),
+        d.task.budgetUsd != null && budgetForm(d.task),
         d.dependsOn.length > 0 && [h('h4', {}, 'Attend'), h('ul', {}, d.dependsOn.map((x) => h('li', {}, `${nameOf(x.assigneeId)} — ${short(x.instruction, 80)} (${taskStateLabel(x.state)})`)))],
         h('h4', {}, 'Résultat'),
         r ? [h('p', { class: r.verified ? 'note' : 'err' }, verificationLine(r)), h('pre', { class: 'skill-content', tabindex: '0', 'aria-label': 'Résultat rendu par l’agent' }, r.body),
@@ -184,16 +185,23 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
         verify, h('div', { class: 'row' }, h('button', { type: 'button', onclick: () => goThread(t.threadId) }, 'Ouvrir le fil'), ' ', h('button', { type: 'button', onclick: () => put(slot) }, 'Fermer'))));
     } catch (x) { put(slot, h('p', { class: 'err', role: 'alert' }, x.message)); }
   }
+  function budgetForm(t) {
+    const err = errBox(), input = h('input', { type: 'number', min: '0.1', max: '100', step: '0.1', value: String(t.budgetUsd), 'aria-label': 'Nouveau budget en dollars' });
+    return h('form', { class: 'memory-form', onsubmit: async (e) => { e.preventDefault(); err.textContent = ''; try { await send('POST', `/api/comm/tasks/${enc(t.id)}/budget`, { usd: Number(input.value) }); announce('Budget mis à jour'); ui.pollComm?.(); await loadTasks(); } catch (x) { fail(err, x); } } },
+      h('p', { class: 'note' }, `Dépensé : ${(t.spentUsd ?? 0).toFixed(2)} $ sur ${t.budgetUsd.toFixed(2)} $ (coût rapporté par Claude Code ; une exécution sans coût rapporté compte pour 0).`),
+      h('label', {}, 'Budget de la mission ($)', input), h('button', { type: 'submit' }, 'Modifier le budget'), err);
+  }
   function delegateForm() {
     const err = errBox(), out = h('p', { class: 'note', role: 'status' });
     const who = h('select', { name: 'assigneeId', required: true, 'aria-label': 'Agent' }, withFiche.map((a) => h('option', { value: a.id }, `${a.name} — ${a.role}`)));
     const webOk = (id) => (profiles.get(id)?.tools ?? []).some((t) => WEB.includes(t));
+    const cat = h('input', { type: 'checkbox', name: 'withCatalog' }), budget = h('input', { name: 'budgetUsd', type: 'number', min: '0.1', max: '100', step: '0.1', value: '3', 'aria-label': 'Budget en dollars' });
     const web = h('input', { type: 'checkbox', name: 'allowWeb' }), approval = h('input', { type: 'checkbox', name: 'requiresApproval', checked: true });
     const syncWeb = () => { web.disabled = !webOk(who.value); if (web.disabled) web.checked = false; };
     who.addEventListener('change', syncWeb);
     const f = h('form', { class: 'memory-form', onsubmit: async (e) => {
       e.preventDefault(); err.textContent = ''; out.textContent = '';
-      const body = { assigneeId: who.value, instruction: f.instruction.value, title: f.title.value || undefined, allowWeb: web.checked, requiresSources: web.checked, requiresApproval: approval.checked };
+      const body = { assigneeId: who.value, instruction: f.instruction.value, title: f.title.value || undefined, allowWeb: web.checked, requiresSources: web.checked, requiresApproval: approval.checked, withCatalog: cat.checked, budgetUsd: Number(budget.value) };
       try {
         const r = await send('POST', '/api/comm/delegations', body);
         announce(r.created ? 'Délégation enregistrée' : 'Demande déjà existante');
@@ -203,6 +211,8 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
     } }, h('label', {}, 'Agent', who), h('label', {}, 'Titre (facultatif)', h('input', { name: 'title', maxlength: 120 })),
       h('label', {}, 'Demande', h('textarea', { name: 'instruction', required: true, maxlength: 4000, rows: 4, placeholder: 'Ce que l’agent doit faire, avec le résultat attendu.' })),
       h('label', { class: 'check' }, web, ' Recherche web en lecture seule (WebSearch / WebFetch) — réservée aux agents dont la fiche le prévoit ; sources vérifiées par le Studio'),
+      h('label', { class: 'check' }, cat, ' Fournir le catalogue Shopify de workeda.com (relevé daté, en lecture seule : aucune écriture dans la boutique)'),
+      h('label', {}, 'Budget de la mission (coût rapporté par Claude Code, en $)', budget, h('span', { class: 'note' }, 'Au-delà, plus aucune nouvelle exécution ne démarre ; vous pouvez l’augmenter.')),
       h('label', { class: 'check' }, approval, ' Je valide moi-même les délégations que les agents décideront (recommandé)'),
       h('button', { type: 'submit', class: 'primary' }, 'Déléguer'), out, err);
     syncWeb();
@@ -221,16 +231,30 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
     } catch (x) { put(box.notes, h('p', { class: 'err', role: 'alert' }, x.message)); }
   }
 
+  // --- catalogue Shopify (lecture seule) ---
+  function shopSection(s) {
+    const err = errBox(), out = h('p', { class: 'note', role: 'status' });
+    const btn = h('button', { type: 'button', onclick: async () => { btn.disabled = true; err.textContent = ''; try { const r = await send('POST', '/api/shop/refresh'); announce('Catalogue relevé'); await loadActivity(r.skipped ?? (r.ok === false ? 'Relevé sans résultat : voir les limites ci-dessus.' : 'Catalogue relevé.')); } catch (x) { fail(err, x); btn.disabled = false; } } }, 'Relever le catalogue maintenant');
+    const snap = s.snapshot;
+    return [h('h3', {}, 'Catalogue Shopify (lecture seule)'),
+      h('p', {}, snap ? `Dernier relevé réussi : ${dateFr(snap.fetchedAt)} — ${snap.collections} collection(s), ${snap.products} produit(s) (${s.mode === 'admin' ? 'API Admin' : 'pages publiques de ' + s.domain}).` : 'Aucun relevé réussi pour le moment.'),
+      s.lastError && h('p', { class: 'err' }, `Limites du dernier essai : ${s.lastError}`),
+      s.misconfigured && h('p', { class: 'err' }, 'Configuration Admin incomplète : mode public utilisé.'),
+      h('p', { class: 'note' }, 'Le Studio ne peut rien écrire dans la boutique. Les agents ne reçoivent le catalogue que si vous le demandez pour une délégation ; chaque ordinateur relève le sien. Un relevé n’est refait qu’une fois toutes les 5 minutes.'),
+      h('div', { class: 'row' }, btn), out, err];
+  }
+
   // --- activité ---
   async function loadActivity(msg = '') {
     reload = () => loadActivity();
     try {
-      const [act, usage, runs, status, check] = await Promise.all([get('/api/comm/activity'), get('/api/comm/usage'), get('/api/comm/runs?limit=30'), get('/api/comm/status'), get('/api/comm/check')]);
+      const [act, usage, runs, status, check, shop] = await Promise.all([get('/api/comm/activity'), get('/api/comm/usage'), get('/api/comm/runs?limit=30'), get('/api/comm/status'), get('/api/comm/check'), get('/api/shop/status').catch(() => null)]);
       const err = errBox(), out = h('p', { class: 'note', role: 'status' }, msg);
       const sync = h('button', { type: 'button', class: 'primary', onclick: async () => { sync.disabled = true; try { const r = await send('POST', '/api/comm/import'); announce('Journal importé'); await loadActivity(`Journal : ${r.applied} appliqué(s), ${r.superseded} plus ancien(s) conservé(s), ${r.invalid} invalide(s).${r.warnings.length ? ` ${r.warnings.slice(0, 3).join(' ')}` : ''}`); } catch (x) { fail(err, x); sync.disabled = false; } } }, 'Importer le journal des autres ordinateurs');
       put(box.activity,
         h('h3', {}, 'En ce moment'), h('p', { role: 'status' }, activeText(act.active, nameOf)), act.lastPump?.quota && h('p', { class: 'err' }, 'Quota quotidien atteint : les tâches en file attendent demain.'),
         h('p', { class: 'note' }, `${act.maxActive} agents actifs au maximum à la fois. Claude Code ${status.engines.claudeCode ? 'détecté' : 'non détecté'} · Codex ${status.engines.codexCli ? 'détecté' : 'non détecté'} (« détecté » : présent sur le PC, pas forcément connecté).`),
+        shop && shopSection(shop),
         h('h3', {}, 'Coûts et quotas'), h('p', {}, costLine(usage)), h('p', { class: 'note' }, usage.note),
         h('h3', {}, 'Historique des exécutions'), runs.length ? h('ul', { class: 'comm-runs' }, runs.map((r) => h('li', {}, `${dateFr(r.startedAt)} — ${runLine(r, nameOf)}`))) : h('p', {}, 'Aucune exécution pour le moment.'),
         h('h3', {}, 'Cohérence'), check.problems.length ? h('ul', {}, check.problems.map((p) => h('li', { class: 'err' }, p))) : h('p', {}, 'Aucun problème détecté.'), check.notes.length > 0 && h('ul', {}, check.notes.map((n) => h('li', { class: 'note' }, n))),
