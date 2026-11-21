@@ -43,3 +43,28 @@ La chaîne Phase 5 fonctionne de bout en bout : relevé réel en lecture seule, 
 - **D3** : une exécution interrompue sans coût rapporté compte 0,25 $ (estimation prudente, affichée) dans le budget au lieu de 0.
 - **D4** : jusqu'à 6 étiquettes listées par produit, le surplus annoncé (« +N autres »).
 - Non refait : la mission n'a pas été relancée avec ces correctifs ; le verdict ci-dessus reste celui de l'exécution du 21 novembre.
+
+## Seconde exécution avec les correctifs (commit `f0a2d67`, sans aucun contournement)
+Mêmes paramètres : Lucas seul, catalogue réel en lecture seule, sans web ni délégation, budget 3 $, base temporaire, aucune écriture Shopify.
+
+| Contrôle | Résultat |
+| --- | --- |
+| Produits transmis | 38 sur 38 (identifiants uniques), 13 collections, étiquettes complètes (5 listées sur 5) |
+| Rapport | **complet, non tronqué** : 14 801 caractères, se termine par sa synthèse (« TOTAL : 36 entrées », cohérent avec 5 hautes + 30 moyennes + 1 basse) |
+| Couverture | 38 produits sur 38 (RYUJIN cité dans la liste des types ; mon contrôle automatique l'avait d'abord manqué) |
+| Statut | « Terminé », niveau « fourni » (relevé daté du Studio, non consulté par l'agent) |
+| Coût rapporté | **0,46 $ sur 3 $**, 340 s (sous le délai de 10 minutes), aucune exécution interrompue |
+| Limites signalées | uniquement les alt textes d'images (légitime) ; la fausse limite sur les étiquettes a disparu |
+| Cohérence | aucun problème ; aucune délégation ; aucune écriture Shopify |
+
+Recoupements avec les données transmises : types vides 38/38, 23 produits sans étiquette, collection « Page d'accueil » vide, titres sans accents (ex. TITAN, FLARE) : exacts.
+
+### Points restant à vérifier par un humain
+- « Terminé » ne valide pas les recommandations : types de produit proposés (déduits des titres), propositions de titres corrigés, choix de produits pour la collection d'accueil.
+- Jugements relatifs : « description courte (1 245 car.) » est la plus courte du catalogue (médiane 1 719), pas une description objectivement courte ; idem « peu d'images » (3 pour une médiane de 6).
+- Le rapport renvoie parfois vers d'autres agents (prix, ventes) : aucune délégation n'a eu lieu.
+- Alt textes, prix et marges : non vérifiés.
+- Coût réel (0,46 $) supérieur à l'estimation initiale (0,2 à 0,3 $).
+
+### Verdict
+Les défauts D1 à D4 sont corrigés **et constatés en réel** : rapport complet, aucune fausse limite, aucune exécution interrompue, coût rapporté et budget cohérents. La Phase 5 est validée pour son périmètre (relevé en lecture seule, audit sourcé, budget), sous réserve de la relecture humaine des recommandations.
