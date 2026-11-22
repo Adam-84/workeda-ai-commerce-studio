@@ -153,7 +153,7 @@ test('API : cartes, connexion confirmée, accès par agent, révocation ; jamais
   const a = await api(s.studio);
   try {
     let r = await a.call('GET', '/api/integrations');
-    assert.equal(r.status, 200); assert.equal(r.body.cards.length, 5); assert.ok(r.body.agents.some((x) => x.slug === 'lucas'));
+    assert.equal(r.status, 200); assert.equal(r.body.cards.length, 6); assert.ok(r.body.agents.some((x) => x.slug === 'lucas'));
     assert.ok(r.body.cards.filter((c) => c.id !== 'shopify_public').every((c) => c.grants.length === 0), 'aucun accès par défaut');
     assert.equal((await a.call('POST', '/api/integrations/dsers/connect', {})).status, 400, 'confirmation explicite requise');
     r = await a.call('POST', '/api/integrations/dsers/connect', { confirm: true });

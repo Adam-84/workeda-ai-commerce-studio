@@ -196,7 +196,7 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
     const who = h('select', { name: 'assigneeId', required: true, 'aria-label': 'Agent' }, withFiche.map((a) => h('option', { value: a.id }, `${a.name} — ${a.role}`)));
     const webOk = (id) => (profiles.get(id)?.tools ?? []).some((t) => WEB.includes(t));
     const cat = h('input', { type: 'checkbox', name: 'withCatalog' }), budget = h('input', { name: 'budgetUsd', type: 'number', min: '0.1', max: '100', step: '0.1', value: '3', 'aria-label': 'Budget en dollars' });
-    const ints = { manual_import: h('input', { type: 'checkbox', name: 'withManualImport' }), shopify_admin: h('input', { type: 'checkbox', name: 'withShopifyAdmin' }), dsers: h('input', { type: 'checkbox', name: 'withDsers' }), track17: h('input', { type: 'checkbox', name: 'withTrack17' }) };
+    const ints = { manual_import: h('input', { type: 'checkbox', name: 'withManualImport' }), shopify_admin: h('input', { type: 'checkbox', name: 'withShopifyAdmin' }), shopify_apps: h('input', { type: 'checkbox', name: 'withShopifyApps' }), dsers: h('input', { type: 'checkbox', name: 'withDsers' }), track17: h('input', { type: 'checkbox', name: 'withTrack17' }) };
     const web = h('input', { type: 'checkbox', name: 'allowWeb' }), approval = h('input', { type: 'checkbox', name: 'requiresApproval', checked: true });
     const syncWeb = () => { web.disabled = !webOk(who.value); if (web.disabled) web.checked = false; };
     who.addEventListener('change', syncWeb);
@@ -215,6 +215,7 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
       h('label', { class: 'check' }, cat, ' Fournir le catalogue Shopify de workeda.com (relevé daté, en lecture seule : aucune écriture dans la boutique)'),
       h('label', { class: 'check' }, ints.manual_import, ' Fournir les imports manuels nettoyés — accès individuel requis, sans recherche web'),
       h('label', { class: 'check' }, ints.shopify_admin, ' Fournir Shopify Admin (cache seulement) — accès individuel requis, sans recherche web'),
+      h('label', { class: 'check' }, ints.shopify_apps, ' Fournir l’inventaire des applications Shopify déclaré (statuts et coûts connus, sans données clients) — accès individuel requis, sans recherche web'),
       h('label', { class: 'check' }, ints.dsers, ' Fournir les données DSers (lecture seule, sans données clients) — seulement si l’agent a reçu l’accès dans l’Integration Center ; incompatible avec la recherche web'),
       h('label', { class: 'check' }, ints.track17, ' Fournir les suivis 17TRACK déjà enregistrés (lecture seule, numéros masqués) — même condition'),
       h('label', {}, 'Budget de la mission (coût rapporté par Claude Code, en $)', budget, h('span', { class: 'note' }, 'Au-delà, plus aucune nouvelle exécution ne démarre ; vous pouvez l’augmenter.')),

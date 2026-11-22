@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { scrubContacts, scrubContactData } from './catalog-privacy.js';
 import { untrusted } from './comm-core.js';
 
-export const INTEGRATION_IDS = ['dsers', 'track17', 'manual_import', 'shopify_admin'];
+export const INTEGRATION_IDS = ['dsers', 'track17', 'manual_import', 'shopify_admin', 'shopify_apps'];
 export const ACCESS_LEVELS = ['read'];
 export const DEFAULT_DAILY_CAP = 100;       // appels DSers par jour pour Archipel (le quota DSers est partagé avec vos autres clients MCP)
 export const MAX_DAILY_CAP = 2000;

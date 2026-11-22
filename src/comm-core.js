@@ -111,7 +111,7 @@ export const fingerprint = (assigneeRef, instruction, web = false, catalog = fal
 export const parseJsonList = (text, fallback = []) => { try { const v = JSON.parse(text); return Array.isArray(v) ? v : fallback; } catch { return fallback; } };
 
 // --- URL observées par les outils ----------------------------------------------------------------------------------------------
-const INTEGRATION_SOURCE = /^archipel:\/\/integrations\/(?:dsers|track17|manual_import|shopify_admin)\/[0-9a-f-]{36}$/;
+const INTEGRATION_SOURCE = /^archipel:\/\/integrations\/(?:dsers|track17|manual_import|shopify_admin|shopify_apps)\/[0-9a-f-]{36}$/;
 export function normUrl(u) {
   if (INTEGRATION_SOURCE.test(String(u))) return String(u); // source fournie par le Studio (relevé daté DSers/17TRACK en cache local)
   try { const x = new URL(String(u)); if (!['http:', 'https:'].includes(x.protocol)) return null; x.hash = ''; x.username = ''; x.password = ''; return x.href.replace(/\/$/, ''); } catch { return null; }

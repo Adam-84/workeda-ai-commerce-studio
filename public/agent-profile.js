@@ -1,5 +1,5 @@
 // public/agent-profile.js — textes de l'onglet Profil (module pur, testé sous Node).
-const CONNECTOR_LABELS = { 'shopify-cli': 'Shopify CLI', 'codex-cli': 'Codex CLI', 'shopify-admin': 'Shopify Admin', dsers: 'DSers', playwright: 'Playwright', web: 'Recherche web' };
+const CONNECTOR_LABELS = { 'shopify-cli': 'Shopify CLI', 'codex-cli': 'Codex CLI', 'shopify-admin': 'Shopify Admin', 'shopify-apps': 'Applications Shopify (inventaire déclaré)', dsers: 'DSers', playwright: 'Playwright', web: 'Recherche web' };
 const STATE_LABELS = { detected: 'détecté', missing: 'non détecté', not_connected: 'non connecté', claude_code_only: 'dans Claude Code uniquement' };
 const MODEL_LABELS = { opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku' };
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
