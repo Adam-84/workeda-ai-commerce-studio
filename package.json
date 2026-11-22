@@ -14,7 +14,8 @@
     "comm:check": "node src/comm-cli.js check",
     "comm:sync": "node src/comm-cli.js sync",
     "comm:inbox": "node src/comm-cli.js inbox",
-    "comm:tasks": "node src/comm-cli.js tasks"
+    "comm:tasks": "node src/comm-cli.js tasks",
+    "codex:watch": "node tools/codex-watch/check.mjs"
   },
   "engines": {
     "node": ">=24"
