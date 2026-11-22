@@ -32,6 +32,7 @@ export function grantCandidates(card, agents) {
 // Actions proposées selon l'état réel ; la connexion exige toujours une confirmation, et le réseau réel un accord explicite du propriétaire.
 export function actionsFor(card) {
   const a = [];
+  if (card.id === 'dsers' && card.settings?.plan === 'basic') return [{ id: 'basic', label: 'Indisponible — abonnement Basic', disabled: true, why: 'Le plan Basic ne permet pas le MCP DSers. Aucun compte n’est contacté.' }, ...(card.flags.authenticated ? [{ id: 'revoke', label: 'Révoquer la connexion' }] : [])];
   if (!card.realNetworkAllowed) a.push({ id: 'blocked', label: 'Connexion réelle désactivée', disabled: true, why: 'Aucun compte n’est contacté tant que ARCHIPEL_ALLOW_REAL_NETWORK=1 n’est pas défini avec votre accord explicite.' });
   if (card.id === 'dsers' && !card.flags.authenticated) a.push({ id: 'connect', label: 'Se connecter à DSers (lecture seule)', disabled: !card.realNetworkAllowed || !card.storage.available });
   if (card.flags.authenticated || (card.id === 'track17' && card.flags.configured)) a.push({ id: 'test', label: 'Tester la connexion', disabled: !card.realNetworkAllowed });

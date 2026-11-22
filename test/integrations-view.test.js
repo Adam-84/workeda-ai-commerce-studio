@@ -28,3 +28,12 @@ test('suggestions : proposées mais jamais accordées ; un agent déjà autoris�
   assert.deepEqual(grantCandidates(card({ grants: [{ agent: 'lucas' }] }), agents).map((a) => a.slug), ['isabella', 'noah']);
   assert.match(revokeText(card()), /DSers n’a pas de point de révocation/); assert.match(revokeText(card({ id: 'track17' })), /clé/);
 });
+
+test('Basic : aucune action OAuth, test ou relevé même avec un ancien état authentifié', () => {
+  for (const authenticated of [false, true]) {
+    const actions = actionsFor(card({ settings: { plan: 'basic' }, flags: { configured: true, authenticated } }));
+    assert.ok(!actions.some((a) => ['connect', 'test', 'sync'].includes(a.id)));
+    assert.equal(actions.find((a) => a.id === 'basic').label, 'Indisponible — abonnement Basic');
+    assert.equal(actions.find((a) => a.id === 'basic').disabled, true);
+  }
+});

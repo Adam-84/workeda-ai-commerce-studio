@@ -36,3 +36,20 @@ test('interface : le rafraîchissement conserve le focus et le résultat réel r
   assert.ok(announcements.some((s) => /échouée.*Quota atteint/.test(s)));
   leave();
 });
+test('interface : échec de test HTTP200 et relevé Admin différé sont annoncés honnêtement', async t => {
+  globalThis.document = { activeElement: null };
+  t.after(() => { delete globalThis.document; });
+  t.mock.method(globalThis, 'setInterval', () => 1); t.mock.method(globalThis, 'clearInterval', () => {});
+  const announcements = [];
+  const old = { id: 'track17', label: '17TRACK', state: 'authenticated', realNetworkAllowed: true, storage: { available: true }, flags: { authenticated: true, configured: true }, permissions: { allowedTools: [], deniedTools: [] }, reasons: [], grants: [], quota: { cap: 100, remaining: 99 }, settings: { dailyCap: 100 }, snapshots: [], recentErrors: [], lastTest: {}, lastSync: {} };
+  const admin = { id: 'shopify_admin', label: 'Shopify Admin', provenance: 'Shopify Admin', stateLabel: 'Authentifié', local: true, flags: { authenticated: true }, settings: {}, grants: [], snapshots: [] };
+  const root = integrationsCenter({ ui: { h: element, announce: s => announcements.push(s), get: async () => ({ cards: [old, admin], agents: [], realNetworkAllowed: true, storage: { available: true } }),
+    send: async (_method, url) => url.endsWith('/test') ? { lastTest: { ok: false, error: 'Accès refusé' } } : { skipped: 'Attendre la fin de la pause fournisseur.' } } });
+  await new Promise(setImmediate);
+  const button = find(root, e => e.tagName === 'BUTTON' && e.childNodes.includes('Tester la connexion'));
+  await button.onclick();
+  assert.ok(announcements.some(s => /Accès refusé/.test(s)));
+  const refresh = find(root, e => e.tagName === 'BUTTON' && e.childNodes.includes('Actualiser Shopify Admin'));
+  await refresh.onclick();
+  assert.ok(announcements.some(s => /Attendre la fin/.test(s)));
+});

@@ -413,12 +413,12 @@ export function createStudio(filename = 'data/workeda.db', options = {}) {
       } catch (e) { if (db.isTransaction) db.exec('ROLLBACK'); throw e; }
       return result;
     },
-    close: () => db.close()
+    close: () => { api.shop?.close?.(); api.integrations?.close?.(); db.close(); }
   };
   // Communication entre agents : tables à part, chaque tâche déléguée est une mission (moteur existant), le journal voyage avec git.
   api.comm = createCommStore(db, { journalDir: options.commJournalDir ?? null, device: memory.device, memory, emit, backup: memory.backup, clock: options.clock, missions: { create: (m) => api.createMission(m), setState: (id, st) => api.setMissionState(id, st) } });
   // Catalogue Shopify : relevés datés en LECTURE SEULE (le connecteur n'a aucune écriture). Injectable pour les tests ; sans jeton, pages publiques.
-  let connector = options.shopConnector; if (connector === undefined) { try { connector = createShopConnector(); } catch { connector = null; } }
+  let connector = options.shopConnector; if (connector === undefined) { try { connector = createShopConnector({ env: options.env ?? process.env, ...(options.shopFetch ? { fetchImpl: options.shopFetch } : {}) }); } catch { connector = null; } }
   api.shop = createShopStore(db, { connector, clock: options.clock });
   // Integration Center (DSers, 17TRACK) : lecture seule, réseau réel désactivé par défaut, jetons chiffrés hors base et hors git.
   const secretsDir = options.secretsDir ?? (filename === ':memory:' ? null : join(dirname(filename), 'secrets'));

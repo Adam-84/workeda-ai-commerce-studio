@@ -1,21 +1,17 @@
-# Phase 6 — Integration Center : DSers et 17TRACK en lecture seule
+# Phase 6 — intégrations en lecture seule : DSers Basic, imports CSV et Shopify Admin préparé
 
 ## Résumé
-- Connecteurs **DSers** (MCP, OAuth 2.1 + PKCE, six portées de lecture) et **17TRACK** (clé existante), **strictement en lecture seule** : liste blanche d'outils appliquée avant tout réseau (12 outils DSers, 3 endpoints 17TRACK ; écriture, commande, paiement et `register` payant refusés).
-- **Réseau réel verrouillé** (`ARCHIPEL_ALLOW_REAL_NETWORK=1` requis) : aucun compte contacté par cette PR.
-- Quotas configurables (DSers 100/jour), cache, pause sur 429, appels sérialisés.
-- Secrets : DPAPI (Windows) / AES-256-GCM, jamais en clair ni dans git.
-- Confidentialité : projection par liste blanche excluant les champs clients structurés, suivis masqués, e-mails/téléphones/suivis et formes de secrets reconnues neutralisés dans les champs libres du catalogue, provenance des résultats hors journal git. Les noms et adresses éventuellement présents dans les textes commerciaux sont conservés.
-- Interface **Integrations** (design Archipel existant), accès par agent (aucun par défaut), révocation.
-- Migration comm v3 (`with_integrations`), routes `/api/integrations/*` locales.
+- **DSers Basic par défaut** : « Indisponible — abonnement Basic ». Garde serveur avant OAuth/callback/renouvellement/test/synchronisation/appel et avant chaque requête ; aucun réseau ni secret créé sur Basic. Plan déclaré localement ; changer la déclaration ne prouve aucune éligibilité distante.
+- **CSV Archipel** : modèle téléchargeable, fichier local UTF-8, parser réel borné (500 Ko, 5 000 lignes, 40 colonnes, 2 000 caractères/cellule), aperçu nettoyé, erreurs par ligne, confirmation et transaction atomique. Colonnes clients supprimées, suivis masqués, coûts absents `null` avec motif ; devise et nature obligatoires pour un coût renseigné. Aucun adaptateur DSers Basic inventé : export non vérifié refusé proprement.
+- **Shopify Admin préparé, non connecté** : accord local daté confirmé ET autorisation réseau serveur requis ; jeton environnement seul insuffisant. API `2026-10`, version réellement servie vérifiée, scopes `read_products` + `read_inventory`, `read_orders` séparément autorisable (≤60 jours). Aucune demande de `read_customers`, `read_all_orders`, `write_*` ; requêtes fixes et projection fermée sans champs clients ni URL de suivi.
+- **Caches publics/Admin distincts** ; une tâche Comms ne lance jamais de relevé Admin. Shopify public conserve son fonctionnement. Conservation maximale imports 30 jours, caches Shopify 7 jours ; purge à l’ouverture et chaque minute, sans promesse d’effacement physique des sauvegardes.
+- **Accès individuel sans défaut** aux imports/Admin ; provenance textuelle distincte et sources locales vérifiables, exclusion des tâches web, héritage sans escalade, contenu absent du journal portable et de la mémoire générale. Les dix agents restent inchangés.
+- 17TRACK inchangé, non connecté sans clé ; listes blanches 12 outils DSers et 3 endpoints 17TRACK conservées. Stockage DSers/17TRACK DPAPI/AES-GCM et quotas inchangés.
 
-## Tests
-`node --test` : **442 réussis, 0 échec** (439 précédents + 3 régressions ; serveurs DSers/17TRACK simulés). Revue de sécurité indépendante Codex (plusieurs passes), correctifs et régressions inclus.
+## Validation
+Node **24.13.1**. Tests ciblés intégrations/imports/Shopify/Memory/Comms/secrets/confidentialité : **271/271**. Suite `node --test` : **466/466**, zéro échec ou test ignoré, comprenant les **442 tests précédents et 24 nouveaux tests**. Simulateurs en mémoire et HTTP local uniquement ; régressions sur Basic, CSV, projections/permissions Admin, révocation concurrente, provenance, atomicité et annonces UI. Revue croisée des changements ; `git diff --check` sans erreur, fichiers UTF-8/CRLF.
 
-## Limites connues
-Formats de réponse DSers à confirmer à la première connexion réelle ; détection des coordonnées et secrets heuristique ; anciens caches Shopify filtrés à la lecture sans purge rétroactive des archives locales ; lecteur d'écran non testé. Détails : `docs/INTEGRATIONS.md`.
+## Limites
+Aucun compte réel, OAuth fournisseur réel ou permission réelle utilisé. Aucun réseau fournisseur externe, API payante, changement Shopify/Sellbird, commit, push ou fusion. L’application livrée n’a pas été connectée ; les accords Admin testés sont dans des bases de test.
 
-## À faire avant usage réel
-Vérifier l'abonnement DSers (MCP : Advanced/Pro/Enterprise) ; ne définir `ARCHIPEL_ALLOW_REAL_NETWORK=1` qu'avec votre accord.
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
+Aucun format export DSers Basic vérifié : utiliser le modèle Archipel ; origine DSers déclarative. Compatibilité Shopify réelle et champs DSers à vérifier ultérieurement sur autorisation séparée. Pagination Admin bornée et annoncée partielle ; blocs agent limités à 30 lignes par type. Détection des coordonnées et secrets heuristique ; champs commerciaux conservant éventuellement noms/adresses. Les archives et sauvegardes historiques ne sont pas purgées physiquement. Pas de validation par lecteur d’écran réel ni d’essai navigateur complet ; contrôleur UI testé avec DOM simulé. Détails et mode d’emploi : `docs/INTEGRATIONS.md`.

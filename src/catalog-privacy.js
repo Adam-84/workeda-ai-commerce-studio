@@ -32,3 +32,12 @@ export function scrubContactData(value) {
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [scrubContacts(k), scrubContactData(v)]));
   return value;
 }
+
+// Seulement les identifiants typés produits/inventaire/commandes de blocs JSON déjà projetés.
+const STRUCTURED_ID = /"(?:id|inventoryItemId|locationId)":"(?:gid:\/\/shopify\/(?:Product|ProductVariant|InventoryItem|InventoryLevel|Location|Order)\/)?\d{1,20}"/g;
+export const withoutStructuredIds = text => String(text).replace(STRUCTURED_ID, '"identifiant":"typé"');
+export function scrubProjectedPrompt(text) {
+  const ids = [];
+  const protectedText = String(text).replace(STRUCTURED_ID, m => { ids.push(m); return `\u0002identifiant${ids.length - 1}\u0002`; });
+  return scrubContacts(protectedText).replace(/\u0002identifiant(\d+)\u0002/g, (_, i) => ids[Number(i)]);
+}

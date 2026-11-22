@@ -13,13 +13,17 @@ const hasMore = (r, got) => Boolean(r?.has_more ?? r?.hasMore ?? r?.next_page ??
 export function createDsersConnector({ store, secrets, fetchImpl, now = () => Date.now(), redirectUri, flows = createFlowStore({ now }) }) {
   const ID = 'dsers';
   const nowIso = () => new Date(now()).toISOString();
+  const assertPlan = () => { if ((store.state(ID).settings.plan ?? 'basic') === 'basic') throw new IntegrationError('plan_restriction', 'Indisponible — abonnement Basic'); };
+  const transport = fetchImpl;
+  fetchImpl = async (...args) => { assertPlan(); const response = await transport(...args); assertPlan(); return response; };
   let queue = Promise.resolve(), generation = 0; const running = new Map();
-  const stillCurrent = (gen) => { if (gen !== generation) throw new IntegrationError('auth', 'Opération annulée par une révocation.'); };
+  const stillCurrent = (gen) => { assertPlan(); if (gen !== generation) throw new IntegrationError('auth', 'Opération annulée par une révocation.'); };
   // Un seul appel à la fois : le plafond est vérifié puis consommé sans qu'un appel concurrent ne puisse le dépasser.
   const exclusive = (fn) => { const run = queue.then(fn, fn); queue = run.catch(() => {}); return run; };
   const once = (key, fn) => { if (running.has(key)) return running.get(key); const p = fn().finally(() => running.delete(key)); running.set(key, p); return p; }; // une opération identique en cours est partagée ; jamais une opération DIFFÉRENTE
   const pause = (e) => { if (e instanceof IntegrationError && e.kind === 'rate_limited') store.patch(ID, { settings: { ...store.state(ID).settings, blockedUntil: new Date(now() + (e.retryAfterSec ?? 3600) * 1000).toISOString() } }); };
   const admit = (need = 1) => {
+    assertPlan();
     const blocked = store.state(ID).settings.blockedUntil, q = store.quota(ID);
     if (blocked && Date.parse(blocked) > now()) throw new IntegrationError('rate_limited', `DSers a signalé un quota atteint : pause jusqu'au ${blocked}.`);
     if (q.remaining < need) throw new IntegrationError('quota_local', `Plafond quotidien Archipel atteint (${q.cap} appels DSers) : réessayez après ${q.resetsAt} ou augmentez-le.`, { status: 429 });
@@ -33,6 +37,7 @@ export function createDsersConnector({ store, secrets, fetchImpl, now = () => Da
   // --- authentification (OAuth 2.1 + PKCE, navigateur) ---
   const clientRecord = () => secrets.get('dsers.client', { json: true });
   async function beginAuth() {
+    assertPlan();
     const gen = generation;
     if (!secrets.info().available) throw new IntegrationError('unavailable', 'Stockage sécurisé indisponible : impossible de conserver les jetons.');
     const redirect = assertLoopbackRedirect(redirectUri);
@@ -45,11 +50,13 @@ export function createDsersConnector({ store, secrets, fetchImpl, now = () => Da
     return { authorizationUrl: buildAuthorizationUrl({ metadata, clientId: client.clientId, redirectUri: redirect, scopes: DSERS_READ_SCOPES, challenge: pkce.challenge, state: pkce.state }), scopes: [...DSERS_READ_SCOPES] };
   }
   async function completeAuth({ code, state }) {
+    assertPlan();
     const flow = typeof state === 'string' ? flows.take(state) : null;
     if (!flow || flow.generation !== generation || typeof code !== 'string' || !code) throw new IntegrationError('auth', 'Retour de connexion inconnu, expiré ou déjà utilisé.');
     const metadata = await fetchMetadata(fetchImpl);
     try {
       const t = await exchangeCode({ fetchImpl, metadata, clientId: flow.clientId, redirectUri: flow.redirectUri, code, verifier: flow.verifier, scopes: DSERS_READ_SCOPES, now: now() });
+      assertPlan();
       if (flow.generation !== generation) throw new IntegrationError('auth', 'Connexion annulée par une révocation.');
       secrets.set('dsers.tokens', t);
       store.patch(ID, { authenticated: true, scopes: t.scopes, connectedAt: nowIso(), revokedAt: null, lastTestOk: null, lastTestError: null });
@@ -60,6 +67,7 @@ export function createDsersConnector({ store, secrets, fetchImpl, now = () => Da
     }
   }
   async function accessToken() {
+    assertPlan();
     let t = secrets.has('dsers.tokens') ? secrets.get('dsers.tokens', { json: true }) : null;
     if (!t?.access) return null;
     if (t.expiresAt - 60_000 > now()) return t.access;
@@ -68,6 +76,7 @@ export function createDsersConnector({ store, secrets, fetchImpl, now = () => Da
     try {
       const metadata = await fetchMetadata(fetchImpl), client = clientRecord();
       t = await refreshTokens({ fetchImpl, metadata, clientId: client?.clientId, refresh: t.refresh, scopes: DSERS_READ_SCOPES, now: now() });
+      assertPlan();
       if (gen !== generation) throw new IntegrationError('auth', 'Connexion révoquée pendant le renouvellement du jeton.');
       secrets.set('dsers.tokens', t);
       return t.access;
@@ -78,7 +87,7 @@ export function createDsersConnector({ store, secrets, fetchImpl, now = () => Da
     afterRpc: ({ method, ok, ms, error }) => { if (method === 'initialize' || method === 'tools/list') store.recordCall(ID, { tool: method, ok, ms, error }); } });
 
   // --- appel comptabilisé : liste blanche → plafond → réseau → journal ---
-  async function call(tool, args = {}) { assertAllowed(ID, tool); const gen = generation; return exclusive(() => { stillCurrent(gen); return callNow(tool, args); }); } // 1. refus d'un outil d'écriture/inconnu AVANT tout (même sans attendre son tour)
+  async function call(tool, args = {}) { assertAllowed(ID, tool); assertPlan(); const gen = generation; return exclusive(() => { stillCurrent(gen); return callNow(tool, args); }); } // 1. refus d'un outil d'écriture/inconnu AVANT tout (même sans attendre son tour)
   async function callNow(tool, args) {
     const gen = generation;
     assertAllowed(ID, tool);
@@ -94,7 +103,7 @@ export function createDsersConnector({ store, secrets, fetchImpl, now = () => Da
   }
 
   // --- test de connexion : initialisation + liste des outils réellement exposés à VOTRE compte ---
-  const test = () => once('test', () => exclusive(testNow));
+  const test = async () => { assertPlan(); return once('test', () => exclusive(testNow)); };
   async function testNow() {
     const gen = generation;
     const t0 = Date.now();
@@ -125,8 +134,9 @@ export function createDsersConnector({ store, secrets, fetchImpl, now = () => Da
     }
     return { items: out, calls };
   }
-  const sync = (opts) => once(opts?.force ? 'sync-force' : 'sync', () => syncNow(opts));
+  const sync = async (opts) => { assertPlan(); return once(opts?.force ? 'sync-force' : 'sync', () => syncNow(opts)); };
   async function syncNow({ force = false } = {}) {
+    assertPlan();
     const gen = generation;
     const steps = [], fatal = (e) => e instanceof IntegrationError && ['auth', 'plan_restriction', 'rate_limited', 'quota_local', 'real_network_disabled', 'unavailable', 'forbidden'].includes(e.kind);
     const run = async (name, kind, fn) => {

@@ -14,7 +14,7 @@ import {
 const TRANSIENT = /surcharg|à temps|n’a pas pu répondre|n'a pas pu répondre|réponse vide|code de sortie/i;
 const short = (s, n) => { s = scrubContacts(s); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
 
-const NOT_SHARED = '[Résultat issu de données DSers/17TRACK : non transmis (accès différent ou tâche qui lit le web).]';
+const NOT_SHARED = '[Résultat issu de données DSers/17TRACK/imports/Shopify Admin : non transmis (accès différent ou tâche qui lit le web).]';
 export function createOrchestrator({ studio, profiles = () => [], runner = realClaude, memoryFor = () => '', maxActive = LIMITS.maxActive, pumpEveryMs = 0 } = {}) {
   const comm = studio.comm;
   const active = new Map();      // clé d'exécution → { agentId, runId, taskId, threadId, kind, startedAt }
@@ -53,12 +53,12 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
     // Intégrations (DSers, 17TRACK) : accès vérifié ICI, côté serveur, agent par agent ; relevés déjà en cache (aucun appel réseau, aucun quota consommé).
     // Une exécution qui lit le web n'en reçoit aucune : une page piégée ne doit pas pouvoir faire sortir des données fournisseur.
     const wantsInts = (task.withIntegrations ?? []).length > 0 && Boolean(studio.integrations);
-    const ints = wantsInts && !web.length ? studio.integrations.promptFor({ agentSlug: profile.slug, integrations: task.withIntegrations }) : null;
-    const intsNote = wantsInts && web.length ? '[Données DSers/17TRACK NON fournies : cette tâche lit le web, ce qui interdit de leur donner accès. N\'en invente aucune.]' : '';
-    // Provenance : un résultat ou un message issu de données DSers/17TRACK n'est transmis qu'à une tâche qui a la MÊME demande, l'accès accordé,
+    const ints = wantsInts && !task.allowWeb ? studio.integrations.promptFor({ agentSlug: profile.slug, integrations: task.withIntegrations }) : null;
+    const intsNote = wantsInts && task.allowWeb ? '[Données DSers/17TRACK/imports/Shopify Admin NON fournies : cette tâche lit le web, ce qui interdit de leur donner accès. N\'en invente aucune.]' : '';
+    // Provenance : un résultat ou un message issu de données DSers/17TRACK/imports/Shopify Admin n'est transmis qu'à une tâche qui a la MÊME demande, l'accès accordé,
     // et ne lit pas le web ; sinon seul un avis est donné (les données ne se propagent pas par les rapports).
-    const mayRead = (need = []) => need.length === 0 || (!web.length && need.every((i) => (task.withIntegrations ?? []).includes(i) && (ints?.used ?? []).includes(i)));
-    const depsSafe = deps.map((d) => (mayRead(d.integrations) ? d : { ...d, title: 'tâche issue de données DSers/17TRACK', report: NOT_SHARED, sources: [], resultId: null }));
+    const mayRead = (need = []) => need.length === 0 || (!task.allowWeb && need.every((i) => (task.withIntegrations ?? []).includes(i) && (ints?.used ?? []).includes(i)));
+    const depsSafe = deps.map((d) => (mayRead(d.integrations) ? d : { ...d, title: 'tâche issue de données DSers/17TRACK/imports/Shopify Admin', report: NOT_SHARED, sources: [], resultId: null }));
     const recentSafe = recent.map((m) => (!mayRead(m.integrations) ? { ...m, body: NOT_SHARED } : m));
     const canDelegate = task.depth < LIMITS.maxDepth && task.kind !== 'consolidation';
     // Une exécution qui lit le web ne reçoit pas la mémoire : une page piégée ne doit pas pouvoir la lui faire exfiltrer.
@@ -67,7 +67,8 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
     return {
       web, included, provided: [...(task.withCatalog ? (catalog?.sourceUrls ?? []) : []), ...(ints?.provided ?? [])],
       system: taskSystemPrompt(fichePrompt(profile), { name: me.name, role: me.role, department: me.department, web: web.length > 0, canDelegate, catalog: task.withCatalog, integrations: wantsInts }),
-      prompt: taskPrompt({ task, requester, deps: depsSafe, thread: recentSafe, memoryText, catalogText: task.withCatalog ? catalogPrompt(catalog) : '', integrationsText: ints?.text || intsNote, roster: peers, web: web.length > 0, canDelegate, mission })
+      // Nettoyer les textes libres séparément : seuls les blocs réellement projetés conservent leurs identifiants typés.
+      prompt: scrubContacts(taskPrompt({ task, requester, deps: depsSafe, thread: recentSafe, memoryText, catalogText: task.withCatalog ? catalogPrompt(catalog) : '', integrationsText: '', roster: peers, web: web.length > 0, canDelegate, mission })) + (ints?.text || intsNote ? `\n\n${ints?.text || intsNote}` : '')
     };
   }
 
@@ -84,10 +85,10 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
       if (!target) { out.rejected.push(`« ${d.to} » : agent inconnu ou ambigu.`); continue; }
       if (!mayDelegate(profile, target.slug)) { out.rejected.push(`${target.name} : non autorisé par la fiche de ${comm.nameOf(task.assigneeId)} (champ « collaborates »).`); continue; }
       const hasWeb = webToolsOf(profileOf(target.id)).length > 0;
-      // Données DSers/17TRACK : jamais déléguées à un agent sans accès ni vers une tâche qui lit le web (l'instruction écrite par l'agent pourrait en contenir).
+      // Données DSers/17TRACK/imports/Shopify Admin : jamais déléguées à un agent sans accès ni vers une tâche qui lit le web (l'instruction écrite par l'agent pourrait en contenir).
       if ((task.withIntegrations ?? []).length) {
         const missing = task.withIntegrations.filter((i) => !studio.integrations?.store.hasGrant(i, target.slug));
-        if (missing.length || (task.allowWeb && hasWeb)) { out.rejected.push(`${target.name} : délégation refusée — la demande découle de données DSers/17TRACK (${missing.length ? `${target.name} n'a pas reçu l'accès` : 'tâche avec recherche web'}).`); continue; }
+        if (missing.length || (task.allowWeb && hasWeb)) { out.rejected.push(`${target.name} : délégation refusée — la demande découle de données DSers/17TRACK/imports/Shopify Admin (${missing.length ? `${target.name} n'a pas reçu l'accès` : 'tâche avec recherche web'}).`); continue; }
       }
       try {
         const r = comm.createTask({ assigneeId: target.id, instruction: d.task, parentTaskId: task.id, allowWeb: task.allowWeb && hasWeb, requiresSources: task.allowWeb && hasWeb, withCatalog: task.withCatalog, withIntegrations: task.withIntegrations, dueAt: task.dueAt }, by);
@@ -108,10 +109,10 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
     let run = null;
     try {
       if (!profile) { comm.setTaskState(task.id, 'blocked', 'Fiche de l’agent introuvable dans .claude/agents.'); return; }
-      // Une tâche DÉLÉGUÉE par un agent à partir de données DSers/17TRACK ne s'exécute que chez un agent qui a lui-même reçu l'accès et ne lit pas le web.
+      // Une tâche DÉLÉGUÉE par un agent à partir de données DSers/17TRACK/imports/Shopify Admin ne s'exécute que chez un agent qui a lui-même reçu l'accès et ne lit pas le web.
       if ((task.withIntegrations ?? []).length && task.requestedBy !== 'user') {
         const missing = task.withIntegrations.filter((i) => !studio.integrations?.store.hasGrant(i, profile.slug)), web = task.allowWeb && webToolsOf(profile).length > 0;
-        if (missing.length || web) { comm.setTaskState(task.id, 'blocked', web ? 'Demande issue de données DSers/17TRACK : refusée pour une tâche qui lit le web. Le propriétaire doit la relancer sans web.' : `Demande issue de données DSers/17TRACK : ${profile.displayName ?? profile.slug} n'a pas reçu l'accès (${missing.join(', ')}). Accordez-le dans l'Integration Center ou reformulez.`); return; }
+        if (missing.length || web) { comm.setTaskState(task.id, 'blocked', web ? 'Demande issue de données DSers/17TRACK/imports/Shopify Admin : refusée pour une tâche qui lit le web. Le propriétaire doit la relancer sans web.' : `Demande issue de données DSers/17TRACK/imports/Shopify Admin : ${profile.displayName ?? profile.slug} n'a pas reçu l'accès (${missing.join(', ')}). Accordez-le dans l'Integration Center ou reformulez.`); return; }
       }
       if (task.withCatalog) await studio.shop?.ensureFresh(); // relevé en lecture seule, daté ; ne lève jamais
       const built = buildTask(task);
@@ -122,7 +123,7 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
       for (const id of inbox) comm.markDelivery(id, agentId, 'received');
       const seen = observeTools(); seen.state.provided = built.provided;
       let text;
-      try { text = await runner({ model: profile.model, system: built.system, prompt: scrubContacts(built.prompt), tools: built.web, onEvent: seen.feed, timeoutMs: built.web.length ? LIMITS.webTimeoutMs : LIMITS.taskTimeoutMs }); }
+      try { text = await runner({ model: profile.model, system: built.system, prompt: built.prompt, tools: built.web, onEvent: seen.feed, timeoutMs: built.web.length ? LIMITS.webTimeoutMs : LIMITS.taskTimeoutMs }); }
       catch (e) { return fail(task, run, e, inbox, seen.state); }
       const ended = comm.endRun(run.id, { state: 'done', costUsd: seen.state.cost, usage: seen.state.usage });
       succeed(task, ended, text, seen.state, inbox);

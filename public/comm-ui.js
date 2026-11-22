@@ -161,7 +161,7 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
       : a === 'verify' ? h('button', { type: 'button', onclick: () => detail(t, slot, true) }, label) : h('button', { type: 'button', onclick: () => act(a).catch(() => {}) }, label)));
     const detailBtn = h('button', { type: 'button', class: 'comm-detail-btn', onclick: () => detail(t, slot, false) }, 'Détails');
     return h('li', { class: 'skill-row comm-task', 'data-task': t.id, style: `margin-left:${Math.min(level, 3) * 16}px` }, h('div', {},
-      h('div', { class: 'skill-chips' }, h('strong', {}, short(t.instruction, 110)), stateChip(t), chip(nameOf(t.assigneeId)), t.kind === 'consolidation' && chip('Consolidation'), t.withCatalog && chip('Catalogue Shopify (lecture seule)'), (t.withIntegrations ?? []).map((i) => chip(i === 'dsers' ? 'DSers (lecture seule)' : '17TRACK (lecture seule)')), t.budgetUsd != null && chip(`Budget ${(t.spentUsd ?? 0).toFixed(2)} / ${t.budgetUsd.toFixed(2)} $`), t.allowWeb && chip('Web en lecture seule')),
+      h('div', { class: 'skill-chips' }, h('strong', {}, short(t.instruction, 110)), stateChip(t), chip(nameOf(t.assigneeId)), t.kind === 'consolidation' && chip('Consolidation'), t.withCatalog && chip('Catalogue Shopify (lecture seule)'), (t.withIntegrations ?? []).map((i) => chip(({ dsers: 'DSers direct', track17: '17TRACK', manual_import: 'Import manuel', shopify_admin: 'Shopify Admin' }[i] ?? i) + ' (lecture seule)')), t.budgetUsd != null && chip(`Budget ${(t.spentUsd ?? 0).toFixed(2)} / ${t.budgetUsd.toFixed(2)} $`), t.allowWeb && chip('Web en lecture seule')),
       h('p', { class: 'note' }, [`${t.requestedBy === 'user' ? 'Vous' : nameOf(t.requestedBy)} → ${nameOf(t.assigneeId)}`, `niveau ${t.depth}`, dueLabel(t), attemptsLabel(t), t.verified ? 'résultat vérifié' : ''].filter(Boolean).join(' · ')),
       t.stateNote && h('p', { class: 'note' }, t.stateNote), slot, err), h('div', { class: 'comm-actions' }, detailBtn, buttons));
   }
@@ -196,7 +196,7 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
     const who = h('select', { name: 'assigneeId', required: true, 'aria-label': 'Agent' }, withFiche.map((a) => h('option', { value: a.id }, `${a.name} — ${a.role}`)));
     const webOk = (id) => (profiles.get(id)?.tools ?? []).some((t) => WEB.includes(t));
     const cat = h('input', { type: 'checkbox', name: 'withCatalog' }), budget = h('input', { name: 'budgetUsd', type: 'number', min: '0.1', max: '100', step: '0.1', value: '3', 'aria-label': 'Budget en dollars' });
-    const ints = { dsers: h('input', { type: 'checkbox', name: 'withDsers' }), track17: h('input', { type: 'checkbox', name: 'withTrack17' }) };
+    const ints = { manual_import: h('input', { type: 'checkbox', name: 'withManualImport' }), shopify_admin: h('input', { type: 'checkbox', name: 'withShopifyAdmin' }), dsers: h('input', { type: 'checkbox', name: 'withDsers' }), track17: h('input', { type: 'checkbox', name: 'withTrack17' }) };
     const web = h('input', { type: 'checkbox', name: 'allowWeb' }), approval = h('input', { type: 'checkbox', name: 'requiresApproval', checked: true });
     const syncWeb = () => { web.disabled = !webOk(who.value); if (web.disabled) web.checked = false; };
     who.addEventListener('change', syncWeb);
@@ -213,6 +213,8 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
       h('label', {}, 'Demande', h('textarea', { name: 'instruction', required: true, maxlength: 4000, rows: 4, placeholder: 'Ce que l’agent doit faire, avec le résultat attendu.' })),
       h('label', { class: 'check' }, web, ' Recherche web en lecture seule (WebSearch / WebFetch) — réservée aux agents dont la fiche le prévoit ; sources vérifiées par le Studio'),
       h('label', { class: 'check' }, cat, ' Fournir le catalogue Shopify de workeda.com (relevé daté, en lecture seule : aucune écriture dans la boutique)'),
+      h('label', { class: 'check' }, ints.manual_import, ' Fournir les imports manuels nettoyés — accès individuel requis, sans recherche web'),
+      h('label', { class: 'check' }, ints.shopify_admin, ' Fournir Shopify Admin (cache seulement) — accès individuel requis, sans recherche web'),
       h('label', { class: 'check' }, ints.dsers, ' Fournir les données DSers (lecture seule, sans données clients) — seulement si l’agent a reçu l’accès dans l’Integration Center ; incompatible avec la recherche web'),
       h('label', { class: 'check' }, ints.track17, ' Fournir les suivis 17TRACK déjà enregistrés (lecture seule, numéros masqués) — même condition'),
       h('label', {}, 'Budget de la mission (coût rapporté par Claude Code, en $)', budget, h('span', { class: 'note' }, 'Au-delà, plus aucune nouvelle exécution ne démarre ; vous pouvez l’augmenter.')),

@@ -16,9 +16,11 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=
 const send = (res, status, payload) => { res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(payload)); };
 const MAX_BODY = 1e6;
 const body = async (req) => {
-  let raw = '';
-  for await (const chunk of req) { raw += chunk; if (raw.length > MAX_BODY) throw Object.assign(new Error('Corps de requête trop volumineux.'), { status: 413 }); }
-  return raw ? JSON.parse(raw) : {};
+  const chunks = []; let bytes = 0;
+  const limit = req.url?.split('?')[0] === '/api/integrations/manual_import/preview' ? 4_000_000 : MAX_BODY;
+  for await (const chunk of req) { bytes += chunk.length; if (bytes > limit) throw Object.assign(new Error('Corps de requête trop volumineux.'), { status: 413 }); chunks.push(chunk); }
+  if (!bytes) return {};
+  try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks))); } catch { throw Object.assign(new Error('Corps JSON invalide.'), { status: 400 }); }
 };
 
 const DETECT_TTL_MS = 10_000;
@@ -202,16 +204,22 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
   }
   // Integration Center (DSers, 17TRACK) : LECTURE SEULE. Aucune route n'écrit chez DSers, 17TRACK ou Shopify ; aucun secret n'est jamais renvoyé.
   if (studio.integrations) {
-    const ints = studio.integrations, known = (m) => { const i = decodeURIComponent(m[1]); if (!['dsers', 'track17'].includes(i)) fail(404, 'Intégration inconnue.'); return i; };
+    const ints = studio.integrations, known = (m) => { const i = decodeURIComponent(m[1]); if (!['dsers', 'track17', 'manual_import', 'shopify_admin'].includes(i)) fail(404, 'Intégration inconnue.'); return i; };
     const agentsList = () => studio.listAgentFiles().map((f) => ({ slug: f.slug, name: f.name ?? f.slug }));
-    Object.assign(routes, { 'GET /api/integrations': () => ({ ...ints.status(), cards: ints.cards(), agents: agentsList() }) });
+    Object.assign(routes, { 'GET /api/integrations': () => ({ ...ints.status(), cards: ints.cards(), agents: agentsList() }),
+      'GET /api/integrations/manual_import/template': () => ({ csv: ints.csvTemplate(), filename: 'archipel-import.csv' }),
+      'POST /api/integrations/manual_import/preview': (d) => ints.previewImport(d?.text, { format: d?.format ?? 'archipel' }),
+      'POST /api/integrations/manual_import/commit': (d) => ints.commitImport(d),
+      'POST /api/integrations/shopify_admin/configure': (d) => studio.shop.configureAdmin(d),
+      'POST /api/integrations/shopify_admin/test': () => studio.shop.testAdmin(),
+      'POST /api/integrations/shopify_admin/sync': (d) => studio.shop.refreshAdmin({ force: d?.force === true }) });
     paramRoutes.push(
       ['GET', /^\/api\/integrations\/([^\/]+)$/, (m) => ints.card(known(m))],
-      ['POST', /^\/api\/integrations\/([^\/]+)\/connect$/, async (m, d) => { const i = known(m); if (d?.confirm !== true) fail(400, 'Confirmation explicite requise avant toute connexion à un compte.'); ints.guardReal(); return ints.beginAuth(i); }],
+      ['POST', /^\/api\/integrations\/([^\/]+)\/connect$/, async (m, d) => { const i = known(m); if (d?.confirm !== true) fail(400, 'Confirmation explicite requise avant toute connexion à un compte.'); if (i === 'dsers' && ints.card(i).settings.plan === 'basic') return ints.beginAuth(i); ints.guardReal(); return ints.beginAuth(i); }],
       ['POST', /^\/api\/integrations\/([^\/]+)\/key$/, (m, d) => { const i = known(m); if (d?.confirm !== true) fail(400, 'Confirmation explicite requise.'); return { ...ints.setKey(i, d?.key), card: ints.card(i) }; }],
       ['POST', /^\/api\/integrations\/([^\/]+)\/test$/, async (m) => { const i = known(m); try { await ints.test(i); } catch (e) { if (e.kind === 'real_network_disabled') throw Object.assign(e, { status: 403 }); } return ints.card(i); }],
       ['POST', /^\/api\/integrations\/([^\/]+)\/sync$/, async (m, d) => { const i = known(m); const r = await ints.sync(i, { force: d?.force === true }); return { result: r, card: ints.card(i) }; }],
-      ['POST', /^\/api\/integrations\/([^\/]+)\/settings$/, (m, d) => { const i = known(m); if (d?.dailyCap !== undefined) ints.setDailyCap(i, d.dailyCap); if (d?.shipCountry !== undefined) ints.setSettings(i, { shipCountry: d.shipCountry }); return ints.card(i); }],
+      ['POST', /^\/api\/integrations\/([^\/]+)\/settings$/, (m, d) => { const i = known(m); if (d?.dailyCap !== undefined) ints.setDailyCap(i, d.dailyCap); if (d?.shipCountry !== undefined || d?.plan !== undefined) ints.setSettings(i, { shipCountry: d?.shipCountry, plan: d?.plan }); return ints.card(i); }],
       ['POST', /^\/api\/integrations\/([^\/]+)\/grants$/, (m, d) => { const i = known(m); ints.grant(i, String(d?.agent ?? '')); return ints.card(i); }],
       ['POST', /^\/api\/integrations\/([^\/]+)\/grants\/([^\/]+)\/revoke$/, (m) => { const i = known(m); ints.revokeGrant(i, decodeURIComponent(m[2])); return ints.card(i); }],
       ['POST', /^\/api\/integrations\/([^\/]+)\/revoke$/, (m, d) => { const i = known(m); const r = ints.revoke(i, { purge: d?.purge === true }); return { ...r, card: ints.card(i) }; }]

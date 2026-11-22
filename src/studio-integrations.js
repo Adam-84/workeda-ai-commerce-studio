@@ -3,6 +3,7 @@
 // Aucun secret ici : les jetons vivent dans le magasin de secrets chiffré (secret-store.js).
 import { createHash, randomUUID } from 'node:crypto';
 import { DEFAULT_DAILY_CAP, MAX_DAILY_CAP, INTEGRATION_IDS, ACCESS_LEVELS, sanitizeDeep } from './integrations-core.js';
+import { scrubContactData } from './catalog-privacy.js';
 import { scrubSecrets, hasSecretShape } from './secret-store.js';
 
 const json = (t, d) => { try { return JSON.parse(t) ?? d; } catch { return d; } };
@@ -64,7 +65,13 @@ export function createIntegrationStore(db, { clock = () => new Date().toISOStrin
   // --- relevés : toujours passés par le nettoyage anti-PII, et refusés s'ils ressemblent à un secret ---
   const saveSnapshot = ({ integration, kind, payload, ok = true, note = '' }) => {
     known(integration);
-    const clean = sanitizeDeep(payload), text = JSON.stringify(clean);
+    // Les imports sont déjà projetés/validés ; préserver les cellules contractuelles jusqu’à 2 000 caractères.
+    const clean = integration === 'manual_import' ? scrubContactData(payload) : sanitizeDeep(payload);
+    if (integration === 'manual_import') for (let i = 0; i < (clean.rows?.length ?? 0); i++) {
+      const id = payload.rows[i].id;
+      if (/^(?:gid:\/\/shopify\/(?:Product|ProductVariant)\/)?\d{1,20}$/.test(id)) clean.rows[i].id = id;
+    }
+    const text = JSON.stringify(clean);
     if (hasSecretShape(text)) throw bad('Un secret semble présent dans le relevé : refusé.', 500);
     const id = randomUUID(), hash = createHash('sha1').update(text).digest('hex').slice(0, 12);
     run('INSERT INTO integration_snapshots (id, integration, kind, fetched_at, ok, payload, hash, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', id, integration, String(kind).slice(0, 40), now(), Number(Boolean(ok)), text, hash, String(note).slice(0, 200));
@@ -72,8 +79,10 @@ export function createIntegrationStore(db, { clock = () => new Date().toISOStrin
     return latest(integration, kind, { anyOk: true });
   };
   const mapSnap = (r) => r && { id: r.id, integration: r.integration, kind: r.kind, fetchedAt: r.fetched_at, ok: Boolean(r.ok), payload: json(r.payload, null), hash: r.hash, note: r.note };
+  const purgeExpired = () => run("DELETE FROM integration_snapshots WHERE integration = 'manual_import' AND fetched_at <= ?", new Date(Date.parse(now()) - 30 * 86_400_000).toISOString());
+  purgeExpired();
   const latest = (integration, kind, { anyOk = false } = {}) => mapSnap(get(`SELECT * FROM integration_snapshots WHERE integration = ? AND kind = ? ${anyOk ? '' : 'AND ok = 1'} ORDER BY fetched_at DESC, rowid DESC LIMIT 1`, known(integration), kind)) ?? null;
   const purge = (id) => { run('DELETE FROM integration_snapshots WHERE integration = ?', known(id)); };
 
-  return { state, patch, dailyCap, setDailyCap, recordCall, callsToday, quota, recentCalls, recentErrors, grant, revokeGrant, revokeAllGrants, grantsOf, hasGrant, saveSnapshot, latest, purge, now };
+  return { purgeExpired, state, patch, dailyCap, setDailyCap, recordCall, callsToday, quota, recentCalls, recentErrors, grant, revokeGrant, revokeAllGrants, grantsOf, hasGrant, saveSnapshot, latest, purge, now };
 }

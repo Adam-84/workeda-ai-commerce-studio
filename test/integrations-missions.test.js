@@ -26,6 +26,7 @@ async function setup(script, { connect = true, grants = [], dsers = {}, file = '
   studio.shop.latest = () => ({ id: 's', fetchedAt: new Date().toISOString(), products: shopCatalog(38), sourceUrls: [] });
   const ids = Object.fromEntries(studio.listAgentFiles().map((f) => [f.slug, f.agentId]));
   const svc = studio.integrations;
+  svc.store.patch('dsers', { settings: { ...svc.store.state('dsers').settings, plan: 'advanced' } });
   if (connect) { const { authorizationUrl } = await svc.beginAuth('dsers'); const a = sim.authorize(authorizationUrl); await svc.completeAuth({ code: a.code, state: a.state }); await svc.sync('dsers', { force: true }); }
   for (const g of grants) svc.grant(g[0], g[1]);
   const calls = [];
@@ -152,8 +153,8 @@ test('API : cartes, connexion confirmée, accès par agent, révocation ; jamais
   const a = await api(s.studio);
   try {
     let r = await a.call('GET', '/api/integrations');
-    assert.equal(r.status, 200); assert.equal(r.body.cards.length, 2); assert.ok(r.body.agents.some((x) => x.slug === 'lucas'));
-    assert.deepEqual(r.body.cards.map((c) => c.grants), [[], []], 'aucun accès par défaut');
+    assert.equal(r.status, 200); assert.equal(r.body.cards.length, 5); assert.ok(r.body.agents.some((x) => x.slug === 'lucas'));
+    assert.ok(r.body.cards.filter((c) => c.id !== 'shopify_public').every((c) => c.grants.length === 0), 'aucun accès par défaut');
     assert.equal((await a.call('POST', '/api/integrations/dsers/connect', {})).status, 400, 'confirmation explicite requise');
     r = await a.call('POST', '/api/integrations/dsers/connect', { confirm: true });
     assert.equal(r.status, 200); assert.match(r.body.authorizationUrl, /^https:\/\/ai\.dsers\.com\/oauth\/authorize\?/); assert.match(r.body.authorizationUrl, /code_challenge_method=S256/);
@@ -188,6 +189,7 @@ test('réseau réel non autorisé : la connexion est refusée avec explication, 
   const sim = createSimDsers();
   const secrets = createSecretStore({ dir: mkdtempSync(join(tmpdir(), 'archipel-im-')), protector: testProtector() });
   const studio = createStudio(':memory:', { secrets, env: {}, integrationsFetch: sim.fetch });
+  studio.integrations.store.patch('dsers', { settings: { plan: 'advanced' } });
   const a = await api(studio);
   try {
     const r = await a.call('POST', '/api/integrations/dsers/connect', { confirm: true });

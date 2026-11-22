@@ -105,6 +105,7 @@ test('réseau réel verrouillé : sans ARCHIPEL_ALLOW_REAL_NETWORK=1, AUCUNE req
   const studio = createStudio(':memory:', { secrets: createSecretStore({ dir: mkdtempSync(join(tmpdir(), 'archipel-sec-')), protector: testProtector() }), env: {}, integrationsFetch: (u, i) => (String(u).includes('17track') ? t17.fetch(u, i) : sim.fetch(u, i)) });
   studio.integrations.setKey('track17', t17.key);
   await assert.rejects(() => studio.integrations.test('track17'), (e) => e.kind === 'real_network_disabled');
+  studio.integrations.store.patch('dsers', { settings: { plan: 'advanced' } });
   await assert.rejects(() => studio.integrations.beginAuth('dsers'), (e) => e.kind === 'real_network_disabled');
   assert.equal(t17.state.calls.length + sim.state.http.length, 0);
 });

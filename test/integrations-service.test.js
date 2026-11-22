@@ -24,6 +24,7 @@ function setup({ dsers = {}, track = {}, env = OPEN, clockMs, wrapFetch = (f) =>
   const items = shopCatalog(38);
   studio.shop.latest = () => ({ id: 'shop1', fetchedAt: new Date(clock.t).toISOString(), products: items });
   const svc = studio.integrations;
+  svc.store.patch('dsers', { settings: { ...svc.store.state('dsers').settings, plan: 'advanced' } });
   const connect = async () => { const { authorizationUrl } = await svc.beginAuth('dsers'); const a = sim.authorize(authorizationUrl); return svc.completeAuth({ code: a.code, state: a.state }); };
   return { studio, svc, sim, t17, secrets, secretsDir, clock, connect };
 }
@@ -278,7 +279,7 @@ test('aucun secret ni donnée personnelle dans la base, les cartes, les journaux
 
 test('carte : le nom du service n’est jamais écrasé par le libellé d’état', () => {
   const { svc } = setup();
-  assert.deepEqual(svc.cards().map((c) => c.label), ['DSers (MCP)', '17TRACK (API v2.4)']);
+  assert.deepEqual(svc.cards().filter((c) => ['dsers', 'track17'].includes(c.id)).map((c) => c.label), ['DSers (MCP)', '17TRACK (API v2.4)']);
   assert.ok(svc.cards().every((c) => typeof c.stateLabel === 'string' && c.stateLabel.length > 0));
 });
 
@@ -334,7 +335,8 @@ test('revue Codex (2e passe) : un renouvellement de jeton en cours ne ressuscite
   const secrets = createSecretStore({ dir: mkdtempSync(join(tmpdir(), 'archipel-int-')), protector: testProtector() });
   const slowFetch = async (u, i) => { if (String(u).endsWith('/oauth/token') && hold && /refresh_token/.test(String(i.body))) { await hold; } return sim.fetch(u, i); };
   const studio = createStudio(':memory:', { secrets, env: OPEN, integrationsFetch: slowFetch, nowMs: () => clock.t, redirectUri: 'http://127.0.0.1:4318/api/integrations/dsers/callback' });
-  const svc = studio.integrations; const { authorizationUrl } = await svc.beginAuth('dsers'); const a = sim.authorize(authorizationUrl); await svc.completeAuth({ code: a.code, state: a.state });
+  const svc = studio.integrations;
+  svc.store.patch('dsers', { settings: { ...svc.store.state('dsers').settings, plan: 'advanced' } }); const { authorizationUrl } = await svc.beginAuth('dsers'); const a = sim.authorize(authorizationUrl); await svc.completeAuth({ code: a.code, state: a.state });
   clock.t += 10 * 60_000; hold = new Promise((r) => { release = r; });
   const pending = svc.dsers.accessToken().catch((e) => e);
   await new Promise((r) => setTimeout(r, 20));

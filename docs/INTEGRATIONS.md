@@ -1,5 +1,7 @@
 # Integration Center — DSers et 17TRACK en lecture seule (Phase 6)
 
+**État actuel : DSers Basic bloqué par défaut, imports CSV locaux disponibles, Shopify Admin préparé mais non connecté.** Voir la section « Préparation Basic, import manuel et Shopify Admin » pour les nouveaux états, la rétention et les accords requis. Les validations ci-dessous sont historiques et complétées par `docs/PR-PHASE-6.md`.
+
 Archipel lit des données fournisseurs (DSers) et logistiques (17TRACK) pour que les agents travaillent sur du réel.
 **Il ne modifie jamais DSers, 17TRACK ni Shopify.** Rien n'est contacté tant que vous ne l'avez pas décidé.
 
@@ -91,3 +93,48 @@ Validation finale : Node 24.13.1, tests ciblés **159/159**, suite `node --test`
 - Contrôle du contenu des fichiers suivis avec `git ls-files` et expressions régulières : aucune donnée client réelle ni secret exploitable identifié ; coordonnées restantes dans des fixtures explicitement fictives ou adresses techniques. Six fichiers de tests contenant d’anciens faux jetons littéraux ont été convertis en assemblages à l’exécution. Le contrôle est heuristique et ne couvre pas l’historique Git.
 
 Validation de ce complément : **9 régressions**, tests ciblés **223/223**, suite `node --test` **439/439**, aucun échec ni test ignoré. Simulateurs et réponses en mémoire uniquement. Aucun réseau externe, compte réel, commit ou push.
+
+
+## Préparation Basic, import manuel et Shopify Admin — 22 novembre 2026
+
+Cette section remplace les indications précédentes sur la connexion Basic et sur le catalogue Admin activé par un simple jeton. Aucun compte réel n’a été contacté.
+
+### DSers Basic et états réels
+
+Le réglage **local** « plan DSers » propose inconnu (`unknown`), Basic, Advanced, Pro, Enterprise ; **Basic par défaut**. L’état exact est **Indisponible — abonnement Basic**. Les entrées OAuth (y compris callback et renouvellement), test, synchronisation, appel d’outil et transport refusent Basic avant réseau et création de secret. Passer à Basic invalide les opérations en cours et supprime les secrets DSers locaux ; changer de déclaration ne prouve jamais l’éligibilité du compte. Le refus distant des plans payants déclarés reste appliqué.
+
+Les cartes distinguent **DSers direct**, **Shopify public**, **Shopify Admin**, **Import manuel — origine déclarée DSers** et 17TRACK. Public devient **Disponible** après un relevé réussi ; Admin reste **À configurer** sans accord/configuration/autorisation réseau, puis **Configuré — non vérifié**, et **Authentifié** après une réponse Admin valide et la vérification des droits. 17TRACK reste **Non connecté** sans clé ; son fonctionnement est inchangé.
+
+### CSV Archipel et absence d’adaptateur DSers vérifié
+
+Télécharger le modèle dans l’Integration Center, le remplir, choisir le fichier local, **Valider et prévisualiser**, puis **Confirmer l’import**. Aucun format d’export DSers Basic n’a été vérifié : le choix « Export DSers » est refusé avec une explication ; aucun en-tête officiel n’est supposé.
+
+Contrat **Archipel v1**, UTF-8 avec BOM facultatif, séparateur `;` ou `,`, guillemets doublés et retours en cellule supportés :
+
+`id;sku;order_id;date;quantity;currency;cost_kind;purchase_cost;shipping_cost;carrier;status;tracking_number`
+
+- Une colonne parmi `id`, `sku`, `order_id` est requise. Les autres sont facultatives ; en-têtes clients et inconnus supprimés, doublons ou en-têtes vides refusés. Chaque ligne doit comporter une référence. Les identifiants produits numériques/GID sont conservés ; les références de commande libres deviennent opaques.
+- Limites : **500 × 1 024 octets**, **5 000 lignes de données**, **40 colonnes**, **2 000 caractères par cellule**. Les formules des colonnes retenues sont refusées, jamais évaluées. Les erreurs ne recopient pas les valeurs brutes.
+- Dates ISO (`AAAA-MM-JJ` ou date UTC), quantité entière positive, montants positifs ou zéro explicite avec deux décimales maximum ; `currency` ISO 4217 ; `cost_kind` = `purchase_unit` ou `purchase_total`. Un coût renseigné exige devise et nature. Les coûts absents restent `null`, avec motif `absent` ; aucun calcul de marge automatique n’est ajouté.
+- Aperçu projeté/nettoyé : e-mails, téléphones et formes de secrets reconnues neutralisés ; suivis masqués et clé stable de rapprochement. Colonnes clients supprimées avant stockage. Le brut n’est jamais persisté. Le serveur conserve **un seul aperçu nettoyé**, isolé du retour API, pendant **10 minutes** ; toute nouvelle validation remplace cet aperçu.
+- Une seule erreur empêche tout le lot ; la confirmation utilise l’identifiant de l’aperçu serveur, puis une transaction atomique. Un nouvel import devient le lot courant (au plus cinq versions locales conservées dans la limite de rétention). La prévisualisation UI affiche 20 lignes ; les blocs agent affichent au plus 30 lignes par type et annoncent leur caractère partiel.
+- Source `manual_import`, origine déclarée par le propriétaire ; un fichier rempli manuellement n’est pas attesté par DSers et ne rend jamais MCP authentifié.
+
+### Conservation et accès
+
+Imports : **30 jours maximum** ; caches Shopify publics et Admin, y compris anciens relevés : **7 jours maximum**. Purge à l’ouverture, aux lectures concernées et chaque minute pendant le fonctionnement du Studio. La suppression est logique dans la base locale ; aucun effacement physique de SQLite ou des sauvegardes n’est promis. Le propriétaire peut supprimer imports/cache Admin et retirer les accès depuis les cartes.
+
+Aucun accès agent par défaut. Permissions individuelles `manual_import` et `shopify_admin` dans l’Integration Center ; sélection explicite dans Comms. Seuls les caches sont transmis, sous bloc de données non fiables, daté et accompagné de sources `archipel://integrations/<source>/<uuid>`. Les demandes marquées web ne reçoivent pas ces sources. Délégations et résultats conservent la restriction de provenance ; contenu, observations, erreurs et sources restent hors journal portable. Les propositions de mémoire générale sont désactivées pour ces tâches, faute de mémoire conservant cette restriction. Les dix agents et leurs fiches restent inchangés ; les journaux synchronisent les demandes et états, jamais les imports, consentements, accès ou jetons.
+
+### Shopify Admin préparé, sans connexion réelle
+
+Le jeton reste fourni uniquement par environnement (`SHOPIFY_ADMIN_TOKEN`, `SHOPIFY_ADMIN_DOMAIN`). Sa présence **ne sélectionne plus automatiquement Admin** : le catalogue existant et `ensureFresh()` restent publics. Admin nécessite un accord local daté enregistré avec confirmation dans l’Integration Center, lié au domaine exact, **et** le verrou réseau serveur déjà décrit. Retirer/modifier l’accord invalide les relevés en cours et purge le cache Admin. Au redémarrage, une ancienne authentification redevient non vérifiée.
+
+- API fixe **2026-10**, refus si `X-Shopify-API-Version` est absent ou différent. Toutes les requêtes Admin passent par `networkGate`, y compris avec un transport injecté pour les tests ; celui-ci n’est exposé par aucune route/configuration. Les tests utilisent uniquement des objets d’environnement isolés et des transports simulés, sans modifier l’environnement du processus.
+- Vérification `currentAppInstallation.accessScopes` avant lecture : **read_products + read_inventory**. **read_orders** est une capacité autorisée séparément par case à cocher ; fenêtre filtrée et vérifiée localement à **60 jours maximum**. Aucune demande de `read_customers`, `read_all_orders` ni `write_*`.
+- Requêtes GraphQL fixes sans mutation ; catalogue et variantes projetés, prix, stocks `available` par emplacement. Commandes : ID opaque, dates, statut de traitement, fulfillments et transporteur normalisé/suivi masqué. Jamais de customer, adresses de livraison/facturation, e-mail, téléphone, notes, customAttributes, metafields ou URL de suivi. Les champs commerciaux du catalogue restent nettoyés selon les règles précédentes.
+- Erreurs GraphQL même en HTTP 200, réponses bornées, refus des redirections, pause 429. Jusqu’à quatre pages de 50 produits/commandes ; 50 variantes/produit, 20 emplacements, 50 traitements/commande et 20 suivis/traitement. Les limites atteintes sont signalées comme partielles. Caches publics et Admin séparés ; aucune tâche Comms ne lance de relevé Admin.
+
+### Validation de cette préparation
+
+Tests et revue exclusivement sur réponses en mémoire et serveurs locaux simulés ; aucun compte, appel fournisseur réel, nouvelle permission réelle, commit, push ou fusion. Résultats chiffrés dans `docs/PR-PHASE-6.md`. Restent non vérifiés : formats DSers Basic et compatibilité avec un compte Shopify réel ; lecteur d’écran réel non testé. Les filtres de coordonnées/secrets restent heuristiques.
