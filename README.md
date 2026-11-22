@@ -201,6 +201,10 @@ Les agents peuvent s'appuyer sur le catalogue réel de workeda.com, **sans jamai
 - **Budget** : chaque demande a un budget (3 $ par défaut) calculé sur le coût rapporté par Claude Code ; au-delà, plus aucune nouvelle exécution ne démarre, et vous pouvez l'augmenter.
 - Rien n'est écrit sur Shopify : une modification serait une proposition, que vous seul exécutez.
 
+## Integration Center : DSers et 17TRACK en lecture seule
+
+Bouton **Integrations** : connexions DSers (MCP, OAuth + PKCE) et 17TRACK (clé existante), états réels, permissions, quotas (100 appels DSers/jour, configurable), accès **agent par agent (aucun par défaut)**, révocation. Archipel ne modifie jamais DSers, 17TRACK ni Shopify, ne transmet aucune donnée personnelle de client aux agents et masque les numéros de suivi. Le réseau réel reste **verrouillé** tant que `ARCHIPEL_ALLOW_REAL_NETWORK=1` n'est pas défini avec votre accord. Détails, coûts, limites : `docs/INTEGRATIONS.md` (audit : `docs/INTEGRATIONS-AUDIT.md`).
+
 ## Prérequis Windows
 
 Node.js 24 ou plus récent. Vérifier dans PowerShell :

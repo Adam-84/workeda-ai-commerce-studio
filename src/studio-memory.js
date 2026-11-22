@@ -2,6 +2,7 @@
 // `mission_memory`, les notes de mission déjà saisies, reste telle quelle). Les changements de schéma sont des migrations
 // numérotées, réversibles, précédées d'une sauvegarde. La synchronisation entre ordinateurs passe par un journal
 // d'événements par appareil (memory/journal/<appareil>.jsonl), versionné dans git : la base, elle, n'est jamais copiée.
+import { scrubContactData } from './catalog-privacy.js';
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -136,7 +137,7 @@ export function createMemoryStore(db, { filename = ':memory:', journalDir = null
     run('INSERT INTO memory_history (id, item_id, rev, action, actor, note, snapshot, device, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', randomUUID(), i.id, i.rev, action, actor, note, snapshot, device, now());
   };
   const eventOf = (action, i) => ({ v: 1, eid: randomUUID(), item: i.id, rev: i.rev, at: i.updatedAt, device, action, data: action === 'delete' ? null : portable(i) });
-  const lineOf = (event) => `${JSON.stringify(event)}\n`;
+  const lineOf = (event) => `${JSON.stringify({ ...event, data: scrubContactData(event.data) })}\n`;
   // Refuse à l'écriture un souvenir dont l'événement dépasserait la limite du journal (sinon l'autre ordinateur l'ignorerait).
   const assertFits = (i) => {
     const probe = { ...i, id: i.id ?? randomUUID(), state: i.state ?? 'active', rev: i.rev ?? 1, createdAt: i.createdAt ?? now(), updatedAt: i.updatedAt ?? now() };

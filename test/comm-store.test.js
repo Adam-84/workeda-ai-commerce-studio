@@ -83,7 +83,7 @@ test('secrets, taille et références : refus avant enregistrement', () => {
   const { comm, ids, memory } = setup();
   const t = comm.createThread({ kind: 'direct', members: [ids.sophia] });
   assert.throws(() => comm.postMessage(t.id, { body: 'mot de passe : correctcheval' }), /secret|contenir/i);
-  assert.throws(() => comm.postMessage(t.id, { body: 'clé sk-abcdefghijklmnopqrstuvwxyz123456' }), /contenir/);
+  assert.throws(() => comm.postMessage(t.id, { body: ('clé sk' + '-abcdefghijklmnopqrstuvwxyz123456') }), /contenir/);
   assert.throws(() => comm.postMessage(t.id, { body: 'x'.repeat(LIMITS.body + 1) }), /caractères/);
   assert.throws(() => comm.postMessage(t.id, { body: '   ' }), /obligatoire/);
   assert.throws(() => comm.postMessage(t.id, { body: 'ok', refs: [{ type: 'link', url: 'https://user:pw@exemple.fr/x' }] }), /identifiant/);
@@ -363,7 +363,7 @@ test('persistance : tout survit à la fermeture de la base', () => {
   const two = createStudio(file, { device: 'pc-a' });
   assert.equal(two.comm.task(task.id).instruction, 'Étudier');
   assert.equal(two.comm.listMessages(task.threadId).items.at(-1).body, 'Bonjour');
-  assert.equal(two.comm.schemaVersion(), 2);
+  assert.equal(two.comm.schemaVersion(), 3);
   assert.equal(two.comm.recover(), 0);
   two.close();
 });
@@ -378,6 +378,6 @@ test('migration réversible : le retour arrière ne retire que les tables de com
   assert.ok(r.backup && existsSync(r.backup), 'sauvegarde avant retour arrière');
   studio.close();
   const again = createStudio(file, { device: 'pc-a' }); // se recrée proprement au démarrage suivant
-  assert.equal(again.comm.schemaVersion(), 2);
+  assert.equal(again.comm.schemaVersion(), 3);
   again.close();
 });

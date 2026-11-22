@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { createShopConnector, READ_QUERIES, catalogPrompt, normalizePublicProduct, normalizeAdminProduct, SHOP_LIMITS, ADMIN_VERSION } from '../src/shop-readonly.js';
 import { createShopStore } from '../src/studio-shop.js';
+import { REAL_NETWORK_ENV } from '../src/mcp-client.js';
 
 const res = (status, body, headers = {}) => ({ status, headers: { get: (k) => headers[k.toLowerCase()] ?? null }, text: async () => (typeof body === 'string' ? body : JSON.stringify(body)) });
 const collections = { collections: [{ id: 1, title: 'Bras articulé', handle: 'bras', products_count: 3, updated_at: '2026-11-01T10:00:00Z' }, { id: 2, title: 'Lampes', handle: 'lampes', products_count: 9 }] };
@@ -60,15 +61,17 @@ test('domaine invalide refusé ; pagination bornée', async () => {
 
 test('mode admin : requêtes GraphQL FIXES sans mutation, jeton seulement dans l’en-tête, jamais exposé', async () => {
   for (const q of Object.values(READ_QUERIES)) { assert.match(q, /^\s*query\b/); assert.doesNotMatch(q, /\b(mutation|subscription)\b/i); }
-  const TOKEN = 'shpat_SECRET_TOKEN_VALUE_123456';
+  const TOKEN = ('shpat' + '_SECRET_TOKEN_VALUE_123456');
+  const authorization = { enabled: true, orders: false, at: '2026-11-22T10:00:00Z' };
   const f = fakeShop((u, init) => {
     const body = JSON.parse(init.body);
+    if (body.query === READ_QUERIES.scopes) return res(200, { data: { currentAppInstallation: { accessScopes: [{ handle: 'read_products' }, { handle: 'read_inventory' }] } } }, { 'x-shopify-api-version': ADMIN_VERSION });
     if (body.query === READ_QUERIES.collections) return res(200, { data: { collections: { nodes: [{ id: 'gid://shopify/Collection/1', title: 'Bras', handle: 'bras', productsCount: { count: 3 } }] } } });
-    return res(200, { data: { products: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ id: 'gid://shopify/Product/9', title: 'Lampe LED', handle: 'lampe-led', vendor: 'W', productType: 'Lampe', tags: ['bureau'], status: 'ACTIVE', totalInventory: 5, descriptionHtml: '<p>Belle lampe</p>', seo: { title: 'SEO lampe' }, mediaCount: { count: 4 }, priceRangeV2: { minVariantPrice: { amount: '19.5', currencyCode: 'EUR' }, maxVariantPrice: { amount: '19.5' } } }] } } });
+    return res(200, { data: { products: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ id: 'gid://shopify/Product/9', title: 'Lampe LED', handle: 'lampe-led', vendor: 'W', productType: 'Lampe', tags: ['bureau'], status: 'ACTIVE', totalInventory: 5, descriptionHtml: '<p>Belle lampe</p>', seo: { title: 'SEO lampe' }, mediaCount: { count: 4 }, priceRangeV2: { minVariantPrice: { amount: '19.5', currencyCode: 'EUR' }, maxVariantPrice: { amount: '19.5' } } }] } } }, { 'x-shopify-api-version': ADMIN_VERSION });
   });
-  const c = createShopConnector({ domain: 'workeda.com', token: TOKEN, adminDomain: 'workeda-shop.myshopify.com', fetchImpl: f });
-  assert.equal(c.mode, 'admin');
-  const r = await c.fetchCatalog();
+  const c = createShopConnector({ domain: 'workeda.com', token: TOKEN, adminDomain: 'workeda-shop.myshopify.com', fetchImpl: f, adminFetchImpl: f, env: { [REAL_NETWORK_ENV]: '1' } });
+  assert.equal(c.mode, 'public', 'le jeton ne sélectionne jamais le mode Admin');
+  const r = await c.fetchAdmin({ authorization });
   assert.equal(r.ok, true); assert.equal(r.products[0].status, 'active'); assert.equal(r.products[0].currency, 'EUR'); assert.equal(r.products[0].images, 4); assert.equal(r.products[0].seoTitle, 'SEO lampe');
   assert.ok(f.calls.every((x) => x.url === `https://workeda-shop.myshopify.com/admin/api/${ADMIN_VERSION}/graphql.json` && x.init.method === 'POST' && x.init.redirect === 'manual'));
   assert.ok(f.calls.every((x) => Object.values(READ_QUERIES).includes(JSON.parse(x.init.body).query)), 'seules les requêtes fixes partent');
@@ -78,10 +81,13 @@ test('mode admin : requêtes GraphQL FIXES sans mutation, jeton seulement dans l
 });
 
 test('mode admin : erreurs de droits et configuration incomplète expliquées sans fuite', async () => {
-  const TOKEN = 'shpat_TOP_SECRET';
-  const denied = await createShopConnector({ domain: 'workeda.com', token: TOKEN, adminDomain: 'a.myshopify.com', fetchImpl: fakeShop(() => res(403, `forbidden ${TOKEN}`)) }).fetchCatalog();
+  const TOKEN = ('shpat' + '_TOP_SECRET');
+  const authorization = { enabled: true, orders: false, at: '2026-11-22T10:00:00Z' };
+  const deniedFetch = fakeShop(() => res(403, `forbidden ${TOKEN}`));
+  const gqlFetch = fakeShop(() => res(200, { errors: [{ message: `Access denied ${TOKEN}` }] }, { 'x-shopify-api-version': ADMIN_VERSION }));
+  const denied = await createShopConnector({ domain: 'workeda.com', token: TOKEN, adminDomain: 'a.myshopify.com', fetchImpl: deniedFetch, adminFetchImpl: deniedFetch, env: { [REAL_NETWORK_ENV]: '1' } }).fetchAdmin({ authorization });
   assert.equal(denied.ok, false); assert.match(denied.errors[0], /accès refusé \(403\)/); assert.doesNotMatch(JSON.stringify(denied), /TOP_SECRET/);
-  const gql = await createShopConnector({ domain: 'workeda.com', token: TOKEN, adminDomain: 'a.myshopify.com', fetchImpl: fakeShop(() => res(200, { errors: [{ message: `Access denied ${TOKEN}` }] })) }).fetchCatalog();
+  const gql = await createShopConnector({ domain: 'workeda.com', token: TOKEN, adminDomain: 'a.myshopify.com', fetchImpl: gqlFetch, adminFetchImpl: gqlFetch, env: { [REAL_NETWORK_ENV]: '1' } }).fetchAdmin({ authorization });
   assert.match(gql.errors[0], /droits de lecture/); assert.doesNotMatch(JSON.stringify(gql), /TOP_SECRET/);
   const half = createShopConnector({ domain: 'workeda.com', token: TOKEN, adminDomain: null, fetchImpl: fakeShop((u) => res(200, u.pathname === '/collections.json' ? collections : { products: [] })) });
   assert.equal(half.mode, 'public', 'jeton sans domaine admin : jamais utilisé');

@@ -16,9 +16,11 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=
 const send = (res, status, payload) => { res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(payload)); };
 const MAX_BODY = 1e6;
 const body = async (req) => {
-  let raw = '';
-  for await (const chunk of req) { raw += chunk; if (raw.length > MAX_BODY) throw Object.assign(new Error('Corps de requête trop volumineux.'), { status: 413 }); }
-  return raw ? JSON.parse(raw) : {};
+  const chunks = []; let bytes = 0;
+  const limit = req.url?.split('?')[0] === '/api/integrations/manual_import/preview' ? 4_000_000 : MAX_BODY;
+  for await (const chunk of req) { bytes += chunk.length; if (bytes > limit) throw Object.assign(new Error('Corps de requête trop volumineux.'), { status: 413 }); chunks.push(chunk); }
+  if (!bytes) return {};
+  try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks))); } catch { throw Object.assign(new Error('Corps JSON invalide.'), { status: 400 }); }
 };
 
 const DETECT_TTL_MS = 10_000;
@@ -33,7 +35,7 @@ const SKILL_PATH = /^\/api\/(?:skills(?:\/|$)|agents\/[^/]+\/skills)/;
 const MEMORY_PATH = /^\/api\/(?:memory(?:\/|$)|missions\/[^/]+\/(?:memory-proposals$|memory(?:\/|$)))/;
 // Communication entre agents : lancer une tâche fait travailler un agent (Claude Code) et écrire dans les fils lus par les autres.
 // Tout est réservé à cette machine, lectures comprises (les fils contiennent le travail de l'entreprise).
-const COMM_PATH = /^\/api\/(?:comm|shop)(?:\/|$)/; // le catalogue Shopify aussi : lectures et relevés réservés à cette machine
+const COMM_PATH = /^\/api\/(?:comm|shop|integrations)(?:\/|$)/; // le catalogue Shopify aussi : lectures et relevés réservés à cette machine
 // Lecture : la mémoire contient le savoir de l'entreprise — réservée à cette machine (même contrôle, sans l'origine).
 function assertLocalWrite(req, { checkOrigin = true } = {}) {
   const deny = (why) => Object.assign(new Error(`${checkOrigin ? 'Modification' : 'Lecture'} refusée : ${why}.`), { status: 403 });
@@ -166,7 +168,7 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
   let orch = null;
   if (comm) {
     const id = (m, i = 1) => decodeURIComponent(m[i]);
-    const delegationInput = (d = {}) => Object.fromEntries(['assigneeId', 'instruction', 'title', 'missionId', 'parentTaskId', 'dependsOn', 'dueAt', 'allowWeb', 'requiresSources', 'requiresApproval', 'priority', 'forceFresh', 'withCatalog', 'budgetUsd'].filter((k) => d[k] !== undefined).map((k) => [k, d[k]]));
+    const delegationInput = (d = {}) => Object.fromEntries(['assigneeId', 'instruction', 'title', 'missionId', 'parentTaskId', 'dependsOn', 'dueAt', 'allowWeb', 'requiresSources', 'requiresApproval', 'priority', 'forceFresh', 'withCatalog', 'withIntegrations', 'budgetUsd'].filter((k) => d[k] !== undefined).map((k) => [k, d[k]]));
     Object.assign(routes, {
       'GET /api/comm/status': () => ({ ...comm.status(), maxActive: orch.activity().maxActive, engines: { claudeCode: detect('claude'), codexCli: detect('codex') } }),
       'GET /api/comm/check': () => comm.check(),
@@ -198,6 +200,29 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
         orch.pump();
         return out;
       }]
+    );
+  }
+  // Integration Center (DSers, 17TRACK) : LECTURE SEULE. Aucune route n'écrit chez DSers, 17TRACK ou Shopify ; aucun secret n'est jamais renvoyé.
+  if (studio.integrations) {
+    const ints = studio.integrations, known = (m) => { const i = decodeURIComponent(m[1]); if (!['dsers', 'track17', 'manual_import', 'shopify_admin'].includes(i)) fail(404, 'Intégration inconnue.'); return i; };
+    const agentsList = () => studio.listAgentFiles().map((f) => ({ slug: f.slug, name: f.name ?? f.slug }));
+    Object.assign(routes, { 'GET /api/integrations': () => ({ ...ints.status(), cards: ints.cards(), agents: agentsList() }),
+      'GET /api/integrations/manual_import/template': () => ({ csv: ints.csvTemplate(), filename: 'archipel-import.csv' }),
+      'POST /api/integrations/manual_import/preview': (d) => ints.previewImport(d?.text, { format: d?.format ?? 'archipel' }),
+      'POST /api/integrations/manual_import/commit': (d) => ints.commitImport(d),
+      'POST /api/integrations/shopify_admin/configure': (d) => studio.shop.configureAdmin(d),
+      'POST /api/integrations/shopify_admin/test': () => studio.shop.testAdmin(),
+      'POST /api/integrations/shopify_admin/sync': (d) => studio.shop.refreshAdmin({ force: d?.force === true }) });
+    paramRoutes.push(
+      ['GET', /^\/api\/integrations\/([^\/]+)$/, (m) => ints.card(known(m))],
+      ['POST', /^\/api\/integrations\/([^\/]+)\/connect$/, async (m, d) => { const i = known(m); if (d?.confirm !== true) fail(400, 'Confirmation explicite requise avant toute connexion à un compte.'); if (i === 'dsers' && ints.card(i).settings.plan === 'basic') return ints.beginAuth(i); ints.guardReal(); return ints.beginAuth(i); }],
+      ['POST', /^\/api\/integrations\/([^\/]+)\/key$/, (m, d) => { const i = known(m); if (d?.confirm !== true) fail(400, 'Confirmation explicite requise.'); return { ...ints.setKey(i, d?.key), card: ints.card(i) }; }],
+      ['POST', /^\/api\/integrations\/([^\/]+)\/test$/, async (m) => { const i = known(m); try { await ints.test(i); } catch (e) { if (e.kind === 'real_network_disabled') throw Object.assign(e, { status: 403 }); } return ints.card(i); }],
+      ['POST', /^\/api\/integrations\/([^\/]+)\/sync$/, async (m, d) => { const i = known(m); const r = await ints.sync(i, { force: d?.force === true }); return { result: r, card: ints.card(i) }; }],
+      ['POST', /^\/api\/integrations\/([^\/]+)\/settings$/, (m, d) => { const i = known(m); if (d?.dailyCap !== undefined) ints.setDailyCap(i, d.dailyCap); if (d?.shipCountry !== undefined || d?.plan !== undefined) ints.setSettings(i, { shipCountry: d?.shipCountry, plan: d?.plan }); return ints.card(i); }],
+      ['POST', /^\/api\/integrations\/([^\/]+)\/grants$/, (m, d) => { const i = known(m); ints.grant(i, String(d?.agent ?? '')); return ints.card(i); }],
+      ['POST', /^\/api\/integrations\/([^\/]+)\/grants\/([^\/]+)\/revoke$/, (m) => { const i = known(m); ints.revokeGrant(i, decodeURIComponent(m[2])); return ints.card(i); }],
+      ['POST', /^\/api\/integrations\/([^\/]+)\/revoke$/, (m, d) => { const i = known(m); const r = ints.revoke(i, { purge: d?.purge === true }); return { ...r, card: ints.card(i) }; }]
     );
   }
   // Catalogue Shopify : LECTURE SEULE. Aucune route n'écrit dans la boutique ; le seul effet est un relevé daté dans la base locale.
@@ -291,6 +316,14 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
       if (teamMatch) return await teamReply(decodeURIComponent(teamMatch[1]), decodeURIComponent(teamMatch[2]), res);
       const planMatch = req.method === 'POST' && url.pathname.match(/^\/api\/missions\/([^/]+)\/plan\/propose$/);
       if (planMatch) return await proposePlan(decodeURIComponent(planMatch[1]), await body(req), res);
+      if (studio.integrations && req.method === 'GET' && url.pathname === '/api/integrations/dsers/callback') {
+        assertLocalWrite(req, { checkOrigin: false });
+        let msg = 'Connexion DSers réussie en lecture seule. Vous pouvez fermer cet onglet et revenir à Archipel.', status = 200;
+        try { if (url.searchParams.get('error')) throw new Error('Connexion refusée côté DSers.'); await studio.integrations.completeAuth({ code: url.searchParams.get('code'), state: url.searchParams.get('state') }); } catch (e) { msg = 'Connexion non terminée : ' + String(e.message).slice(0, 200); status = 400; }
+        const esc = (t) => t.replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c]);
+        res.writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'", 'referrer-policy': 'no-referrer' });
+        return res.end('<!doctype html><meta charset="utf-8"><title>Archipel</title><body style="font:16px system-ui;padding:2rem;background:#0b1626;color:#e8eef7"><p>' + esc(msg) + '</p></body>');
+      }
       const hasBody = req.method === 'POST' || req.method === 'PUT';
       if (MEMORY_PATH.test(url.pathname) || COMM_PATH.test(url.pathname)) assertLocalWrite(req, { checkOrigin: req.method !== 'GET' });
       if (req.method === 'POST' && url.pathname === '/api/messages') assertLocalWrite(req); // enregistrement manuel d'un échange : jamais depuis une autre page web

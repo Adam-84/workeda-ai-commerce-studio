@@ -275,3 +275,12 @@ button.link{border:0;padding:0;background:none;color:var(--accent);font-weight:7
 .comm-members[hidden],.comm-center select[hidden]{display:none}
 .comm-runs{margin:0;padding-left:20px;font-size:13px;display:grid;gap:3px}
 @media(max-width:640px){.comm-members{grid-template-columns:1fr}.comm-actions{flex-direction:row;flex-wrap:wrap}}
+
+/* Integration Center (Phase 6) : même panneau que Skills / Memory / Comms */
+#pop.agent-panel:has(.integrations-center){width:min(700px,calc(100vw - 32px))}
+.integrations-center{display:grid;gap:10px;align-content:start;max-height:calc(100vh - 130px);overflow:auto;padding-right:6px}
+.integration-card{display:grid;gap:6px;padding:12px 14px;border:1px solid color-mix(in srgb,var(--text) 18%,transparent);border-radius:14px}
+.integration-card h3{margin:0}.integration-card h4{margin:6px 0 0}
+.integration-card progress{height:8px;accent-color:var(--accent)}
+.integration-card details>summary{cursor:pointer;font-weight:600}
+.integration-card button:disabled{opacity:.55;cursor:default}

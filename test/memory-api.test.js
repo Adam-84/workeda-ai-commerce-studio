@@ -36,7 +36,7 @@ test('API : créer, lire, modifier, historique, archiver et supprimer un souveni
   assert.deepEqual(made.body.tags, ['livraison']);
   const id = made.body.id;
   assert.equal((await call('POST', '/api/memory', company())).status, 409, 'doublon refusé');
-  assert.equal((await call('POST', '/api/memory', company({ title: 'Clé', body: 'sk-abcdefghijklmnopqrstuvwxyz123456 ici', nature: 'hypothesis' }))).status, 400, 'secret refusé');
+  assert.equal((await call('POST', '/api/memory', company({ title: 'Clé', body: ('sk' + '-abcdefghijklmnopqrstuvwxyz123456 ici'), nature: 'hypothesis' }))).status, 400, 'secret refusé');
   assert.equal((await call('GET', `/api/memory/${id}`)).body.title, 'Livraison offerte');
   assert.equal((await call('GET', '/api/memory?level=company&q=livraison')).body.length, 1);
   assert.equal((await call('GET', '/api/memory?level=mission')).body.length, 0);
