@@ -1,0 +1,13 @@
+{
+  "name": "codex",
+  "command": "node tools/pal-hardened/pal-analysis-gate.mjs",
+  "working_dir": "../../..",
+  "additional_args": ["--json", "--ignore-user-config", "--ignore-rules", "--ephemeral", "-c", "web_search=\"disabled\""],
+  "env": {},
+  "timeout_seconds": 5,
+  "roles": {
+    "default": { "prompt_path": "../analysis.txt", "role_args": [] },
+    "planner": { "prompt_path": "../analysis.txt", "role_args": [] },
+    "codereviewer": { "prompt_path": "../analysis.txt", "role_args": [] }
+  }
+}

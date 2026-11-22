@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "pal-hardened": {
+      "command": "node",
+      "args": ["<PROJET>/tools/pal-hardened/start-instance.mjs"],
+      "env": {}
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "approved": false,
+  "purpose": "Codex First : revue ponctuelle de texte fictif",
+  "server": "pal-hardened",
+  "profileDigest": "<empreinte-du-profil-verifie>",
+  "approvedAt": null,
+  "expiresAt": null,
+  "taskDigest": "<empreinte-du-contexte-nettoye>",
+  "maxRuns": 1
+}
