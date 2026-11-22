@@ -1,0 +1,6 @@
+{
+  "tested": "0.164.0",
+  "testedOn": "2026-11-22",
+  "lastReported": null,
+  "note": "Version de Codex CLI contre laquelle les sondes d'isolation ont été exécutées (docs/PAL-HARDENING.md). À mettre à jour seulement après une nouvelle série de sondes validée par le propriétaire. Le suivi ne met jamais à jour Codex."
+}
