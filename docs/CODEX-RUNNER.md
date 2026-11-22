@@ -48,7 +48,7 @@ Routes locales, avec les protections Host/Origin des autres routes Comms :
 
 Défauts : 20 tentatives par jour UTC et par appareil, une exécution Codex simultanée par fournisseur d'application, 180 000 ms par exécution, 3 600 000 ms cumulées par jour et 100 000 jetons rapportés par jour. Réglages locaux persistants dans `comm_meta`, modifiables dans Comms → Activité ou par la route des limites. La limite globale Comms reste applicable.
 
-Les tentatives enregistrées, y compris les refus de capacité après démarrage de la trace, comptent. Le compteur est reconstruit depuis les exécutions persistantes du même appareil ; il ne repart pas à zéro au redémarrage. Les fenêtres de quota de l'abonnement ne sont pas lues : aucune interface officielle stable n'a été établie par les sources locales autorisées. L'interface affiche **quota inconnu**.
+Les tentatives enregistrées, y compris les refus de capacité après démarrage de la trace, comptent. Le compteur est reconstruit depuis les exécutions persistantes du même appareil ; il ne repart pas à zéro au redémarrage. Les fenêtres de quota de l'abonnement ne sont pas lues par le runner. L'étude complémentaire ci-dessous identifie une méthode officielle app-server, non intégrée et non interrogée sur ce PC. L'interface conserve **quota inconnu**.
 
 Les jetons sont connus seulement si le JSON rapporte des entiers valides. Un seuil de jetons est **constaté après la réponse**, pas réservé en amont : la dernière exécution peut le dépasser. Un usage absent reste inconnu et est signalé ; les limites de tentatives et de durée continuent à s'appliquer. La durée restante réduit le timeout de l'appel suivant.
 
@@ -72,4 +72,96 @@ node --test
 git status --short
 ```
 
-Les tests Codex créent uniquement un script Node et un shim `.cmd` temporaires. Aucun test ne cherche le vrai exécutable Codex ni ne lance un modèle. Succès, lignes invalides, fragmentation, auth/quota absents, CLI absent, capacité manquante, sortie énorme, timeout, annulation et descendant de processus sont simulés. Les sources officielles utilisées sont les aides locales ci-dessus ; aucun réseau utilisé pour consulter la documentation publique. Références à consulter avant d'ajouter un profil sûr : documentation officielle OpenAI Codex CLI, `https://developers.openai.com/codex/cli/reference/` et `https://developers.openai.com/codex/config-reference/` (non consultées pendant ce travail hors réseau).
+Les tests historiques `codex-runner.test.js` utilisent uniquement un script Node et un shim `.cmd` temporaires, sans vrai CLI. Succès, lignes invalides, fragmentation, auth/quota absents, CLI absent, capacité manquante, sortie énorme, timeout, annulation et descendant de processus sont simulés. La nouvelle suite `codex-mxc.test.js` utilise le vrai CLI Windows et un serveur loopback fictif, sans réseau externe ni modèle ; voir la phase de preuve ci-dessous.
+
+
+## Étude complémentaire et décision sur l’essai réel — 22 novembre 2026
+
+### Observations locales, sans modèle
+
+Branche `codex-runner`, arbre initial propre ; Node `v24.13.1`, CLI `codex-cli 0.164.0`, Windows 11 Professionnel `10.0.26300` (build 26300). Les aides de `exec`, `app-server` et `sandbox` ont été exécutées, ainsi que `features list`. Aucun contenu du CODEX_HOME existant ni identifiant n’a été ouvert, copié ou journalisé par l’étude. L’abonnement connecté est une information du propriétaire, pas une vérification de compte effectuée ici.
+
+Le shim npm est résolu par `resolveCodex` vers le processus :
+
+```text
+C:\Program Files\nodejs\node.exe
+C:\Users\adamg\AppData\Roaming\npm\node_modules\@openai\codex\bin\codex.js
+```
+
+Arguments successifs : `--version`, `--help`, `exec --help`, `app-server --help`, `sandbox --help`. Un essai de `--ignore-user-config --ignore-rules features list` est rejeté par le parseur (code 2) : ces options sont propres à `exec`, pas globales. La sonde `features list` utilise ensuite un CODEX_HOME temporaire neuf, sans authentification.
+
+Toutes les sondes démarrent avec `shell:false`, timeout 15 s et sortie bornée (au plus 200 000 octets), dans un dossier créé sous `C:\Windows\Temp`, hors dépôt et dossiers personnels. Variables transmises, par nom seulement : `SystemRoot`, `WINDIR`, `TEMP`, `TMP`, `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA` ; `CODEX_HOME` est ajouté pour les sondes features/MXC et désigne uniquement leur dossier neuf. Pas de PATH, proxy, options Node ou clé API hérités. Dossiers vides avant/après les sondes, puis supprimés. Le CLI avertit qu’il refuse de créer ses alias auxiliaires dans ce CODEX_HOME temporaire ; les sondes aboutissent néanmoins.
+
+`features list` constate `hooks`, `plugins`, `shell_tool`, `unified_exec`, `skill_search`, `skill_mcp_dependency_install`, `multi_agent` et `view_image` actifs par défaut. Avec les huit `--disable` correspondants, tous passent à `false` **sauf `unified_exec`, qui reste `true`**. Ce constat ne démontre ni une exécution effective de commande, ni sa désactivation. `skip_host_skill_discovery` est « under development », faux ; les anciens flags `experimental_windows_sandbox` et `elevated_windows_sandbox` sont « removed ». Il ne faut pas déduire l’état du sandbox de ces anciens flags.
+
+Test matériel sans modèle, arguments exacts après le point d’entrée Node :
+
+```text
+-c windows.sandbox="mxc" sandbox --permission-profile :read-only -- C:\WINDOWS\System32\cmd.exe /d /c "echo MXC_OK"
+```
+
+Cwd : `C:\Windows\Temp\archipel-mxc-Mf4qYb`, créé vide et supprimé après vérification. Sortie `MXC_OK`, code 0, aucun fichier ajouté. **MXC peut démarrer une commande avec ce profil sur ce PC.** Ce test ne tente ni lecture interdite, ni écriture, ni connexion réseau ; il ne prouve pas leur blocage. Aucun setup administrateur, compte Windows, règle pare-feu ou configuration persistante n’a été changé par nos commandes. La commande `cmd.exe` est ici une sonde explicite, pas un shell utilisé pour transporter un prompt.
+
+### Documentation officielle et portée des garanties
+
+Sources consultées le 22 novembre 2026 (les anciens liens developers.openai.com redirigent vers Learn) :
+
+- [Sandbox et approbations](https://learn.chatgpt.com/docs/agent-approvals-security) : les restrictions concernent les commandes générées par le modèle. `never` interdit les demandes interactives, pas toutes les commandes. Le réseau des commandes et les connexions du client (modèle/authentification), MCP, apps, navigateur et web search sont des surfaces distinctes.
+- [Permissions](https://learn.chatgpt.com/docs/permissions) : `read-only` restreint les écritures des commandes ; `workspace-write` permet les écritures du workspace et temporaires ; `danger-full-access` retire ces restrictions. Un cwd vide ne constitue pas une frontière de lecture. Les profils nommés permettent des restrictions supplémentaires, dont l’application dépend de la plateforme.
+- [Windows](https://learn.chatgpt.com/docs/windows/windows-sandbox) : MXC est recommandé et utilise une isolation native des processus. Le mode legacy `elevated` utilise utilisateurs restreints et pare-feu ; `unelevated` utilise un jeton restreint et des contrôles réseau plus faibles, sans refus de lecture. Préférer MXC autorise un repli ; sa sélection explicite échoue s’il est indisponible. La documentation actuelle ne qualifie pas globalement le sandbox Windows d’expérimental ; l’aide locale qualifie encore app-server d’expérimental. Ne pas confondre ces statuts.
+- [Configuration](https://learn.chatgpt.com/docs/config-file/config-reference) : `forced_login_method="chatgpt"`, `web_search="disabled"`, `features.shell_tool=false` et les réglages skills sont documentés. `skills.bundled.enabled=false` vise les skills embarqués ; `skills.include_instructions=false` vise leurs instructions automatiques ; `skills.config` cible des noms/chemins. Ce ne sont pas des preuves d’absence universelle de découverte. MCP possède `mcp_servers.<id>.enabled=false`, plugins et hooks leurs réglages. Aucun `tools.*=false` universel établi ici. Une surcharge TOML acceptée n’est pas une preuve de contrôle effectif ni de remplacement intégral d’une table fusionnée. `--ignore-user-config` ne promet que l’exclusion de config.toml utilisateur, et `--ignore-rules` celle des execpolicy `.rules`, pas de tous les AGENTS.md, skills ou hooks gérés. `project_doc_max_bytes=0` ne prouve pas cette absence globale. L’authentification ChatGPT peut donc être exigée par configuration documentée, mais n’a pas été validée localement avec un compte.
+- [App-server](https://learn.chatgpt.com/docs/app-server) : protocole bidirectionnel JSON-RPC, threads, tours, annulation et demandes d’approbation, contre JSONL unidirectionnel pour un travail ponctuel avec `exec --json`. `sandboxPolicy.readOnly.access` vaut par défaut `fullAccess` et peut restreindre les racines lisibles. Ce transport n’isole pas à lui seul le serveur. `account/rateLimits/read` est documenté pour les fenêtres ChatGPT : existence officielle vérifiée, stabilité et compatibilité locale non établies ; aucun appel effectué. Le quota produit reste inconnu.
+
+### Décision avant appel de modèle
+
+**Essai réel non lancé : zéro exécution du modèle et zéro relance.** Aucun événement JSON de modèle, usage, durée de modèle ou outil invoqué par un modèle à rapporter ; ces données sont non applicables, jamais des mesures égales à zéro.
+
+Les préconditions manquantes sont l’absence démontrée de tous les outils, MCP/skills/plugins/hooks et instructions locales, et une frontière de lecture/écriture/réseau couvrant les surfaces pertinentes. MXC est disponible, mais la sonde ne certifie pas une isolation du client complet : le CLI doit encore accéder à son authentification et peut avoir des écritures de fonctionnement malgré `--ephemeral`. Les fichiers hors cwd restent potentiellement lisibles sous le simple profil read-only ; les connexions modèle/authentification restent nécessaires. Le prompt « aucun outil » ne constitue pas un contrôle technique.
+
+Déduction de sécurité : si l’exigence porte sur tout le processus, il faut une frontière Windows supplémentaire effectivement testée, avec accès aux seules ressources nécessaires et authentification non exposée aux outils. Un niveau d’intégrité bas ou un Job Object seul ne démontre pas cette politique de lecture et réseau. Aucun AppContainer, compte dédié ou Job Object enveloppant le client n’a été provisionné/validé ici. MXC pour les seules commandes ne suffit pas à établir cette garantie.
+
+Le détecteur et son refus fermé restent inchangés. Son motif d’authentification signifie désormais « non validée dans un profil exécutable », pas « aucune option officielle n’existe ». Aucun accès direct au transport ne contourne ce refus. Activation pour une mission textuelle simple : **non dans l’état présent**, même si une future réponse OK réussissait. Avant une proposition d’activation progressive : prouver les surfaces désactivées avant le tour, tester les refus de lecture/écriture/réseau avec des données synthétiques, puis encadrer un seul appel avec instantanés et suivi des descendants. Les instantanés spécifiques avant/après modèle sont sans objet puisque l’appel n’a pas été autorisé par les préconditions ; les sondes temporaires ont leurs propres vérifications ci-dessus. Les processus Codex déjà présents appartiennent à la session hôte et ne doivent pas être arrêtés.
+
+## Phase de preuve MXC, sans modèle — 22 novembre 2026
+
+**Verdict : insuffisant pour activer le runner ; détecteur inchangé.** Les frontières testées des commandes sont effectives avec un profil durci. Elles ne confinent pas le client Codex complet et ne démontrent pas la disparition de tous ses outils et chargements locaux. Aucun tour `exec`, appel modèle ou tentative d’authentification n’a été lancé. L’absence d’authentification ne constitue pas ici une preuve d’absence de requête réseau : nous n’avons pas tenté un tour pour le vérifier.
+
+Reproduction : `node --test test/codex-mxc.test.js`, puis `node --test`. La suite est automatique sur Windows avec CLI présent ; elle indique un skip explicite si Windows/MXC/CLI est indisponible ou MXC refusé. Un timeout ou un échec d’assertion ne devient pas un skip. Aucun repli legacy. Les diagnostics `MXC_PROOF` enregistrent les arguments exacts en tableau, cwd, noms des variables, résultats attendus/observés, durées et inventaires des fichiers. Le relevé de cette exécution est conservé dans [CODEX-MXC-PROOF.json](CODEX-MXC-PROOF.json). Ce relevé est une observation locale datée, pas un profil autorisé.
+
+Toutes les cibles de lecture/écriture sont fictives sous `C:\Windows\Temp\archipel-mxc-proof-*`, hors dépôt et dossiers personnels. Chaque dossier est supprimé après inventaire ; aucune authentification existante n’est consultée. Le shim npm est résolu sans shell vers Node + `@openai/codex/bin/codex.js`. Variables transmises aux sondes, noms uniquement : `SystemRoot`, `WINDIR`, `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `CODEX_HOME`, `TEMP`, `TMP`. Pas de PATH, clé API, proxy ou NODE_OPTIONS hérités.
+
+Forme des commandes réellement exécutées :
+
+```text
+<node.exe> <codex.js> -c windows.sandbox="mxc" sandbox --permission-profile <profil> -- <exécutable> <arguments>
+```
+
+Les profils `probe_read` et `probe_write` utilisent la syntaxe documentée `[permissions.<nom>.filesystem]` : `:root="deny"`, `:minimal="read"`, répertoire de Node en lecture, cwd en lecture ou écriture, et **deny explicite sur les dossiers frères outside et home** ; `network.enabled=false`. `default_permissions="probe_read"` est nécessaire aux commandes d’inventaire lorsque le fichier contient ces profils. La variante d’écriture teste une permission workspace limitée au cwd ; elle n’est jamais proposée pour une mission textuelle. Aucun profil dangereux n’est sélectionné.
+
+| Capacité | Attendu | Observé sur le vrai CLI 0.164.0 | Restriction effective | Limites |
+| --- | --- | --- | --- | --- |
+| Lecture du piège frère, `:read-only` | Refus souhaité | Lecture réussie, comme faux config et skill | Lecture seule n’est pas une frontière de lecture | Échec de l’exigence de confinement au cwd |
+| Lecture, profils durcis | Refus ; témoin intérieur lisible | `EPERM` sur piège, config, faux ~/.codex et skill ; témoin lu | Deny exact effectif sur les cibles testées | Ne démontre pas l’inaccessibilité de tout le disque |
+| Écriture cwd, `:read-only` et `probe_read` | Refus | `EPERM` | Écriture bloquée | Les écritures internes du client sont une autre surface |
+| Écriture extérieure, trois profils | Refus | `EPERM` | Écriture bloquée | Cibles temporaires synthétiques seulement |
+| Écriture autorisée, `probe_write` | Succès | Fichier FICTIF créé dans cwd | Grant exact appliqué | Profil de sonde, non activé dans le produit |
+| TCP 127.0.0.1, port éphémère | Refus | `EACCES`, zéro connexion reçue pour chaque profil | Loopback bloqué dans ces profils sans réseau | Témoin positif hors sandbox : une connexion ; pas de test Internet/DNS/UDP |
+| Enfants cmd, PowerShell, Node | Héritage des refus | Tous lisent le témoin ; piège lisible en baseline, refusé avec deny exact | Frontière de lecture héritée dans ces trois cas | Pas un inventaire de tous les exécutables/IPC possibles |
+| curl | Lancement observé | `curl --version`, code 0 | Exécutable disponible | Ne démontre pas une interdiction universelle des outils |
+| Inventaire MCP par le client | Voir faux MCP sans le lancer | Visible ; override enabled=false reflété ; aucun marqueur de lancement | Désactivation du seul serveur nommé constatée | Config globale ignorée n’équivaut pas à désactiver toutes les sources |
+| Features désactivées | Toutes false | unified_exec reste true ; les sept autres false | Sept désactivations affichées | Aucun tour : efficacité runtime et découverte des skills non prouvées |
+| exec ignore-user-config / ignore-rules et overrides | Options acceptées sans tour | Aide code 0 | Acceptation syntaxique seulement | --help ne prouve pas le chargement effectif ni la suppression des outils |
+| Arrêt arbre | Aucun descendant résiduel | Timeout produit, quatre PID témoins arrêtés ; inventaires CIM dédiés vides avant/après | killTree privé exercé via codexTransport | Enveloppe fictive ; vraie commande longue sous MXC ; aucun exec modèle |
+| Client complet | Même confinement que les commandes | mcp list lit le home interdit aux commandes ; fichiers auxiliaires créés dans home/tmp | Le client et son lanceur restent hors frontière des outils | Aucun confinement global démontré ; pas de capture exhaustive des accès |
+
+Une première sonde avec seulement `:root=deny`, `:minimal=read` et les grants de runtime/cwd laissait lire les pièges sous Windows Temp. Les deny exacts rendent les refus observables ; **ne pas présenter :minimal comme une liste blanche limitée au cwd**, ni étendre ces refus ciblés aux fichiers personnels non testés. Une première sonde PowerShell utilisant `[IO.File]` était bloquée par ConstrainedLanguage ; elle a été remplacée par `Get-Content` avec témoin positif, pour ne pas confondre restriction du langage et refus de fichier.
+
+L’aide expose également les options de sandbox-state, racine lisible additionnelle et désactivation réseau. Elles demandent un état opaque produit par `codex/sandbox-state` ; aucun état inventé n’est utilisé. Les profils documentés suffisent aux sondes ici. Les sorties d’aide ne sont pas des preuves d’application.
+
+**Distinction réel/fictif :** frontières de fichiers, sockets et petits-fils testées sur le vrai Codex et MXC. Serveur TCP, fichiers, skill et MCP sont fictifs. Le test d’interruption passe par une enveloppe Node fictive qui ignore les arguments exec du transport et lance exclusivement `codex sandbox` ; la fonction d’arrêt de production reste celle de `src/codex-runner.js`. Les tests historiques de protocole/auth/quota restent entièrement simulés. Les inventaires sont limités aux dossiers et processus dédiés ; aucun contenu personnel, auth.json ou jeton n’est collecté.
+
+Le client n’est pas enveloppé dans MXC : son accès à la configuration et ses écritures auxiliaires sont observés malgré le refus de ces mêmes chemins dans la commande. Un lancement `exec` sans authentification n’ajouterait pas une preuve suffisante et pourrait déjà tenter une connexion ; il n’a pas été exécuté. Aucun netstat global contenant les connexions de la session hôte n’est collecté. L’inventaire de fichiers ne couvre pas toutes les lectures, et l’absence d’un socket dans un instantané ne prouverait pas l’absence de trafic.
+
+**Désactivation shell_tool + MXC + cwd vide : insuffisant dans l’état vérifié.** unified_exec reste déclaré actif ; absence universelle de MCP/skills/hooks/plugins, instructions et accès du client non démontrée. Aucune mission de validation proposée ou lancée, aucun profil exécutable ajouté, aucun changement de sécurité Windows global demandé. Les preuves ciblées renforcent la connaissance du sandbox sans lever le refus fermé.
+
+Vérification de cette phase : ciblés runner + MXC **24/24**, puis suite complète **496/496**, 0 échec, 0 skip, **23,39 s**. Les six nouveaux cas (parent compris) utilisent le vrai MXC ; aucun test modèle. Aucun fichier de production modifié, aucun commit/push/fusion.
