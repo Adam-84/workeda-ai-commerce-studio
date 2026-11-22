@@ -106,3 +106,5 @@ export function validateManualCsv(text, { format = 'archipel' } = {}) {
   }
   return { ok: errors.length === 0, rows, errors };
 }
+
+export { parse as parseCsvRecords, formula as isFormula };

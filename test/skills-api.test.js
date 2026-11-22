@@ -38,14 +38,14 @@ const good = { name: 'workeda-test-skill', title: 'Skill de test', description: 
 
 test('lists the library, categories, sources and stats', () => withSkills(async ({ call }) => {
   const list = (await call('GET', '/api/skills')).body;
-  assert.equal(list.length, 19);
+  assert.equal(list.length, 22);
   assert.ok(list.every((s) => s.tokens > 0 && s.structureOk === true));
   assert.equal((await call('GET', '/api/skills/categories')).body.length, 8);
   assert.ok((await call('GET', '/api/skills/sources')).body.length >= 1);
   const stats = (await call('GET', '/api/skills/stats')).body;
-  assert.equal(stats.active, 19);
+  assert.equal(stats.active, 22);
   assert.equal(stats.maxPreloaded, 4);
-  assert.equal(stats.agentsWithSkills, 10);
+  assert.equal(stats.agentsWithSkills, 11);
 }));
 
 test('detail returns content, compatibility and dependencies', () => withSkills(async ({ call }) => {

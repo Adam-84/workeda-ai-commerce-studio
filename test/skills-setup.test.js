@@ -17,7 +17,7 @@ const norm = (t) => t.replace(/\r\n?/g, '\n');
 test('dépôt : la bibliothèque et les fiches se chargent sans avertissement', () => {
   assert.deepEqual(warnings, []);
   assert.deepEqual(library.warnings.filter((w) => !w.reason.startsWith('fichiers annexes')), []);
-  assert.equal(profiles.length, 10);
+  assert.equal(profiles.length, 11);
   assert.ok(library.skills.length >= 10);
 });
 

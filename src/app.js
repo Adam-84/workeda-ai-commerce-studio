@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { connectorState, MAX_PRELOADED } from './agent-files.js';
 import { runClaude as realClaude, systemPrompt, conversationPrompt, missionsPrompt, teamPrompt, planRequestPrompt, parsePlan, memoryPrompt, memoryProposalPrompt, parseMemoryProposals } from './claude-reply.js';
 import { createOrchestrator } from './comm-run.js';
+import { INTEGRATION_IDS } from './integrations-core.js';
 
 // Détection réelle d'un binaire dans le PATH (« détecté » ne veut pas dire « connecté »).
 export const cliPresent = (command, run = execFileSync) => {
@@ -35,7 +36,7 @@ const SKILL_PATH = /^\/api\/(?:skills(?:\/|$)|agents\/[^/]+\/skills)/;
 const MEMORY_PATH = /^\/api\/(?:memory(?:\/|$)|missions\/[^/]+\/(?:memory-proposals$|memory(?:\/|$)))/;
 // Communication entre agents : lancer une tâche fait travailler un agent (Claude Code) et écrire dans les fils lus par les autres.
 // Tout est réservé à cette machine, lectures comprises (les fils contiennent le travail de l'entreprise).
-const COMM_PATH = /^\/api\/(?:comm|shop|integrations)(?:\/|$)/; // le catalogue Shopify aussi : lectures et relevés réservés à cette machine
+const COMM_PATH = /^\/api\/(?:comm|shop|shop-apps|integrations)(?:\/|$)/; // le catalogue Shopify aussi : lectures et relevés réservés à cette machine
 // Lecture : la mémoire contient le savoir de l'entreprise — réservée à cette machine (même contrôle, sans l'origine).
 function assertLocalWrite(req, { checkOrigin = true } = {}) {
   const deny = (why) => Object.assign(new Error(`${checkOrigin ? 'Modification' : 'Lecture'} refusée : ${why}.`), { status: 403 });
@@ -204,16 +205,28 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
   }
   // Integration Center (DSers, 17TRACK) : LECTURE SEULE. Aucune route n'écrit chez DSers, 17TRACK ou Shopify ; aucun secret n'est jamais renvoyé.
   if (studio.integrations) {
-    const ints = studio.integrations, known = (m) => { const i = decodeURIComponent(m[1]); if (!['dsers', 'track17', 'manual_import', 'shopify_admin'].includes(i)) fail(404, 'Intégration inconnue.'); return i; };
+    const ints = studio.integrations, known = (m) => { const i = decodeURIComponent(m[1]); if (!INTEGRATION_IDS.includes(i)) fail(404, 'Intégration inconnue.'); return i; };
     const agentsList = () => studio.listAgentFiles().map((f) => ({ slug: f.slug, name: f.name ?? f.slug }));
     Object.assign(routes, { 'GET /api/integrations': () => ({ ...ints.status(), cards: ints.cards(), agents: agentsList() }),
       'GET /api/integrations/manual_import/template': () => ({ csv: ints.csvTemplate(), filename: 'archipel-import.csv' }),
       'POST /api/integrations/manual_import/preview': (d) => ints.previewImport(d?.text, { format: d?.format ?? 'archipel' }),
       'POST /api/integrations/manual_import/commit': (d) => ints.commitImport(d),
+      // Applications Shopify : inventaire DÉCLARÉ par le propriétaire (aucune écriture chez Shopify, aucune installation/désinstallation/abonnement).
+      'GET /api/shop-apps': () => ints.appsOverview(),
+      'GET /api/shop-apps/template': () => ({ csv: ints.appsCsvTemplate(), filename: 'archipel-applications.csv' }),
+      'POST /api/shop-apps/import/preview': (d) => ints.previewAppsImport(d?.text),
+      'POST /api/shop-apps/import/commit': (d) => ints.commitAppsImport(d),
+      'POST /api/shop-apps': (d) => ({ app: ints.apps.add(d), ...ints.appsOverview() }),
+      'POST /api/shop-apps/from-indice': (d) => ({ app: ints.apps.promote({ key: String(d?.key ?? ''), name: d?.name, function: d?.function }), ...ints.appsOverview() }),
+      'POST /api/shop-apps/detection/settings': (d) => ({ ...ints.setDetectionEnabled(d?.enabled), ...ints.appsOverview() }),
+      'POST /api/shop-apps/detection/run': async (d) => { try { await ints.runDetection({ confirm: d?.confirm === true }); } catch (e) { if (e.kind === 'real_network_disabled') throw Object.assign(e, { status: 403 }); throw e; } return ints.appsOverview(); },
       'POST /api/integrations/shopify_admin/configure': (d) => studio.shop.configureAdmin(d),
       'POST /api/integrations/shopify_admin/test': () => studio.shop.testAdmin(),
       'POST /api/integrations/shopify_admin/sync': (d) => studio.shop.refreshAdmin({ force: d?.force === true }) });
     paramRoutes.push(
+      ['POST', /^\/api\/shop-apps\/([0-9a-f-]{36})$/, (m, d) => ({ app: ints.apps.update(m[1], d), ...ints.appsOverview() })],
+      ['POST', /^\/api\/shop-apps\/([0-9a-f-]{36})\/delete$/, (m, d) => { if (d?.confirm !== true) fail(400, 'Confirmation explicite requise : la fiche locale sera supprimée (aucun effet sur Shopify).'); ints.apps.remove(m[1]); return ints.appsOverview(); }],
+      ['POST', /^\/api\/shop-apps\/([0-9a-f-]{36})\/link$/, (m, d) => ({ app: ints.apps.link(m[1], String(d?.key ?? '')), ...ints.appsOverview() })],
       ['GET', /^\/api\/integrations\/([^\/]+)$/, (m) => ints.card(known(m))],
       ['POST', /^\/api\/integrations\/([^\/]+)\/connect$/, async (m, d) => { const i = known(m); if (d?.confirm !== true) fail(400, 'Confirmation explicite requise avant toute connexion à un compte.'); if (i === 'dsers' && ints.card(i).settings.plan === 'basic') return ints.beginAuth(i); ints.guardReal(); return ints.beginAuth(i); }],
       ['POST', /^\/api\/integrations\/([^\/]+)\/key$/, (m, d) => { const i = known(m); if (d?.confirm !== true) fail(400, 'Confirmation explicite requise.'); return { ...ints.setKey(i, d?.key), card: ints.card(i) }; }],

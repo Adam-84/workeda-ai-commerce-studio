@@ -25,10 +25,11 @@ const TEAM = {
   chloe: { department: 'Création', role: 'Designer UX/UI e-commerce', model: 'sonnet', tools: ['WebFetch', ...R], connectors: ['web', 'shopify-admin'], collaborates: ['sophia', 'ryan', 'harper'], rule: ["mobile d'abord"] },
   ryan: { department: 'Création', role: 'Développeur Shopify', model: 'opus', tools: ['Read', 'Edit', 'Write', 'Grep', 'Glob', 'Bash'], connectors: ['shopify-cli', 'codex-cli'], collaborates: ['chloe', 'harper', 'olivia'], rule: ['shopify theme push', 'shopify theme publish'] },
   harper: { department: 'Opérations', role: 'Responsable contrôle qualité', model: 'sonnet', tools: [...R, 'Bash'], connectors: ['shopify-cli', 'playwright'], collaborates: ['ryan', 'chloe', 'alexander'], rule: ['« À corriger »'] },
+  maxime: { department: 'Catalogue', role: 'Responsable des applications Shopify et optimisation de la conversion', model: 'sonnet', tools: ['WebSearch', 'WebFetch', ...R], connectors: ['shopify-apps', 'web'], collaborates: ['lucas', 'chloe', 'isabella', 'benjamin', 'noah'], rule: ['indice, jamais une preuve'] },
   benjamin: { department: 'Données', role: 'Analyste des performances commerciales', model: 'sonnet', tools: R, connectors: ['shopify-admin'], collaborates: ['alexander', 'lucas', 'isabella'], rule: ['période'] }
 };
 
-test('the ten real profiles are all valid', () => {
+test('the eleven real profiles are all valid', () => {
   const { profiles, warnings } = loadAgentFiles(DIR);
   assert.deepEqual(warnings, []);
   assert.deepEqual(profiles.map((p) => p.slug).sort(), Object.keys(TEAM).sort());
@@ -72,11 +73,11 @@ test('Ryan has a command allowlist and Harper names her checks', () => {
   assert.ok(readFileSync(join(DIR, 'harper.md'), 'utf8').includes('Les seules commandes que tu lances'));
 });
 
-test('the ten profiles sync into the default departments', () => {
+test('the eleven profiles sync into the default departments', () => {
   const studio = createStudio(':memory:');
   try {
     const r = studio.syncAgentFiles(loadAgentFiles(DIR).profiles);
-    assert.equal(r.created.length, 10);
+    assert.equal(r.created.length, 11);
     assert.deepEqual(r.warnings, []);
   } finally {
     studio.close();

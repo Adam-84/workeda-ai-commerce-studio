@@ -1,5 +1,6 @@
 // Integration Center : état réel de DSers et 17TRACK (lecture seule), permissions, quotas, dernières synchronisations, accès par agent, révocation.
 // Réutilise les briques de app.js (h, get, send, announce) et les classes existantes (skill-row, chip, note, err). Aucun secret n'est jamais affiché.
+import { appsPanel } from './apps-ui.js';
 import { stateInfo, quotaLine, quotaRatio, lastLine, snapshotLine, grantCandidates, actionsFor, revokeText, dateFr } from './integrations-view.js';
 
 const enc = encodeURIComponent;
@@ -9,11 +10,11 @@ export function integrationsCenter({ ui, setLeave = () => {} }) {
   const { h, get, send, announce } = ui;
   const root = h('div', { class: 'integrations-center' });
   const status = h('p', { class: 'note', role: 'status' }), err = h('p', { class: 'err', role: 'alert' });
-  let data = null, busy = false, importPreview = null;
+  let data = null, busy = false, importPreview = null, appsData = null, appsPreview = null;
   const interacting = () => root.contains(document.activeElement);
 
   async function load() {
-    try { data = await get('/api/integrations'); draw(); } catch (x) { put(root, h('p', { class: 'err', role: 'alert' }, x.message)); }
+    try { data = await get('/api/integrations'); appsData = null; if (data.cards?.some((c) => c.id === 'shopify_apps')) { try { appsData = await get('/api/shop-apps'); } catch { appsData = null; } } draw(); } catch (x) { put(root, h('p', { class: 'err', role: 'alert' }, x.message)); }
   }
   async function act(label, fn) {
     if (busy) return; busy = true; err.textContent = ''; status.textContent = `${label}…`;
@@ -102,12 +103,13 @@ export function integrationsCenter({ ui, setLeave = () => {} }) {
         }) }, 'Confirmer l’import')));
   }
   function localCard(c) {
-    const admin = c.id === 'shopify_admin', manual = c.id === 'manual_import';
+    const admin = c.id === 'shopify_admin', manual = c.id === 'manual_import', apps = c.id === 'shopify_apps';
     const orders = h('input', { type: 'checkbox', checked: Boolean(c.settings?.consent?.orders), 'aria-label': 'Autoriser séparément les commandes récentes Shopify Admin' });
     return h('section', { class: 'integration-card' }, h('h3', {}, c.label), h('span', { class: 'chip soft' }, c.stateLabel), h('p', { class: 'note' }, `Provenance : ${c.provenance} · Lecture seule`),
       (c.reasons ?? []).map((r) => h('p', { class: 'note' }, r)),
       (c.snapshots ?? []).map((r) => h('p', { class: 'note' }, snapshotLine(r))),
       manual && importForm(),
+      apps && appsData && appsPanel({ ui, act, status, data: appsData, setPreview: (p) => { appsPreview = p; }, getPreview: () => appsPreview }),
       admin && h('div', {}, h('p', { class: 'note' }, 'Accord local daté ET autorisation réseau du serveur requis. Jeton via environnement uniquement. Catalogue et stocks : read_products + read_inventory. Les commandes (read_orders, 60 jours maximum) sont une capacité séparée. Aucun compte contacté par l’enregistrement de cet accord.'),
         h('p', { class: 'note' }, `Accord : ${dateFr(c.settings?.consent?.at) || 'aucun'} · Portées vérifiées : ${(c.settings?.scopes ?? []).join(', ') || 'aucune'}`),
         h('label', { class: 'check' }, orders, ' Ajouter les commandes récentes et leurs suivis masqués (read_orders)'),
@@ -117,11 +119,15 @@ export function integrationsCenter({ ui, setLeave = () => {} }) {
         }) }, 'Enregistrer mon accord'),
         h('button', { type: 'button', disabled: c.stateLabel === 'À configurer', onclick: () => act('Test Shopify Admin', async () => { const r = await send('POST', '/api/integrations/shopify_admin/test', {}); if (r.skipped) { status.textContent = r.skipped; return; } if (!r.ok) throw new Error((r.errors ?? []).join(' ; ') || 'Test échoué.'); }) }, 'Tester Shopify Admin'),
         h('button', { type: 'button', disabled: !c.flags?.authenticated, onclick: () => act('Relevé Shopify Admin', async () => { const r = await send('POST', '/api/integrations/shopify_admin/sync', {}); if (r.skipped) { status.textContent = r.skipped; return; } if (r.ok === false) throw new Error((r.errors ?? []).join(' ; ') || 'Relevé échoué.'); }) }, 'Actualiser Shopify Admin')),
+      apps && h('button', { type: 'button', onclick: () => act('Suppression locale', async () => {
+        if (!confirm('Supprimer l’inventaire local, les relevés de détection et retirer les accès agents ? Aucun effet sur Shopify.')) return;
+        await send('POST', '/api/integrations/shopify_apps/revoke', { purge: true }); appsPreview = null;
+      }) }, 'Supprimer l’inventaire local'),
       (admin || manual) && h('button', { type: 'button', onclick: () => act('Suppression locale', async () => {
         if (!confirm('Supprimer les données locales et retirer les accès agents de cette source ? Les sauvegardes ne sont pas effacées physiquement.')) return;
         await send('POST', `/api/integrations/${c.id}/revoke`, { purge: true }); if (manual) importPreview = null;
       }) }, admin ? 'Retirer mon accord et supprimer le cache' : 'Supprimer les imports'),
-      (admin || manual) && grants(c));
+      (admin || manual || apps) && grants(c));
   }
   function card(c) {
     if (c.local) return localCard(c);

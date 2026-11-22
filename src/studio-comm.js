@@ -15,6 +15,7 @@ import {
   bad, ID_RE, isoOf, clean, assertNoSecret, normalizeRefs, fingerprint, parseJsonList, normUrl
 } from './comm-core.js';
 import { findSecret } from './memory-core.js';
+import { INTEGRATION_IDS } from './integrations-core.js';
 
 export const COMM_MIGRATIONS = [{
   version: 1,
@@ -412,7 +413,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     const allowWeb = Boolean(input.allowWeb) && (by.type === 'user' || Boolean(parent?.allowWeb)); // un agent ne peut jamais élargir l'accès web
     const withCatalog = Boolean(input.withCatalog) && (by.type === 'user' || Boolean(parent?.withCatalog));
     // Intégrations : un agent ne peut jamais élargir ce que le propriétaire a demandé ; seules les intégrations connues sont retenues.
-    const wantedInts = [...new Set(Array.isArray(input.withIntegrations) ? input.withIntegrations.filter((x) => ['dsers', 'track17', 'manual_import', 'shopify_admin'].includes(x)) : [])];
+    const wantedInts = [...new Set(Array.isArray(input.withIntegrations) ? input.withIntegrations.filter((x) => INTEGRATION_IDS.includes(x)) : [])];
     const withIntegrations = by.type === 'user' ? wantedInts : wantedInts.filter((x) => (parent?.withIntegrations ?? []).includes(x));
     const key = fingerprint(assignee.slug, instruction, allowWeb, withCatalog, withIntegrations);
     if (!input.forceFresh) {
@@ -638,7 +639,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
       // Champs de la migration v2 : absents des journaux écrits avant elle (valeurs par défaut).
       // Un champ ABSENT (journal écrit avant la v2) ne remet jamais à zéro un plafond ou un catalogue déjà connus ici.
       if (Object.hasOwn(d, 'withCatalog')) run('UPDATE comm_tasks SET with_catalog = ? WHERE id = ?', Number(Boolean(d.withCatalog)), d.id);
-      if (Object.hasOwn(d, 'withIntegrations')) run('UPDATE comm_tasks SET with_integrations = ? WHERE id = ?', JSON.stringify(Array.isArray(d.withIntegrations) ? d.withIntegrations.filter((x) => ['dsers', 'track17', 'manual_import', 'shopify_admin'].includes(x)) : []), d.id);
+      if (Object.hasOwn(d, 'withIntegrations')) run('UPDATE comm_tasks SET with_integrations = ? WHERE id = ?', JSON.stringify(Array.isArray(d.withIntegrations) ? d.withIntegrations.filter((x) => INTEGRATION_IDS.includes(x)) : []), d.id);
       if (Object.hasOwn(d, 'budgetUsd')) run('UPDATE comm_tasks SET budget_usd = ? WHERE id = ?', Number.isFinite(d.budgetUsd) && d.budgetUsd >= 0.1 && d.budgetUsd <= LIMITS.maxBudgetUsd ? d.budgetUsd : null, d.id);
     },
     result(d) {

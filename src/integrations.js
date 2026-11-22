@@ -9,6 +9,8 @@ import { createIntegrationStore } from './studio-integrations.js';
 import { createDsersConnector } from './dsers-connector.js';
 import { createTrack17Connector, TRACK17_DEFAULT_CAP } from './track17-connector.js';
 import { networkGate, realNetworkAllowed, IntegrationError } from './mcp-client.js';
+import { createAppStore } from './studio-apps.js';
+import { APP_CSV_TEMPLATE, validateAppsCsv, analyzeApps, measureStorefront, STATUS_LABELS, FUNCTIONS, BILLING } from './shop-apps.js';
 import { INTEGRATION_IDS, REGISTRY, DEFAULT_DAILY_CAP, MAX_DAILY_CAP, SNAPSHOT_STALE_MS, integrationPrompt, analyzeLogistics, containsPii } from './integrations-core.js';
 
 const bad = (m, status = 400) => Object.assign(new Error(m), { status });
@@ -22,7 +24,10 @@ export function createIntegrationService({ db, secrets, shop = null, env = proce
   const dsers = createDsersConnector({ store, secrets, fetchImpl: gate, now, redirectUri });
   const track17 = createTrack17Connector({ store, secrets, fetchImpl: gate, now, ...(sleep ? { sleep } : {}) });
   const connectors = { dsers, track17 };
-  const localIds = ['manual_import', 'shopify_admin'];
+  const localIds = ['manual_import', 'shopify_admin', 'shopify_apps'];
+  const apps = createAppStore(db, { clock: iso });
+  const shopDomain = env.WORKEDA_SHOP_DOMAIN || 'workeda.com';
+  let appsPreview = null;
   const conn = (id) => { if (!connectors[id] && !localIds.includes(id)) throw bad('Intégration inconnue.', 404); return connectors[id] ?? {}; };
   const agentExists = (slug) => Boolean(db.prepare('SELECT 1 AS ok FROM agent_files f JOIN agents a ON a.id = f.agent_id WHERE f.slug = ? AND a.enabled = 1').get(slug));
 
@@ -30,12 +35,20 @@ export function createIntegrationService({ db, secrets, shop = null, env = proce
   function purgeExpired() {
     store.purgeExpired();
     shop?.purgeExpired?.();
+    apps.purgeExpired();
     if (preview && now() >= preview.expiresAt) preview = null;
+    if (appsPreview && now() >= appsPreview.expiresAt) appsPreview = null;
   }
   purgeExpired();
   const timer = setInterval(() => { try { purgeExpired(); } catch { /* base fermée */ } }, 60_000); timer.unref?.();
   function localCard(id) {
     purgeExpired();
+    if (id === 'shopify_apps') {
+      const scan = apps.latestScan(), n = apps.count();
+      return { id, label: 'Applications Shopify', provenance: 'Inventaire déclaré par le propriétaire', state: n ? 'tested' : 'not_configured', stateLabel: n ? `${n} application(s) déclarée(s)` : 'Aucun inventaire', local: true, readOnly: true,
+        flags: { configured: n > 0, authenticated: false, tested: false }, reasons: ['Archipel ne connaît pas les applications installées : seules celles que vous déclarez ou confirmez existent ici. Aucune installation, désinstallation ni changement d’abonnement n’est possible.'],
+        grants: store.grantsOf(id), settings: { detectionEnabled: apps.setting('detectionEnabled', false) === true }, snapshots: scan ? [{ kind: 'détection publique', fetchedAt: scan.at, count: scan.findings?.length ?? 0 }] : [] };
+    }
     const admin = id === 'shopify_admin', state = admin ? shop?.adminStatus?.() : null;
     const snap = admin ? shop?.latestAdmin?.() : store.latest(id, 'import');
     const authenticated = admin && Boolean(state?.authenticated);
@@ -80,6 +93,20 @@ export function createIntegrationService({ db, secrets, shop = null, env = proce
   return {
     store, dsers, track17, cards, card, purgeExpired, close: () => clearInterval(timer),
     csvTemplate: () => CSV_TEMPLATE,
+    apps,
+    appsCsvTemplate: () => APP_CSV_TEMPLATE,
+    appsOverview() { purgeExpired(); const scan = apps.latestScan(), list = apps.list(); return { apps: list, analysis: analyzeApps(list, { now: now(), measures: scan }), scan, labels: { statuses: STATUS_LABELS, functions: FUNCTIONS, billing: BILLING }, settings: { detectionEnabled: apps.setting('detectionEnabled', false) === true, realNetworkAllowed: realNetworkAllowed(env), domain: shopDomain } }; },
+    previewAppsImport(text) { purgeExpired(); appsPreview = null; const r = validateAppsCsv(text); if (r.ok) appsPreview = { id: randomUUID(), rows: structuredClone(r.rows), expiresAt: now() + 10 * 60_000 }; return { ...r, previewId: appsPreview?.id ?? null }; },
+    commitAppsImport({ previewId, confirm } = {}) { purgeExpired(); if (confirm !== true || !appsPreview || previewId !== appsPreview.id) throw bad('Aperçu validé et confirmation explicite requis (validité : 10 minutes).'); const r = apps.importRows(appsPreview.rows); appsPreview = null; return r; },
+    setDetectionEnabled(enabled) { if (typeof enabled !== 'boolean') throw bad('Valeur booléenne attendue.'); apps.setSetting('detectionEnabled', enabled); return { detectionEnabled: enabled }; },
+    // Détection + mesure : DÉSACTIVÉE par défaut ; exige l'activation, une confirmation explicite à chaque lancement ET le réseau réel autorisé.
+    async runDetection({ confirm } = {}) {
+      if (apps.setting('detectionEnabled', false) !== true) throw bad('Détection publique désactivée : activez-la d’abord.', 403);
+      if (confirm !== true) throw bad('Confirmation explicite requise avant chaque détection.');
+      guardReal();
+      const scan = await measureStorefront({ fetchImpl: gate, domain: shopDomain, now: iso });
+      return apps.saveScan(scan);
+    },
     previewImport(text, options) {
       purgeExpired(); preview = null;
       const result = validateManualCsv(text, options);
@@ -99,9 +126,9 @@ export function createIntegrationService({ db, secrets, shop = null, env = proce
     beginAuth: async (id) => { if (id !== 'dsers') throw bad('Cette intégration n’utilise pas OAuth.'); return dsers.beginAuth(); },
     completeAuth: (params) => dsers.completeAuth(params),
     setKey: (id, key) => { if (id !== 'track17') throw bad('Cette intégration n’utilise pas de clé.'); return track17.setKey(key); },
-    test: (id) => { conn(id); if (id === 'shopify_admin') return shop.testAdmin(); if (id === 'manual_import') throw bad('Import local : aucune connexion à tester.'); return conn(id).test(); },
-    sync: (id, opts) => { conn(id); if (id === 'shopify_admin') return shop.refreshAdmin(opts); if (id === 'manual_import') throw bad('Import local : validez puis confirmez un fichier CSV.'); return conn(id).sync(opts); },
-    revoke: (id, opts) => { conn(id); if (id === 'manual_import') { preview = null; store.purge(id); store.revokeAllGrants(id); return { revoked: true }; } if (id === 'shopify_admin') { shop.configureAdmin({ confirm: true, enabled: false }); store.revokeAllGrants(id); return { revoked: true }; } return conn(id).revoke(opts); },
+    test: (id) => { conn(id); if (id === 'shopify_admin') return shop.testAdmin(); if (id === 'manual_import' || id === 'shopify_apps') throw bad('Intégration locale : aucune connexion à tester.'); return conn(id).test(); },
+    sync: (id, opts) => { conn(id); if (id === 'shopify_admin') return shop.refreshAdmin(opts); if (id === 'manual_import') throw bad('Import local : validez puis confirmez un fichier CSV.'); if (id === 'shopify_apps') throw bad('Inventaire local : importez un CSV, ajoutez ou corrigez une application.'); return conn(id).sync(opts); },
+    revoke: (id, opts) => { conn(id); if (id === 'shopify_apps') { appsPreview = null; store.revokeAllGrants(id); apps.setSetting('detectionEnabled', false); if (opts?.purge === true) apps.clearAll(); return { revoked: true, purged: opts?.purge === true }; } if (id === 'manual_import') { preview = null; store.purge(id); store.revokeAllGrants(id); return { revoked: true }; } if (id === 'shopify_admin') { shop.configureAdmin({ confirm: true, enabled: false }); store.revokeAllGrants(id); return { revoked: true }; } return conn(id).revoke(opts); },
     setDailyCap: (id, n) => { conn(id); return store.setDailyCap(id, n); },
     setSettings: (id, { shipCountry, plan }) => { conn(id); if (plan !== undefined) { if (id !== 'dsers' || !['unknown', 'basic', 'advanced', 'pro', 'enterprise'].includes(plan)) throw bad('Plan DSers invalide.'); if (plan === 'basic') dsers.revoke(); store.patch(id, { settings: { ...store.state(id).settings, plan } }); } if (shipCountry !== undefined) { if (!/^[A-Z]{2}$/.test(String(shipCountry))) throw bad('Code pays à 2 lettres attendu.'); store.patch(id, { settings: { ...store.state(id).settings, shipCountry } }); } return card(id); },
     grant: (id, slug) => { conn(id); if (!agentExists(slug)) throw bad('Agent inconnu, désactivé ou sans fiche.', 404); return store.grant(id, slug, 'read'); },
@@ -111,7 +138,7 @@ export function createIntegrationService({ db, secrets, shop = null, env = proce
     // Données pour un agent : uniquement ce qui lui est ACCORDÉ, relevés déjà en cache (aucun appel réseau ici : le quota n'est jamais consommé par une tâche).
     promptFor({ agentSlug, integrations = [] }) {
       const wanted = [...new Set(integrations)].filter((i) => INTEGRATION_IDS.includes(i)), notes = [], denied = [], used = [];
-      for (const id of wanted) { if (store.hasGrant(id, agentSlug)) used.push(id); else { denied.push(id); notes.push(`Accès « ${REGISTRY[id]?.label ?? (id === 'manual_import' ? 'Import manuel' : 'Shopify Admin')} » NON accordé à ${agentSlug} par le propriétaire : aucune donnée fournie. N'en invente aucune.`); } }
+      for (const id of wanted) { if (store.hasGrant(id, agentSlug)) used.push(id); else { denied.push(id); notes.push(`Accès « ${REGISTRY[id]?.label ?? (id === 'manual_import' ? 'Import manuel' : id === 'shopify_apps' ? 'Applications Shopify' : 'Shopify Admin')} » NON accordé à ${agentSlug} par le propriétaire : aucune donnée fournie. N'en invente aucune.`); } }
       const shopProducts = shop?.latest?.()?.products ?? [];
       const d = used.includes('dsers') ? dsers.data(shopProducts) : null, t = used.includes('track17') ? track17.data() : null;
       for (const [label, x] of [['DSers', d], ['17TRACK', t]]) if (x && Date.now() - Date.parse(x.fetchedAt) > SNAPSHOT_STALE_MS) notes.push(`${label} : relevé ANCIEN (${x.fetchedAt}) ; ne présente pas ces données comme actuelles.`);
@@ -121,6 +148,16 @@ export function createIntegrationService({ db, secrets, shop = null, env = proce
       const out = integrationPrompt({ dsers: d, track17: track, notes });
       purgeExpired();
       for (const id of localIds.filter((i) => used.includes(i))) {
+        if (id === 'shopify_apps') {
+          const list = apps.list(), scan = apps.latestScan();
+          if (!list.length) { out.text += "\nshopify_apps : aucun inventaire déclaré. Tu ne connais AUCUNE application installée ; n'en invente aucune."; continue; }
+          const url = `archipel://integrations/shopify_apps/${randomUUID()}`;
+          const view = { apps: list.slice(0, 60).map((a) => ({ nom: a.name, editeur: a.vendor || null, fonction: FUNCTIONS[a.function], statut: STATUS_LABELS[a.status], offre: a.plan || null, cout: a.costAmount == null ? 'inconnu' : `${a.costAmount} ${a.costCurrency} (${BILLING[a.billingPeriod]})`, installeeLe: a.installedOn, maj: a.updatedAt, indices: a.detectedKeys, note: a.note || null })),
+            analyse: (({ duplicates, costs, stale, unconfirmed, impact }) => ({ duplicates, costs, stale, unconfirmed, impact }))(analyzeApps(list, { now: now(), measures: scan })),
+            detection: scan ? { at: scan.at, page: scan.page, totals: scan.totals, partial: scan.partial, methode: scan.method, indices: (scan.findings ?? []).slice(0, 25).map((f) => ({ cle: f.key, libelle: f.label, scripts: f.count, bloquantsAuRendu: f.renderBlocking, octetsMesures: f.bytes, msMesurees: f.ms, certitude: 'indice, jamais une preuve d’installation' })) } : null };
+          out.text += '\n' + untrusted('Applications Shopify — inventaire déclaré', `Inventaire Shopify déclaré par le propriétaire — ${iso()} — ${url}. Statut « Déclarée » ou « Détectée » = NON vérifié ; seul « Confirmée » a été vérifié par le propriétaire. Coût « inconnu » = ne jamais le chiffrer. Une détection publique est un indice, jamais une preuve. Aucune donnée client. Tu recommandes ; le propriétaire décide (aucune installation, désinstallation ni changement d’abonnement par toi).\n${JSON.stringify(view)}`, 18000);
+          out.provided.push(url); continue;
+        }
         const snap = id === 'manual_import' ? store.latest(id, 'import') : shop?.latestAdmin?.();
         if (!snap) { out.text += `\n${id} : aucun relevé en cache disponible. N'invente aucune donnée.`; continue; }
         const url = `archipel://integrations/${id}/${snap.id}`;
@@ -132,7 +169,7 @@ export function createIntegrationService({ db, secrets, shop = null, env = proce
         out.provided.push(url);
       }
       if (containsPii(withoutStructuredIds(out.text))) return { text: '', provided: [], denied, used: [], blocked: 'pii', note: 'Donnée personnelle détectée : bloc non transmis.' };
-      return { ...out, denied, used: used.filter((i) => (i === 'dsers' ? d : i === 'track17' ? t : i === 'manual_import' ? store.latest(i, 'import') : shop?.latestAdmin?.())) };
+      return { ...out, denied, used: used.filter((i) => (i === 'dsers' ? d : i === 'track17' ? t : i === 'manual_import' ? store.latest(i, 'import') : i === 'shopify_apps' ? apps.count() > 0 : shop?.latestAdmin?.())) };
     },
     status: () => ({ realNetworkAllowed: realNetworkAllowed(env), storage: secrets.info(), integrations: INTEGRATION_IDS.map((id) => ({ id, state: (localIds.includes(id) ? localCard(id) : derive(id)).state })) })
   };

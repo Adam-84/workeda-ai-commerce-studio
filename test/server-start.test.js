@@ -26,9 +26,9 @@ test('the real server preloads the ten agents from .claude/agents', { timeout: 2
     });
     const get = async (path) => (await fetch(`http://127.0.0.1:${port}${path}`, { signal: AbortSignal.timeout(5_000) })).json();
     const health = await get('/api/health');
-    assert.deepEqual(health.agentFiles, { loaded: 10, warnings: [] });
-    assert.equal((await get('/api/agents')).length, 10);
-    assert.equal((await get('/api/agent-profiles')).length, 10);
+    assert.deepEqual(health.agentFiles, { loaded: 11, warnings: [] });
+    assert.equal((await get('/api/agents')).length, 11);
+    assert.equal((await get('/api/agent-profiles')).length, 11);
   } finally {
     child.kill();
     await exited;
