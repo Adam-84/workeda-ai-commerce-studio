@@ -7,6 +7,7 @@
 import { runClaude as realClaude, fichePrompt, systemPrompt } from './claude-reply.js';
 import { scrubContacts } from './catalog-privacy.js';
 import { catalogPrompt } from './shop-readonly.js';
+import { createEngineProvider } from './engine-provider.js';
 import {
   LIMITS, WEB_TOOLS, bad, taskSystemPrompt, taskPrompt, replyPrompt, parseAgentOutput, observeTools, evaluateResult, resolveAgent
 } from './comm-core.js';
@@ -15,7 +16,7 @@ const TRANSIENT = /surcharg|à temps|n’a pas pu répondre|n'a pas pu répondre
 const short = (s, n) => { s = scrubContacts(s); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
 
 const NOT_SHARED = '[Résultat issu de données DSers/17TRACK/imports/Shopify Admin : non transmis (accès différent ou tâche qui lit le web).]';
-export function createOrchestrator({ studio, profiles = () => [], runner = realClaude, memoryFor = () => '', maxActive = LIMITS.maxActive, pumpEveryMs = 0 } = {}) {
+export function createOrchestrator({ studio, profiles = () => [], runner = realClaude, provider = createEngineProvider({ claude: runner }), memoryFor = () => '', maxActive = LIMITS.maxActive, pumpEveryMs = 0 } = {}) {
   const comm = studio.comm;
   const active = new Map();      // clé d'exécution → { agentId, runId, taskId, threadId, kind, startedAt }
   const inflight = new Set();
@@ -26,7 +27,7 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
   const mayDelegate = (profile, slug) => Boolean(profile) && (profile.collaboratesAll || profile.collaborates.includes(slug));
   const busyAgents = () => new Set([...active.values()].map((a) => a.agentId));
   const roster = () => studio.listAgents().filter((a) => a.enabled && comm.slugOf(a.id)).map((a) => ({ id: a.id, name: a.name, role: a.role, slug: comm.slugOf(a.id) }));
-  const setActivity = (agentId, status, detail) => { try { studio.recordActivity({ agentId, status, source: 'claude', verified: true, detail }); } catch { /* l'agent a pu disparaître : sans conséquence */ } };
+  const setActivity = (agentId, status, detail) => { try { const source = [...active.values()].find(a => a.agentId === agentId)?.engine ?? 'claude'; studio.recordActivity({ agentId, status, source, verified: true, detail }); } catch { /* l'agent a pu disparaître : sans conséquence */ } };
   const participants = (t) => [...new Set([...t.members])];
   // Le résultat d'une tâche revient à l'agent qui l'a demandée ; une tâche demandée par le propriétaire n'a pas de destinataire agent.
   const asker = (task) => (task.requestedBy !== 'user' && task.requestedBy !== task.assigneeId ? [task.requestedBy] : []);
@@ -115,18 +116,21 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
         if (missing.length || web) { comm.setTaskState(task.id, 'blocked', web ? 'Demande issue de données DSers/17TRACK/imports/Shopify Admin : refusée pour une tâche qui lit le web. Le propriétaire doit la relancer sans web.' : `Demande issue de données DSers/17TRACK/imports/Shopify Admin : ${profile.displayName ?? profile.slug} n'a pas reçu l'accès (${missing.join(', ')}). Accordez-le dans l'Integration Center ou reformulez.`); return; }
       }
       if (task.withCatalog) await studio.shop?.ensureFresh(); // relevé en lecture seule, daté ; ne lève jamais
-      const built = buildTask(task);
-      run = comm.startRun({ agentId, kind: 'task', taskId: task.id, threadId: task.threadId, model: profile.model, web: built.web.length > 0 });
-      active.set(key, { agentId, runId: run.id, taskId: task.id, threadId: task.threadId, kind: 'task', startedAt: run.startedAt });
+      if (task.engine === 'codex') { const why = comm.codexBlocker(); if (why) { comm.setTaskState(task.id, 'blocked', why); return; } }
+      const built = buildTask(task), controller = new AbortController();
+      const engine = task.engine;
+      run = comm.startRun({ agentId, engine, kind: 'task', taskId: task.id, threadId: task.threadId, model: engine === 'codex' ? null : profile.model, web: built.web.length > 0 });
+      active.set(key, { agentId, engine, controller, runId: run.id, taskId: task.id, threadId: task.threadId, kind: 'task', startedAt: run.startedAt });
       setActivity(agentId, 'working', `Tâche : ${short(task.instruction, 100)}`);
       const inbox = comm.pendingFor(agentId, task.threadId).filter((id) => built.included.has(id));
       for (const id of inbox) comm.markDelivery(id, agentId, 'received');
       const seen = observeTools(); seen.state.provided = built.provided;
-      let text;
-      try { text = await runner({ model: profile.model, system: built.system, prompt: built.prompt, tools: built.web, onEvent: seen.feed, timeoutMs: built.web.length ? LIMITS.webTimeoutMs : LIMITS.taskTimeoutMs }); }
+      let response;
+      const limits = comm.codexLimits();
+      try { response = await provider.run(engine, { model: engine === 'codex' ? undefined : profile.model, system: built.system, prompt: built.prompt, tools: built.web, onEvent: seen.feed, signal: controller.signal, maxTokens: limits.tokensPerDay - comm.codexStatus().today.tokens, timeoutMs: engine === 'codex' ? Math.min(limits.timeoutMs, Math.max(1, limits.durationMsPerDay - comm.codexStatus().today.durationMs)) : built.web.length ? LIMITS.webTimeoutMs : LIMITS.taskTimeoutMs }); }
       catch (e) { return fail(task, run, e, inbox, seen.state); }
-      const ended = comm.endRun(run.id, { state: 'done', costUsd: seen.state.cost, usage: seen.state.usage });
-      succeed(task, ended, text, seen.state, inbox);
+      const ended = comm.endRun(run.id, { state: 'done', costUsd: response.costUsd, usage: response.usage });
+      succeed(task, ended, response.text, seen.state, inbox);
     } catch (e) {
       if (run) fail(task, run, e);
       else { try { comm.setTaskState(task.id, 'failed', `Impossible de préparer l’exécution : ${short(e.message, 200)}`); } catch { /* déjà dans un autre état */ } }
@@ -137,9 +141,9 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
     const message = String(error?.message ?? error);
     comm.endRun(run.id, { state: 'error', error: message, costUsd: observed?.cost ?? null, usage: observed?.usage ?? null }); // un coût déjà rapporté avant l'erreur est conservé
     for (const id of inbox) { try { comm.markDelivery(id, task.assigneeId, 'error', message); } catch { /* distribution déjà traitée */ } }
-    const retry = TRANSIENT.test(message) && task.attempts < task.maxAttempts;
+    const retry = run.engine !== 'codex' && TRANSIENT.test(message) && task.attempts < task.maxAttempts;
     if (retry) comm.setTaskState(task.id, 'queued', `Nouvel essai après : ${short(message, 160)}`, { extra: { notBefore: new Date(Date.now() + LIMITS.backoffMs).toISOString() } });
-    else comm.setTaskState(task.id, TRANSIENT.test(message) ? 'failed' : 'blocked', short(message, 300));
+    else comm.setTaskState(task.id, run.engine !== 'codex' && TRANSIENT.test(message) ? 'failed' : 'blocked', short(message, 300));
     try { comm.postMessage(task.threadId, { kind: 'system', body: `${comm.nameOf(task.assigneeId)} n'a pas pu terminer : ${short(message, 300)}${retry ? ' Un nouvel essai est prévu.' : ''}`, taskId: task.id }, { type: 'system' }); } catch { /* fil clos */ }
     setActivity(task.assigneeId, retry ? 'idle' : 'blocked', short(message, 120));
   }
@@ -176,7 +180,7 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
 
   function launch(task) {
     const key = `task:${task.id}`;
-    active.set(key, { agentId: task.assigneeId, runId: null, taskId: task.id, threadId: task.threadId, kind: 'task', startedAt: new Date().toISOString() });
+    active.set(key, { agentId: task.assigneeId, engine: task.engine, runId: null, taskId: task.id, threadId: task.threadId, kind: 'task', startedAt: new Date().toISOString() });
     const p = execute(task, key).catch(() => {}).finally(() => { inflight.delete(p); pump(); });
     inflight.add(p);
   }
@@ -185,7 +189,7 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
     pumping = true;
     try {
       while (active.size < maxActive) {
-        const c = comm.claimNext({ busy: busyAgents() });
+        const c = comm.claimNext({ busy: busyAgents(), engineBusy: [...active.values()].some(a => a.engine === 'codex') ? ['codex'] : [] });
         lastPump = { at: new Date().toISOString(), quota: Boolean(c.quota) };
         if (c.quota || !c.task) break;
         launch(c.task);
@@ -206,9 +210,11 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
     const msgs = comm.visibleMessages(threadId, agentId, 30); // seulement ce qui a été adressé à cet agent
     if (!msgs.length) throw bad('Écrivez d’abord un message dans le fil.');
     if (msgs.at(-1).senderAgentId === agentId) throw bad(`${a.name} vient déjà de répondre.`, 409);
-    const run = comm.startRun({ agentId, kind: 'reply', threadId, model: profile.model, web: false });
+    const engine = comm.agentEngine(agentId), controller = new AbortController();
+    if (engine === 'codex') { const why = comm.codexBlocker(); if (why) throw bad(why, 429); }
+    const run = comm.startRun({ agentId, engine, kind: 'reply', threadId, model: engine === 'codex' ? null : profile.model, web: false });
     const key = `reply:${threadId}:${agentId}`;
-    active.set(key, { agentId, runId: run.id, taskId: null, threadId, kind: 'reply', startedAt: run.startedAt });
+    active.set(key, { agentId, engine, controller, runId: run.id, taskId: null, threadId, kind: 'reply', startedAt: run.startedAt });
     setActivity(agentId, 'working', `Répond dans « ${short(t.title, 60)} »`);
     const msgsSafe = msgs.map((m) => (m.taskId && (comm.task(m.taskId)?.withIntegrations ?? []).length ? { ...m, body: NOT_SHARED } : m)); // une réponse libre n'a aucune intégration : rien de ce qui en provient ne lui est transmis
     const shownIds = new Set(msgs.map((m) => m.id)), inbox = comm.pendingFor(agentId, threadId).filter((id) => shownIds.has(id));
@@ -218,8 +224,10 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
       try {
         const memoryText = scrubContacts(memoryFor(participants(t), { missionId: t.missionId, query: msgsSafe.slice(-3).map((m) => m.body).join(' ') }));
         const prompt = replyPrompt({ agentName: a.name, title: privateMission(t.missionId) ? 'Sous-mission issue des intégrations' : t.title, memoryText, thread: msgsSafe.map((m) => ({ sender: m.senderType === 'user' ? 'user' : 'agent', who: m.senderAgentId ? comm.nameOf(m.senderAgentId) : 'Propriétaire', at: m.createdAt, body: m.body })) });
-        const text = await runner({ model: profile.model, system: systemPrompt(profile, studio.getInstructions(agentId)), prompt: scrubContacts(prompt), tools: [], onEvent: seen.feed, timeoutMs: LIMITS.plainTimeoutMs });
-        const ended = comm.endRun(run.id, { state: 'done', costUsd: seen.state.cost, usage: seen.state.usage });
+        const limits = comm.codexLimits();
+        const response = await provider.run(engine, { model: engine === 'codex' ? undefined : profile.model, system: systemPrompt(profile, studio.getInstructions(agentId)), prompt: scrubContacts(prompt), tools: [], onEvent: seen.feed, signal: controller.signal, timeoutMs: engine === 'codex' ? Math.min(limits.timeoutMs, Math.max(1, limits.durationMsPerDay - comm.codexStatus().today.durationMs)) : LIMITS.plainTimeoutMs, maxTokens: limits.tokensPerDay - comm.codexStatus().today.tokens });
+        const text = response.text;
+        const ended = comm.endRun(run.id, { state: 'done', costUsd: response.costUsd, usage: response.usage });
         comm.postMessage(threadId, { kind: 'message', body: short(String(text).trim(), LIMITS.body), replyTo: msgs.at(-1)?.id ?? null }, { type: 'agent', agentId, runId: ended.id });
         for (const id of inbox) comm.markDelivery(id, agentId, 'processed');
         setActivity(agentId, 'idle', 'Réponse envoyée');
@@ -238,8 +246,8 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
     pump, replyInThread, profileOf, webToolsOf,
     // Résout quand plus rien ne tourne (tests, arrêt propre).
     async idle() { while (inflight.size) await Promise.allSettled([...inflight]); },
-    activity: () => ({ active: [...active.values()].map((a) => ({ ...a })), maxActive, lastPump, runs: comm.activeRuns() }),
+    activity: () => ({ active: [...active.values()].map(({ controller, ...a }) => a), maxActive, lastPump, runs: comm.activeRuns() }),
     start() { comm.recover(); if (pumpEveryMs > 0 && !timer) { timer = setInterval(() => { try { pump(); } catch { /* prochain tour */ } }, pumpEveryMs); timer.unref?.(); } pump(); return this; },
-    stop() { if (timer) clearInterval(timer); timer = null; }
+    stop() { if (timer) clearInterval(timer); timer = null; for (const a of active.values()) if (a.engine === 'codex') a.controller?.abort(); }
   };
 }

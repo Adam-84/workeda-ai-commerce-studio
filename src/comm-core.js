@@ -125,6 +125,8 @@ export function observeTools() {
   return {
     state,
     feed(event) {
+      if (event?.type === 'observation' && event.engine === 'claude') event = event.event;
+      if (event?.type === 'usage') { state.usage = event.usage; state.cost = event.costUsd ?? null; }
       if (event?.type === 'assistant') for (const b of event.message?.content ?? []) {
         if (b.type !== 'tool_use') continue;
         pending.set(b.id, { name: b.name, url: b.name === 'WebFetch' ? normUrl(b.input?.url) : null });

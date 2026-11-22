@@ -171,7 +171,7 @@ export function createStudio(filename = 'data/workeda.db', options = {}) {
       db.prepare('UPDATE departments SET name = ?, description = ?, enabled = ? WHERE id = ?').run(name?.trim() || existing.name, description?.trim() ?? existing.description, enabled === undefined ? existing.enabled : Number(enabled), id);
       return one('SELECT * FROM departments WHERE id = ?', id, mapDepartment);
     },
-    listAgents: () => db.prepare(`SELECT a.*, d.name AS department_name FROM agents a JOIN departments d ON d.id=a.department_id ORDER BY a.created_at DESC`).all().map(mapAgent),
+    listAgents: () => db.prepare(`SELECT a.*, d.name AS department_name FROM agents a JOIN departments d ON d.id=a.department_id ORDER BY a.created_at DESC`).all().map(row => ({ ...mapAgent(row), engine: row.enabled && api.comm?.slugOf(row.id) ? api.comm.agentEngine(row.id) : 'claude' })),
     hireAgent({ name, role, departmentId }) {
       if (!name?.trim() || !role?.trim() || !departmentId) throw new Error('Nom, rôle et département sont obligatoires.');
       if (!one('SELECT id FROM departments WHERE id = ?', departmentId)) throw new Error('Département introuvable.');

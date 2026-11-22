@@ -16,6 +16,7 @@ import { agentCommTab, commCenter } from './comm-ui.js';
 import { integrationsCenter } from './integrations-ui.js';
 import { missionsTab } from './missions.js';
 import { instructionsBlock } from './instructions.js';
+import { engineSettings } from './engine-settings.js';
 
 const $ = (s) => document.querySelector(s);
 const get = (p) => fetch(p).then(async (r) => { const d = await r.json(); if (!r.ok) throw new Error(d.error); return d; });
@@ -451,6 +452,7 @@ function agentView(id, opts = {}) {
 }
 const TABS = {
   Profil: (a) => h('div', {},
+    state.profiles.has(a.id) && engineSettings({ agent: a, h, get, send, announce }),
     h('div', { class: 'status' }, `${STATUS_LABELS[a.status] || a.status} · source : ${a.statusSource}`),
     a.statusSource === 'manual' && h('p', { style: 'margin-top:6px' }, 'Statut déclaré manuellement : aucun connecteur n’a vérifié d’activité.'),
     instructionsBlock({ agent: a, replies: state.profiles.has(a.id), get, send, announce, h }),

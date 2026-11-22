@@ -66,14 +66,14 @@ export function sourceLine(s) {
 }
 export const verificationLine = (r) => (r ? `${r.verified ? 'Vérifié' : 'Non vérifié'} · ${levelLabel(r.level)} — ${r.verification}` : 'Aucun résultat.');
 
-export const costLine = (u) => `${u.today.runs} exécution${u.today.runs > 1 ? 's' : ''} aujourd’hui (reste ${u.quota.remaining} sur ${u.quota.runsPerDay}) · ${u.today.costUsd ? `${u.today.costUsd.toFixed(2)} $ rapportés par Claude Code` : 'coût non rapporté'} · ${u.total.runs} au total`;
+export const costLine = (u) => `${u.today.runs} exécution${u.today.runs > 1 ? 's' : ''} aujourd’hui (reste ${u.quota.remaining} sur ${u.quota.runsPerDay}) · ${(u.today.reportedCostUsd ?? u.today.costUsd) ? `${(u.today.reportedCostUsd ?? u.today.costUsd).toFixed(2)} $ rapportés par Claude Code` : 'coût non rapporté'} · ${u.total.runs} au total${u.codex?.today.runs ? ` · coût Codex inconnu · ${u.codex.today.runs} exécution(s) Codex, ${Math.round(u.codex.today.durationMs / 1000)} s · quota inconnu` : ''}`;
 export const activeText = (active, nameOf) => (active.length ? `${active.map((a) => nameOf(a.agentId)).join(', ')} ${active.length > 1 ? 'travaillent' : 'travaille'} en ce moment` : 'Aucun agent au travail en ce moment');
 
 // Une exécution réelle, en une ligne.
 export function runLine(r, nameOf) {
   const state = { running: 'en cours', done: 'terminée', error: 'en erreur' }[r.state] ?? r.state;
   const dur = r.durationMs != null ? ` · ${Math.round(r.durationMs / 1000)} s` : '';
-  return `${nameOf(r.agentId)} · ${r.kind === 'task' ? `tâche « ${r.taskTitle ?? '?'} »` : 'réponse dans un fil'} · ${state}${dur}${r.web ? ' · web en lecture seule' : ''}${r.error ? ` — ${r.error}` : ''}`;
+  return `${nameOf(r.agentId)}${r.engine === 'codex' ? ' · Codex · coût Codex inconnu' : r.engine === 'claude' ? ' · Claude' : ''} · ${r.kind === 'task' ? `tâche « ${r.taskTitle ?? '?'} »` : 'réponse dans un fil'} · ${state}${dur}${r.web ? ' · web en lecture seule' : ''}${r.error ? ` — ${r.error}` : ''}`;
 }
 
 // Le message est-il d'un agent ? (jamais du propriétaire) ; système = Studio.

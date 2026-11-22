@@ -6,6 +6,8 @@ import { execFileSync } from 'node:child_process';
 import { connectorState, MAX_PRELOADED } from './agent-files.js';
 import { runClaude as realClaude, systemPrompt, conversationPrompt, missionsPrompt, teamPrompt, planRequestPrompt, parsePlan, memoryPrompt, memoryProposalPrompt, parseMemoryProposals } from './claude-reply.js';
 import { createOrchestrator } from './comm-run.js';
+import { createEngineProvider } from './engine-provider.js';
+import { runCodex as realCodex, detectCodex } from './codex-runner.js';
 
 // Détection réelle d'un binaire dans le PATH (« détecté » ne veut pas dire « connecté »).
 export const cliPresent = (command, run = execFileSync) => {
@@ -52,7 +54,8 @@ function assertLocalWrite(req, { checkOrigin = true } = {}) {
   }
 }
 
-export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPresent, runClaude = realClaude, agentFiles: { profiles = [], warnings = [] } = {}, pumpEveryMs = 0 }) {
+export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPresent, runClaude = realClaude, runCodex = realCodex, agentFiles: { profiles = [], warnings = [] } = {}, pumpEveryMs = 0 }) {
+  const provider = createEngineProvider({ claude: runClaude, codex: runCodex });
   // La détection lance un processus synchrone : on garde le résultat quelques secondes.
   const seen = new Map();
   const detect = (command) => {
@@ -168,7 +171,7 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
   let orch = null;
   if (comm) {
     const id = (m, i = 1) => decodeURIComponent(m[i]);
-    const delegationInput = (d = {}) => Object.fromEntries(['assigneeId', 'instruction', 'title', 'missionId', 'parentTaskId', 'dependsOn', 'dueAt', 'allowWeb', 'requiresSources', 'requiresApproval', 'priority', 'forceFresh', 'withCatalog', 'withIntegrations', 'budgetUsd'].filter((k) => d[k] !== undefined).map((k) => [k, d[k]]));
+    const delegationInput = (d = {}) => Object.fromEntries(['assigneeId', 'engine', 'instruction', 'title', 'missionId', 'parentTaskId', 'dependsOn', 'dueAt', 'allowWeb', 'requiresSources', 'requiresApproval', 'priority', 'forceFresh', 'withCatalog', 'withIntegrations', 'budgetUsd'].filter((k) => Object.hasOwn(d, k)).map((k) => [k, d[k]]));
     Object.assign(routes, {
       'GET /api/comm/status': () => ({ ...comm.status(), maxActive: orch.activity().maxActive, engines: { claudeCode: detect('claude'), codexCli: detect('codex') } }),
       'GET /api/comm/check': () => comm.check(),
@@ -177,6 +180,9 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
       'GET /api/comm/notifications': () => comm.notifications(),
       'GET /api/comm/activity': () => ({ ...orch.activity(), notifications: comm.notifications().length }),
       'GET /api/comm/usage': () => comm.usage(),
+      'GET /api/comm/codex': () => comm.codexStatus(),
+      'GET /api/comm/codex/capabilities': () => detectCodex(),
+      'PUT /api/comm/codex/limits': d => comm.setCodexLimits(d),
       'GET /api/comm/runs': (_, q) => comm.recentRuns(q.get('limit') ?? 50),
       // Échanges entre agents au format des anciens messages : les faisceaux de la carte les reconnaissent tels quels.
       'GET /api/comm/exchanges': (_, q) => comm.exchanges(q.get('limit') ?? 200),
@@ -188,6 +194,8 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
       'POST /api/comm/pump': () => { orch.pump(); return orch.activity(); }
     });
     paramRoutes.push(
+      ['GET', /^\/api\/comm\/agents\/([^/]+)\/engine$/, m => ({ agentId: id(m), engine: comm.agentEngine(id(m)) })],
+      ['PUT', /^\/api\/comm\/agents\/([^/]+)\/engine$/, (m, d) => comm.setAgentEngine(id(m), d?.engine)],
       ['GET', /^\/api\/comm\/threads\/([^/]+)$/, (m) => comm.thread(id(m))],
       ['GET', /^\/api\/comm\/threads\/([^/]+)\/messages$/, (m, _, q) => comm.listMessages(id(m), q.get('before'), q.get('limit') ?? 50)],
       // Un client HTTP ne peut écrire qu'en son nom propre (propriétaire) : jamais au nom d'un agent.
@@ -243,7 +251,13 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
     replying.add(lock);
     res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store' });
     const line = (data) => { if (!res.writableEnded) res.write(JSON.stringify(data) + '\n'); };
-    try { line({ type: 'done', message: save(await runClaude({ model: profile.model, system: systemPrompt(profile, studio.getInstructions(agentId)), prompt, onText: (t) => line({ type: 'text', text: t }) })) }); }
+    try {
+      const engine = comm?.agentEngine(agentId) ?? 'claude';
+      // Les anciens fils agrègent plusieurs missions sans provenance Comms : aucune transmission Codex implicite.
+      if (engine === 'codex') throw Object.assign(new Error('Cet agent utilise Codex. Confiez-lui une tâche explicite dans Comms pour délimiter le contexte envoyé ; aucun repli vers Claude.'), { code: 'scope' });
+      const response = await provider.run(engine, { model: profile.model, system: systemPrompt(profile, studio.getInstructions(agentId)), prompt, onText: t => line({ type: 'text', text: t }) });
+      line({ type: 'done', message: save(response.text) });
+    }
     catch (error) { line({ type: 'error', error: error.message }); }
     finally { replying.delete(lock); res.end(); }
   }
@@ -305,7 +319,7 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
       `${recalled}${memoryProposalPrompt(mission, studio.listDiscussion(missionId).slice(-50), nameOf, notes, studio.currentPlan(missionId), profile.displayName)}`,
       (text) => memory.propose(agentId, parseMemoryProposals(text), { missionId }));
   }
-  if (comm) orch = createOrchestrator({ studio, profiles: () => profiles, runner: runClaude, memoryFor, pumpEveryMs });
+  if (comm) orch = createOrchestrator({ studio, profiles: () => profiles, provider, memoryFor, pumpEveryMs });
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://localhost');

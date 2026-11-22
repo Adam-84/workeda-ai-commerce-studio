@@ -15,6 +15,7 @@ import {
   bad, ID_RE, isoOf, clean, assertNoSecret, normalizeRefs, fingerprint, parseJsonList, normUrl
 } from './comm-core.js';
 import { findSecret } from './memory-core.js';
+import { engineOf } from './engine-provider.js';
 
 export const COMM_MIGRATIONS = [{
   version: 1,
@@ -57,6 +58,11 @@ export const COMM_MIGRATIONS = [{
   // est vérifié à l'exécution contre les accès accordés à l'agent (jamais par défaut), et les données viennent du cache local.
   up: `ALTER TABLE comm_tasks ADD COLUMN with_integrations TEXT NOT NULL DEFAULT '[]';`,
   down: `ALTER TABLE comm_tasks DROP COLUMN with_integrations;`
+}, {
+  version: 4,
+  name: 'moteur explicite par tâche et exécution, préférences et limites locales',
+  up: `ALTER TABLE comm_tasks ADD COLUMN engine TEXT NOT NULL DEFAULT 'claude'; ALTER TABLE comm_runs ADD COLUMN engine TEXT NOT NULL DEFAULT 'claude';`,
+  down: `ALTER TABLE comm_runs DROP COLUMN engine; ALTER TABLE comm_tasks DROP COLUMN engine;`
 }];
 export const COMM_SCHEMA_VERSION = COMM_MIGRATIONS.at(-1).version;
 
@@ -111,6 +117,32 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     return a;
   };
   const available = (id) => { const a = agentRow(id); return Boolean(a?.slug && a.enabled); };
+  // comm_meta ne voyage jamais : ces préférences restent propres à cet ordinateur.
+  const agentEngine = id => { if (!agentRow(id)) throw notFound('Agent'); return engineOf(meta(`engine:${id}`) ?? 'claude'); };
+  const setAgentEngine = (id, engine) => { realAgent(id); setMeta(`engine:${id}`, engineOf(engine)); return { agentId: id, engine }; };
+  const CODEX_LIMITS = { runsPerDay: 20, timeoutMs: 180_000, tokensPerDay: 100_000, durationMsPerDay: 3_600_000 };
+  const codexLimits = () => ({ ...CODEX_LIMITS, ...JSON.parse(meta('codex:limits') ?? '{}') });
+  const setCodexLimits = input => {
+    const limits = codexLimits();
+    for (const [key, max] of Object.entries({ runsPerDay: 1000, timeoutMs: 600_000, tokensPerDay: 100_000_000, durationMsPerDay: 86_400_000 })) {
+      if (!Object.hasOwn(input ?? {}, key)) continue;
+      if (!Number.isSafeInteger(input[key]) || input[key] < 1 || input[key] > max) throw bad(`Limite Codex invalide : ${key} (1 à ${max}).`);
+      limits[key] = input[key];
+    }
+    setMeta('codex:limits', JSON.stringify(limits)); return codexStatus();
+  };
+  const codexStatus = () => {
+    const today = `${now().slice(0, 10)}T00:00:00.000Z`, limits = codexLimits();
+    const u = get("SELECT COUNT(*) AS runs, COALESCE(SUM(duration_ms), 0) AS durationMs, COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens, SUM(CASE WHEN input_tokens IS NULL OR output_tokens IS NULL THEN 1 ELSE 0 END) AS unknownUsage FROM comm_runs WHERE engine = 'codex' AND device = ? AND started_at >= ?", device, today);
+    return { limits, concurrency: 1, today: { ...u, unknownUsage: u.unknownUsage ?? 0 }, remaining: Math.max(0, limits.runsPerDay - u.runs), costUsd: null, costLabel: 'coût Codex inconnu', subscription: { state: 'unknown', label: 'quota inconnu' } };
+  };
+  const codexBlocker = () => {
+    const { limits, today } = codexStatus();
+    if (today.runs >= limits.runsPerDay) return 'Quota quotidien local Codex atteint.';
+    if (today.tokens >= limits.tokensPerDay) return 'Seuil quotidien de jetons Codex rapportés atteint.';
+    if (today.durationMs >= limits.durationMsPerDay) return 'Durée quotidienne Codex atteinte.';
+    return null;
+  };
 
   // --- journal ----------------------------------------------------------------------------------------------------------------------------------
   const outbox = () => { const v = parseJsonList(meta('outbox'), []); return v.filter((x) => typeof x === 'string'); };
@@ -129,11 +161,11 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     task: (id) => {
       const t = get('SELECT * FROM comm_tasks WHERE id = ?', id); if (!t) return null;
       const m = get('SELECT * FROM missions WHERE id = ?', t.mission_id);
-      return { id: t.id, missionId: t.mission_id, rootTaskId: t.root_task_id, parentTaskId: t.parent_task_id, threadId: t.thread_id, kind: t.kind, title: redactAgentAsk(t.id, t.title), instruction: redactAgentAsk(t.id, t.instruction), requestedBy: t.requested_by === 'user' ? 'user' : slugOf(t.requested_by), assignee: slugOf(t.assignee_id), depth: t.depth, state: t.state, stateNote: t.state_note ? redactFor(t.id, t.state_note) : t.state_note, dependsOn: parseJsonList(t.depends_on), allowWeb: Boolean(t.allow_web), requiresSources: Boolean(t.requires_sources), withCatalog: Boolean(t.with_catalog), withIntegrations: parseJsonList(t.with_integrations), budgetUsd: t.budget_usd ?? null, dedupeKey: t.dedupe_key, dueAt: t.due_at, notBefore: t.not_before, attempts: t.attempts, maxAttempts: t.max_attempts, device: t.device, createdAt: t.created_at, updatedAt: t.updated_at, startedAt: t.started_at, finishedAt: t.finished_at,
+      return { id: t.id, missionId: t.mission_id, rootTaskId: t.root_task_id, parentTaskId: t.parent_task_id, threadId: t.thread_id, kind: t.kind, engine: t.engine, title: redactAgentAsk(t.id, t.title), instruction: redactAgentAsk(t.id, t.instruction), requestedBy: t.requested_by === 'user' ? 'user' : slugOf(t.requested_by), assignee: slugOf(t.assignee_id), depth: t.depth, state: t.state, stateNote: t.state_note ? redactFor(t.id, t.state_note) : t.state_note, dependsOn: parseJsonList(t.depends_on), allowWeb: Boolean(t.allow_web), requiresSources: Boolean(t.requires_sources), withCatalog: Boolean(t.with_catalog), withIntegrations: parseJsonList(t.with_integrations), budgetUsd: t.budget_usd ?? null, dedupeKey: t.dedupe_key, dueAt: t.due_at, notBefore: t.not_before, attempts: t.attempts, maxAttempts: t.max_attempts, device: t.device, createdAt: t.created_at, updatedAt: t.updated_at, startedAt: t.started_at, finishedAt: t.finished_at,
         mission: m && { id: m.id, title: redactAgentAsk(t.id, m.title), objective: redactAgentAsk(t.id, m.objective), expectedResult: redactAgentAsk(t.id, m.expected_result), contextText: redactAgentAsk(t.id, m.context_text), priority: m.priority, requiresApproval: Boolean(m.requires_approval), requestedBy: m.requested_by ? slugOf(m.requested_by) : null, assignedTo: m.assigned_to ? slugOf(m.assigned_to) : null, createdAt: m.created_at } };
     },
     result: (id) => { const r = get('SELECT * FROM comm_results WHERE id = ?', id); return r && { id: r.id, taskId: r.task_id, agent: slugOf(r.agent_id), runId: r.run_id, summary: redactFor(r.task_id, r.summary), body: redactFor(r.task_id, r.body), sources: redactFor(r.task_id, 'x') === LOCAL_ONLY ? [] : parseJsonList(r.sources), observed: redactFor(r.task_id, 'x') === LOCAL_ONLY ? {} : jsonObserved(r.observed), verified: Boolean(r.verified), level: r.level, verification: redactFor(r.task_id, r.verification), verifiedBy: r.verified_by, createdAt: r.created_at }; },
-    run: (id) => { const r = get('SELECT * FROM comm_runs WHERE id = ?', id); return r && { id: r.id, agent: slugOf(r.agent_id), kind: r.kind, taskId: r.task_id, threadId: r.thread_id, model: r.model, web: Boolean(r.web), state: r.state, error: r.error ? redactFor(r.task_id, r.error) : null, costUsd: r.cost_usd, inputTokens: r.input_tokens, outputTokens: r.output_tokens, durationMs: r.duration_ms, device: r.device, startedAt: r.started_at, finishedAt: r.finished_at }; }
+    run: (id) => { const r = get('SELECT * FROM comm_runs WHERE id = ?', id); return r && { id: r.id, agent: slugOf(r.agent_id), kind: r.kind, engine: r.engine, taskId: r.task_id, threadId: r.thread_id, model: r.model, web: Boolean(r.web), state: r.state, error: r.error ? redactFor(r.task_id, r.error) : null, costUsd: r.cost_usd, inputTokens: r.input_tokens, outputTokens: r.output_tokens, durationMs: r.duration_ms, device: r.device, startedAt: r.started_at, finishedAt: r.finished_at }; }
   };
   const bump = (kind, key) => { const prev = get('SELECT rev FROM comm_versions WHERE kind = ? AND key = ?', kind, key); const rev = (prev?.rev ?? 0) + 1, at = now(); run('INSERT INTO comm_versions (kind, key, at, rev, device) VALUES (?, ?, ?, ?, ?) ON CONFLICT(kind, key) DO UPDATE SET at = excluded.at, rev = excluded.rev, device = excluded.device', kind, key, at, rev, device); return { at, rev }; };
   const lineOf = (e) => `${JSON.stringify({ ...e, data: scrubContactData(e.data) })}\n`;
@@ -338,37 +370,44 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
   };
 
   // --- exécutions (traces d'exécutions réelles) -------------------------------------------------------------------------------------------
-  const startRun = ({ agentId, kind, taskId = null, threadId = null, model = null, web = false }) => {
-    realAgent(agentId);
+  const startRun = ({ agentId, kind, taskId = null, threadId = null, model = null, web = false, engine = 'claude' }) => {
+    realAgent(agentId); engineOf(engine);
     const id = randomUUID();
     run("INSERT INTO comm_runs (id, agent_id, kind, task_id, thread_id, model, web, state, device, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)", id, agentId, kind, taskId, threadId, model, Number(web), device, now());
+    run('UPDATE comm_runs SET engine = ? WHERE id = ?', engine, id);
     journal('run', id);
     return getRun(id);
   };
-  const getRun = (id) => { const r = get('SELECT * FROM comm_runs WHERE id = ?', id); return !r ? null : { id: r.id, agentId: r.agent_id, kind: r.kind, taskId: r.task_id, threadId: r.thread_id, model: r.model, web: Boolean(r.web), state: r.state, error: r.error, costUsd: r.cost_usd, inputTokens: r.input_tokens, outputTokens: r.output_tokens, durationMs: r.duration_ms, device: r.device, startedAt: r.started_at, finishedAt: r.finished_at }; };
+  const getRun = (id) => { const r = get('SELECT * FROM comm_runs WHERE id = ?', id); return !r ? null : { id: r.id, agentId: r.agent_id, kind: r.kind, engine: r.engine, taskId: r.task_id, threadId: r.thread_id, model: r.model, web: Boolean(r.web), state: r.state, error: r.error, costUsd: r.cost_usd, inputTokens: r.input_tokens, outputTokens: r.output_tokens, durationMs: r.duration_ms, device: r.device, startedAt: r.started_at, finishedAt: r.finished_at }; };
   const endRun = (id, { state = 'done', error = null, costUsd = null, usage = null } = {}) => {
     const r = getRun(id); if (!r) throw notFound('Exécution');
     if (r.state !== 'running') return r;
     const finished = now();
+    if (r.engine === 'codex') costUsd = null;
     run('UPDATE comm_runs SET state = ?, error = ?, cost_usd = ?, input_tokens = ?, output_tokens = ?, duration_ms = ?, finished_at = ? WHERE id = ?', state === 'done' ? 'done' : 'error', error ? short(String(error), 500) : null, costUsd, usage?.input ?? null, usage?.output ?? null, Math.max(0, Date.parse(finished) - Date.parse(r.startedAt)), finished, id);
     journal('run', id);
     return getRun(id);
   };
 
   // --- tâches (délégations = sous-missions) --------------------------------------------------------------------------------------------------
-  // Coût rapporté par Claude Code pour toutes les exécutions d'une demande racine (une exécution sans coût rapporté compte pour 0).
-  const spentOf = (rootId) => {
+  // Dépense Claude connue/estimée séparée du coût total, inconnu dès que Codex contribue.
+  const knownSpentOf = (rootId) => {
     // Toutes les exécutions de la demande : ses tâches ET les réponses données dans le fil de sa mission.
     const root = get('SELECT mission_id FROM comm_tasks WHERE id = ?', rootId);
     const c = get("SELECT COALESCE(SUM(r.cost_usd), 0) AS c FROM comm_runs r WHERE r.task_id IN (SELECT id FROM comm_tasks WHERE root_task_id = ?) OR (r.kind = 'reply' AND r.thread_id IN (SELECT id FROM comm_threads WHERE mission_id = ?))", rootId, root?.mission_id ?? '').c;
     // D3 : une exécution EN ERREUR sans coût rapporté (délai dépassé, arrêt) a pu coûter : on compte une estimation prudente, jamais 0.
-    const unknown = get("SELECT COUNT(*) AS n FROM comm_runs r WHERE r.state = 'error' AND r.cost_usd IS NULL AND (r.task_id IN (SELECT id FROM comm_tasks WHERE root_task_id = ?) OR (r.kind = 'reply' AND r.thread_id IN (SELECT id FROM comm_threads WHERE mission_id = ?)))", rootId, root?.mission_id ?? '').n;
+    const unknown = get("SELECT COUNT(*) AS n FROM comm_runs r WHERE r.engine = 'claude' AND r.state = 'error' AND r.cost_usd IS NULL AND (r.task_id IN (SELECT id FROM comm_tasks WHERE root_task_id = ?) OR (r.kind = 'reply' AND r.thread_id IN (SELECT id FROM comm_threads WHERE mission_id = ?)))", rootId, root?.mission_id ?? '').n;
     return Math.round((c + unknown * LIMITS.unreportedRunUsd) * 1e4) / 1e4;
   };
-  const unreportedOf = (rootId) => { const root = get('SELECT mission_id FROM comm_tasks WHERE id = ?', rootId); return get("SELECT COUNT(*) AS n FROM comm_runs r WHERE r.state = 'error' AND r.cost_usd IS NULL AND (r.task_id IN (SELECT id FROM comm_tasks WHERE root_task_id = ?) OR (r.kind = 'reply' AND r.thread_id IN (SELECT id FROM comm_threads WHERE mission_id = ?)))", rootId, root?.mission_id ?? '').n; };
+  const codexUsageOf = rootId => {
+    const root = get('SELECT mission_id FROM comm_tasks WHERE id = ?', rootId);
+    return get("SELECT COUNT(*) AS runs, COALESCE(SUM(duration_ms), 0) AS durationMs, COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens FROM comm_runs r WHERE r.engine = 'codex' AND (r.task_id IN (SELECT id FROM comm_tasks WHERE root_task_id = ?) OR (r.kind = 'reply' AND r.thread_id IN (SELECT id FROM comm_threads WHERE mission_id = ?)))", rootId, root?.mission_id ?? '');
+  };
+  const spentOf = rootId => codexUsageOf(rootId).runs ? null : knownSpentOf(rootId);
+  const unreportedOf = (rootId) => { const root = get('SELECT mission_id FROM comm_tasks WHERE id = ?', rootId); return get("SELECT COUNT(*) AS n FROM comm_runs r WHERE r.engine = 'claude' AND r.state = 'error' AND r.cost_usd IS NULL AND (r.task_id IN (SELECT id FROM comm_tasks WHERE root_task_id = ?) OR (r.kind = 'reply' AND r.thread_id IN (SELECT id FROM comm_threads WHERE mission_id = ?)))", rootId, root?.mission_id ?? '').n; };
   // Le budget d'une mission est-il épuisé ? (utilisé aussi pour les réponses dans son fil)
   const budgetExceeded = (missionId) => {
-    for (const r of all('SELECT id, budget_usd FROM comm_tasks WHERE mission_id = ? AND root_task_id = id AND budget_usd IS NOT NULL', missionId || '')) if (spentOf(r.id) >= r.budget_usd) return `Budget de la mission atteint (${spentOf(r.id).toFixed(2)} sur ${r.budget_usd.toFixed(2)} $) : augmentez-le pour continuer.`;
+    for (const r of all('SELECT id, budget_usd FROM comm_tasks WHERE mission_id = ? AND root_task_id = id AND budget_usd IS NOT NULL', missionId || '')) if (knownSpentOf(r.id) >= r.budget_usd) return `Budget de la mission atteint (${knownSpentOf(r.id).toFixed(2)} sur ${r.budget_usd.toFixed(2)} $) : augmentez-le pour continuer.`;
     return null;
   };
   // Les tâches bloquées parce qu'elles attendaient celle-ci repartent avec elle (récursif : consolidations en chaîne).
@@ -380,7 +419,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
   const mapTask = (t) => {
     if (!t) return null;
     const res = get('SELECT * FROM comm_results WHERE task_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1', t.id);
-    return { id: t.id, missionId: t.mission_id, rootTaskId: t.root_task_id, parentTaskId: t.parent_task_id, threadId: t.thread_id, kind: t.kind, title: t.title, instruction: t.instruction, requestedBy: t.requested_by, assigneeId: t.assignee_id, depth: t.depth, state: t.state, stateNote: t.state_note, dependsOn: parseJsonList(t.depends_on), allowWeb: Boolean(t.allow_web), requiresSources: Boolean(t.requires_sources), withCatalog: Boolean(t.with_catalog), withIntegrations: parseJsonList(t.with_integrations), budgetUsd: t.budget_usd ?? null, spentUsd: t.budget_usd == null ? null : spentOf(t.root_task_id), unreportedRuns: t.budget_usd == null ? null : unreportedOf(t.root_task_id), dueAt: t.due_at, notBefore: t.not_before, attempts: t.attempts, maxAttempts: t.max_attempts, device: t.device, createdAt: t.created_at, updatedAt: t.updated_at, startedAt: t.started_at, finishedAt: t.finished_at, resultId: res?.id ?? null, verified: res ? Boolean(res.verified) : false };
+    return { id: t.id, missionId: t.mission_id, rootTaskId: t.root_task_id, parentTaskId: t.parent_task_id, threadId: t.thread_id, kind: t.kind, engine: t.engine, title: t.title, instruction: t.instruction, requestedBy: t.requested_by, assigneeId: t.assignee_id, depth: t.depth, state: t.state, stateNote: t.state_note, dependsOn: parseJsonList(t.depends_on), allowWeb: Boolean(t.allow_web), requiresSources: Boolean(t.requires_sources), withCatalog: Boolean(t.with_catalog), withIntegrations: parseJsonList(t.with_integrations), budgetUsd: t.budget_usd ?? null, spentUsd: t.budget_usd == null ? null : spentOf(t.root_task_id), knownSpentUsd: t.budget_usd == null ? null : knownSpentOf(t.root_task_id), codexUsage: codexUsageOf(t.root_task_id), unreportedRuns: t.budget_usd == null ? null : unreportedOf(t.root_task_id), dueAt: t.due_at, notBefore: t.not_before, attempts: t.attempts, maxAttempts: t.max_attempts, device: t.device, createdAt: t.created_at, updatedAt: t.updated_at, startedAt: t.started_at, finishedAt: t.finished_at, resultId: res?.id ?? null, verified: res ? Boolean(res.verified) : false };
   };
   const task = (id) => { const t = get('SELECT * FROM comm_tasks WHERE id = ?', id); if (!t) throw notFound('Tâche'); return mapTask(t); };
   const mapResult = (r) => !r ? null : { id: r.id, taskId: r.task_id, agentId: r.agent_id, runId: r.run_id, summary: r.summary, body: r.body, sources: parseJsonList(r.sources), observed: (() => { try { return JSON.parse(r.observed); } catch { return {}; } })(), verified: Boolean(r.verified), level: r.level, verification: r.verification, verifiedBy: r.verified_by, createdAt: r.created_at };
@@ -393,6 +432,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     assertNoSecret('La demande', instruction);
     const assignee = realAgent(input.assigneeId, 'Agent destinataire');
     const requesterId = by.type === 'agent' ? by.agentId : null;
+    const engine = Object.hasOwn(input, 'engine') ? engineOf(input.engine) : agentEngine(assignee.id);
     const kind = TASK_KINDS.includes(input.kind) ? input.kind : 'work';
     if (kind === 'consolidation' && (!input.parentTaskId || by.type !== 'agent' || by.agentId !== assignee.id)) throw bad('Une consolidation prolonge la tâche de son propre agent.');
     if (requesterId) { realAgent(requesterId, 'Demandeur'); if (requesterId === assignee.id && kind !== 'consolidation') throw bad('Un agent ne peut pas se déléguer une tâche à lui-même.', 409); }
@@ -414,7 +454,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     // Intégrations : un agent ne peut jamais élargir ce que le propriétaire a demandé ; seules les intégrations connues sont retenues.
     const wantedInts = [...new Set(Array.isArray(input.withIntegrations) ? input.withIntegrations.filter((x) => ['dsers', 'track17', 'manual_import', 'shopify_admin'].includes(x)) : [])];
     const withIntegrations = by.type === 'user' ? wantedInts : wantedInts.filter((x) => (parent?.withIntegrations ?? []).includes(x));
-    const key = fingerprint(assignee.slug, instruction, allowWeb, withCatalog, withIntegrations);
+    const key = fingerprint(assignee.slug, instruction, allowWeb, withCatalog, withIntegrations) + (engine === 'claude' ? '' : ':codex');
     if (!input.forceFresh) {
       const open = get(`SELECT * FROM comm_tasks WHERE dedupe_key = ? AND state IN (${OPEN_STATES.map(() => '?').join(',')}) ${rootId ? 'AND root_task_id = ?' : ''} ORDER BY created_at LIMIT 1`, key, ...OPEN_STATES, ...(rootId ? [rootId] : []));
       if (open) return { task: mapTask(open), created: false, reused: 'open' };
@@ -444,6 +484,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     tx(() => {
       run('INSERT INTO comm_tasks (id, mission_id, root_task_id, parent_task_id, thread_id, kind, title, instruction, requested_by, assignee_id, depth, state, depends_on, allow_web, requires_sources, dedupe_key, due_at, attempts, max_attempts, device, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)',
         id, missionId, rootId ?? id, parent?.id ?? null, threadId, kind, short(mission.title, LIMITS.title), instruction, requesterId ?? 'user', assignee.id, depth, stateNow, JSON.stringify(deps.map((d) => d.id)), Number(allowWeb), Number(input.requiresSources ?? allowWeb), key, due, LIMITS.maxAttempts, device, t0, t0);
+      run('UPDATE comm_tasks SET engine = ? WHERE id = ?', engine, id);
       for (const a of [assignee.id, requesterId].filter(Boolean)) { const th = thread(threadId); if (!th.members.includes(a)) run('INSERT INTO comm_thread_members (thread_id, agent_id) VALUES (?, ?)', threadId, a); }
       run('UPDATE comm_tasks SET with_catalog = ?, budget_usd = ?, with_integrations = ? WHERE id = ?', Number(withCatalog), budget, JSON.stringify(withIntegrations), id); // même transaction : jamais de tâche sans ses champs v2
     });
@@ -499,7 +540,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     if (!(v >= 0.1 && v <= LIMITS.maxBudgetUsd)) throw bad(`Le budget doit être compris entre 0,10 et ${LIMITS.maxBudgetUsd} $.`);
     run('UPDATE comm_tasks SET budget_usd = ?, updated_at = ? WHERE id = ?', v, now(), id);
     journal('task', id);
-    for (const r of all("SELECT id FROM comm_tasks WHERE root_task_id = ? AND state = 'blocked' AND state_note LIKE 'Budget de la mission%'", id)) if (spentOf(id) < v) { setTaskState(r.id, 'queued', 'Budget augmenté par le propriétaire', { extra: { adopt: true } }); unblockDependents(r.id); }
+    for (const r of all("SELECT id FROM comm_tasks WHERE root_task_id = ? AND state = 'blocked' AND state_note LIKE 'Budget de la mission%'", id)) if (knownSpentOf(id) < v) { setTaskState(r.id, 'queued', 'Budget augmenté par le propriétaire', { extra: { adopt: true } }); unblockDependents(r.id); }
     return task(id);
   };
   const adoptTask = (id) => {
@@ -525,7 +566,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
   };
   const runsToday = () => get('SELECT COUNT(*) AS n FROM comm_runs WHERE device = ? AND started_at >= ?', device, `${now().slice(0, 10)}T00:00:00.000Z`).n;
   // Choisit la prochaine tâche exécutable : prête (dépendances terminées), agent libre et disponible, quota respecté.
-  const claimNext = ({ busy = new Set() } = {}) => {
+  const claimNext = ({ busy = new Set(), engineBusy = [] } = {}) => {
     expireDue();
     for (const r of all("SELECT * FROM comm_tasks WHERE state = 'queued' AND device = ? ORDER BY depth, created_at, rowid", device)) {
       const t = mapTask(r);
@@ -537,12 +578,12 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
       if (!available(t.assigneeId)) { setTaskState(t.id, 'blocked', 'Agent indisponible (désactivé ou sans fiche).'); postMessage(t.threadId, { kind: 'system', body: `${nameOf(t.assigneeId)} est indisponible : la tâche est bloquée.`, taskId: t.id }, { type: 'system' }); continue; }
       // Budget de la demande racine : au-delà du coût rapporté, plus aucune nouvelle exécution ne démarre (celles en cours finissent).
       const rootRow = get('SELECT budget_usd FROM comm_tasks WHERE id = ?', t.rootTaskId);
-      if (rootRow?.budget_usd != null && spentOf(t.rootTaskId) >= rootRow.budget_usd) {
-        setTaskState(t.id, 'blocked', `Budget de la mission atteint (${spentOf(t.rootTaskId).toFixed(2)} sur ${rootRow.budget_usd.toFixed(2)} $) : augmentez-le pour continuer.`);
+      if (rootRow?.budget_usd != null && knownSpentOf(t.rootTaskId) >= rootRow.budget_usd) {
+        setTaskState(t.id, 'blocked', `Budget de la mission atteint (${knownSpentOf(t.rootTaskId).toFixed(2)} sur ${rootRow.budget_usd.toFixed(2)} $) : augmentez-le pour continuer.`);
         postMessage(t.threadId, { kind: 'system', body: `Budget atteint : « ${short(t.instruction, 80)} » est bloquée. Vous pouvez augmenter le budget de la mission.`, taskId: t.id }, { type: 'system' });
         continue;
       }
-      if (busy.has(t.assigneeId)) continue;
+      if (busy.has(t.assigneeId) || engineBusy.includes(t.engine)) continue;
       if (runsToday() >= LIMITS.maxRunsPerDay) return { quota: true };
       return { task: setTaskState(t.id, 'running', '', { extra: { startedAt: now(), attempts: t.attempts + 1 } }) };
     }
@@ -574,10 +615,10 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
   const recentRuns = (limit = 50) => all('SELECT r.id, t.title AS task_title FROM comm_runs r LEFT JOIN comm_tasks t ON t.id = r.task_id ORDER BY r.started_at DESC, r.rowid DESC LIMIT ?', Math.min(Math.max(Number(limit) || 50, 1), 200)).map((r) => ({ ...getRun(r.id), taskTitle: r.task_title ?? null }));
   const usage = () => {
     const today = `${now().slice(0, 10)}T00:00:00.000Z`;
-    const sum = (where, ...a) => get(`SELECT COUNT(*) AS runs, COALESCE(SUM(cost_usd), 0) AS cost, COALESCE(SUM(input_tokens), 0) AS inT, COALESCE(SUM(output_tokens), 0) AS outT FROM comm_runs WHERE ${where}`, ...a);
+    const sum = (where, ...a) => get(`SELECT COUNT(*) AS runs, SUM(CASE WHEN engine = 'codex' THEN 1 ELSE 0 END) AS codexRuns, COALESCE(SUM(cost_usd), 0) AS cost, COALESCE(SUM(input_tokens), 0) AS inT, COALESCE(SUM(output_tokens), 0) AS outT FROM comm_runs WHERE ${where}`, ...a);
     const t = sum('started_at >= ?', today), a = sum('1 = 1');
-    return { today: { runs: t.runs, costUsd: t.cost, inputTokens: t.inT, outputTokens: t.outT }, total: { runs: a.runs, costUsd: a.cost }, quota: { runsPerDay: LIMITS.maxRunsPerDay, remaining: Math.max(0, LIMITS.maxRunsPerDay - runsToday()) }, note: 'Coût et jetons tels que rapportés par Claude Code ; abonnement existant, aucune API payante.',
-      byAgent: all("SELECT agent_id, COUNT(*) AS runs, COALESCE(SUM(cost_usd), 0) AS cost FROM comm_runs GROUP BY agent_id ORDER BY runs DESC").map((r) => ({ agentId: r.agent_id, runs: r.runs, costUsd: r.cost })) };
+    return { codex: codexStatus(), today: { runs: t.runs, costUsd: t.codexRuns ? null : t.cost, reportedCostUsd: t.cost, inputTokens: t.inT, outputTokens: t.outT }, total: { runs: a.runs, costUsd: a.codexRuns ? null : a.cost, reportedCostUsd: a.cost }, quota: { runsPerDay: LIMITS.maxRunsPerDay, remaining: Math.max(0, LIMITS.maxRunsPerDay - runsToday()) }, note: 'Coût Claude rapporté ; coût Codex inconnu, quota inconnu. Limites Codex locales par exécutions, durée et jetons rapportés ; aucune API payante.',
+      byAgent: all("SELECT agent_id, COUNT(*) AS runs, SUM(CASE WHEN engine = 'codex' THEN 1 ELSE 0 END) AS codexRuns, COALESCE(SUM(cost_usd), 0) AS cost FROM comm_runs GROUP BY agent_id ORDER BY runs DESC").map((r) => ({ agentId: r.agent_id, runs: r.runs, costUsd: r.codexRuns ? null : r.cost, reportedCostUsd: r.cost })) };
   };
   const notifications = () => {
     const seen = meta('seen_at') ?? '';
@@ -624,6 +665,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
       run('INSERT INTO comm_deliveries (message_id, agent_id, status, detail, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(message_id, agent_id) DO UPDATE SET status = excluded.status, detail = excluded.detail, updated_at = excluded.updated_at', d.messageId, needAgent(d.agent), d.status, d.detail ?? '', d.updatedAt);
     },
     task(d) {
+      if (Object.hasOwn(d, 'engine')) engineOf(d.engine);
       if (!TASK_STATES.includes(d.state) || !Number.isInteger(d.depth) || d.depth < 0 || d.depth > LIMITS.maxDepth) throw new Error('tâche invalide');
       assertNoSecret('La demande', clean(d.instruction, 'La demande', LIMITS.instruction, { required: true }));
       if (d.state === 'done' && !get('SELECT 1 AS ok FROM comm_results WHERE task_id = ? AND verified = 1', d.id)) throw new Error('tâche terminée sans résultat vérifié');
@@ -637,6 +679,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
       d.id, d.missionId, d.rootTaskId, d.parentTaskId ?? null, d.threadId, d.kind, d.title, d.instruction, agentOrUser(d.requestedBy), needAgent(d.assignee), d.depth, d.state, d.stateNote ?? '', JSON.stringify(d.dependsOn ?? []), Number(d.allowWeb), Number(d.requiresSources), d.dedupeKey, d.dueAt, d.notBefore ?? null, d.attempts, d.maxAttempts, d.device ?? '', d.createdAt, d.updatedAt, d.startedAt ?? null, d.finishedAt ?? null);
       // Champs de la migration v2 : absents des journaux écrits avant elle (valeurs par défaut).
       // Un champ ABSENT (journal écrit avant la v2) ne remet jamais à zéro un plafond ou un catalogue déjà connus ici.
+      if (Object.hasOwn(d, 'engine')) run('UPDATE comm_tasks SET engine = ? WHERE id = ?', d.engine, d.id);
       if (Object.hasOwn(d, 'withCatalog')) run('UPDATE comm_tasks SET with_catalog = ? WHERE id = ?', Number(Boolean(d.withCatalog)), d.id);
       if (Object.hasOwn(d, 'withIntegrations')) run('UPDATE comm_tasks SET with_integrations = ? WHERE id = ?', JSON.stringify(Array.isArray(d.withIntegrations) ? d.withIntegrations.filter((x) => ['dsers', 'track17', 'manual_import', 'shopify_admin'].includes(x)) : []), d.id);
       if (Object.hasOwn(d, 'budgetUsd')) run('UPDATE comm_tasks SET budget_usd = ? WHERE id = ?', Number.isFinite(d.budgetUsd) && d.budgetUsd >= 0.1 && d.budgetUsd <= LIMITS.maxBudgetUsd ? d.budgetUsd : null, d.id);
@@ -648,8 +691,11 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
         d.id, d.taskId, needAgent(d.agent), d.runId, d.summary ?? '', d.body, JSON.stringify(d.sources ?? []), JSON.stringify(d.observed ?? {}), Number(d.verified), d.level, d.verification, d.verifiedBy ?? 'systeme', d.createdAt);
     },
     run(d) {
+      if (Object.hasOwn(d, 'engine')) engineOf(d.engine);
       run('INSERT INTO comm_runs (id, agent_id, kind, task_id, thread_id, model, web, state, error, cost_usd, input_tokens, output_tokens, duration_ms, device, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET state = excluded.state, error = excluded.error, cost_usd = excluded.cost_usd, input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens, duration_ms = excluded.duration_ms, finished_at = excluded.finished_at',
         d.id, needAgent(d.agent), d.kind, d.taskId ?? null, d.threadId ?? null, d.model ?? null, Number(d.web), d.state, d.error ?? null, d.costUsd ?? null, d.inputTokens ?? null, d.outputTokens ?? null, d.durationMs ?? null, d.device ?? '', d.startedAt, d.finishedAt ?? null);
+      if (Object.hasOwn(d, 'engine')) run('UPDATE comm_runs SET engine = ? WHERE id = ?', d.engine, d.id);
+      run("UPDATE comm_runs SET cost_usd = NULL WHERE id = ? AND engine = 'codex'", d.id);
     }
   };
   const IMMUTABLE = new Set(['message']);
@@ -727,6 +773,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
   };
 
   return {
+    agentEngine, setAgentEngine, codexLimits, setCodexLimits, codexStatus, codexBlocker,
     device, schemaVersion, lastMigration, rollback, journalError: () => journalError,
     status: () => ({ schemaVersion: schemaVersion(), device, journalDir: journalDir ? resolve(journalDir) : null, journalError, lastMigration, limits: LIMITS, webTools: WEB_TOOLS }),
     createThread, addMember, thread, threadForMission, listThreads, postMessage, getMessage, listMessages, markDelivery, pendingFor,

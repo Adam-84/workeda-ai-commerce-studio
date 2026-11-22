@@ -161,7 +161,7 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
       : a === 'verify' ? h('button', { type: 'button', onclick: () => detail(t, slot, true) }, label) : h('button', { type: 'button', onclick: () => act(a).catch(() => {}) }, label)));
     const detailBtn = h('button', { type: 'button', class: 'comm-detail-btn', onclick: () => detail(t, slot, false) }, 'Détails');
     return h('li', { class: 'skill-row comm-task', 'data-task': t.id, style: `margin-left:${Math.min(level, 3) * 16}px` }, h('div', {},
-      h('div', { class: 'skill-chips' }, h('strong', {}, short(t.instruction, 110)), stateChip(t), chip(nameOf(t.assigneeId)), t.kind === 'consolidation' && chip('Consolidation'), t.withCatalog && chip('Catalogue Shopify (lecture seule)'), (t.withIntegrations ?? []).map((i) => chip(({ dsers: 'DSers direct', track17: '17TRACK', manual_import: 'Import manuel', shopify_admin: 'Shopify Admin' }[i] ?? i) + ' (lecture seule)')), t.budgetUsd != null && chip(`Budget ${(t.spentUsd ?? 0).toFixed(2)} / ${t.budgetUsd.toFixed(2)} $`), t.allowWeb && chip('Web en lecture seule')),
+      h('div', { class: 'skill-chips' }, h('strong', {}, short(t.instruction, 110)), stateChip(t), chip(nameOf(t.assigneeId)), chip(t.engine === 'codex' ? 'Codex' : 'Claude'), t.kind === 'consolidation' && chip('Consolidation'), t.withCatalog && chip('Catalogue Shopify (lecture seule)'), (t.withIntegrations ?? []).map((i) => chip(({ dsers: 'DSers direct', track17: '17TRACK', manual_import: 'Import manuel', shopify_admin: 'Shopify Admin' }[i] ?? i) + ' (lecture seule)')), t.budgetUsd != null && chip(t.codexUsage?.runs ? `Coût Codex inconnu · ${t.codexUsage.runs} exécution(s), ${Math.round(t.codexUsage.durationMs / 1000)} s · plafond Claude ${t.budgetUsd.toFixed(2)} $` : `Budget ${(t.spentUsd ?? 0).toFixed(2)} / ${t.budgetUsd.toFixed(2)} $`), t.allowWeb && chip('Web en lecture seule')),
       h('p', { class: 'note' }, [`${t.requestedBy === 'user' ? 'Vous' : nameOf(t.requestedBy)} → ${nameOf(t.assigneeId)}`, `niveau ${t.depth}`, dueLabel(t), attemptsLabel(t), t.verified ? 'résultat vérifié' : ''].filter(Boolean).join(' · ')),
       t.stateNote && h('p', { class: 'note' }, t.stateNote), slot, err), h('div', { class: 'comm-actions' }, detailBtn, buttons));
   }
@@ -188,28 +188,31 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
   function budgetForm(t) {
     const err = errBox(), input = h('input', { type: 'number', min: '0.1', max: '100', step: '0.1', value: String(t.budgetUsd), 'aria-label': 'Nouveau budget en dollars' });
     return h('form', { class: 'memory-form', onsubmit: async (e) => { e.preventDefault(); err.textContent = ''; try { await send('POST', `/api/comm/tasks/${enc(t.id)}/budget`, { usd: Number(input.value) }); announce('Budget mis à jour'); ui.pollComm?.(); await loadTasks(); } catch (x) { fail(err, x); } } },
-      h('p', { class: 'note' }, `Dépensé : ${(t.spentUsd ?? 0).toFixed(2)} $ sur ${t.budgetUsd.toFixed(2)} $ (coût rapporté par Claude Code${t.unreportedRuns ? `, dont ${t.unreportedRuns} exécution(s) interrompue(s) sans coût rapporté comptée(s) à 0,25 $ chacune : estimation prudente` : ''}).`),
+      h('p', { class: 'note' }, `${t.codexUsage?.runs ? `Coût Codex inconnu (${t.codexUsage.runs} exécution(s), ${Math.round(t.codexUsage.durationMs / 1000)} s). Dépense Claude connue/estimée : ${(t.knownSpentUsd ?? 0).toFixed(2)} $` : `Dépensé : ${(t.spentUsd ?? 0).toFixed(2)} $`} sur ${t.budgetUsd.toFixed(2)} $ (coût rapporté par Claude Code${t.unreportedRuns ? `, dont ${t.unreportedRuns} exécution(s) interrompue(s) sans coût rapporté comptée(s) à 0,25 $ chacune : estimation prudente` : ''}).`),
       h('label', {}, 'Budget de la mission ($)', input), h('button', { type: 'submit' }, 'Modifier le budget'), err);
   }
   function delegateForm() {
     const err = errBox(), out = h('p', { class: 'note', role: 'status' });
     const who = h('select', { name: 'assigneeId', required: true, 'aria-label': 'Agent' }, withFiche.map((a) => h('option', { value: a.id }, `${a.name} — ${a.role}`)));
+    const engine = h('select', { name: 'engine', 'aria-label': 'Moteur de la tâche' }, h('option', { value: '' }, 'Réglage local de l’agent'), h('option', { value: 'claude' }, 'Claude'), h('option', { value: 'codex' }, 'Codex (sans outils, coût inconnu)'));
     const webOk = (id) => (profiles.get(id)?.tools ?? []).some((t) => WEB.includes(t));
     const cat = h('input', { type: 'checkbox', name: 'withCatalog' }), budget = h('input', { name: 'budgetUsd', type: 'number', min: '0.1', max: '100', step: '0.1', value: '3', 'aria-label': 'Budget en dollars' });
     const ints = { manual_import: h('input', { type: 'checkbox', name: 'withManualImport' }), shopify_admin: h('input', { type: 'checkbox', name: 'withShopifyAdmin' }), dsers: h('input', { type: 'checkbox', name: 'withDsers' }), track17: h('input', { type: 'checkbox', name: 'withTrack17' }) };
     const web = h('input', { type: 'checkbox', name: 'allowWeb' }), approval = h('input', { type: 'checkbox', name: 'requiresApproval', checked: true });
-    const syncWeb = () => { web.disabled = !webOk(who.value); if (web.disabled) web.checked = false; };
+    const syncWeb = () => { web.disabled = (engine.value || agents.find(a => a.id === who.value)?.engine) === 'codex' || !webOk(who.value); if (web.disabled) web.checked = false; };
     who.addEventListener('change', syncWeb);
+    engine.addEventListener('change', syncWeb);
     const f = h('form', { class: 'memory-form', onsubmit: async (e) => {
       e.preventDefault(); err.textContent = ''; out.textContent = '';
       const body = { assigneeId: who.value, instruction: f.instruction.value, title: f.title.value || undefined, allowWeb: web.checked, requiresSources: web.checked, requiresApproval: approval.checked, withCatalog: cat.checked, withIntegrations: Object.entries(ints).filter(([, el]) => el.checked).map(([id]) => id), budgetUsd: Number(budget.value) };
+      if (engine.value) body.engine = engine.value;
       try {
         const r = await send('POST', '/api/comm/delegations', body);
         announce(r.created ? 'Délégation enregistrée' : 'Demande déjà existante');
         out.textContent = r.created ? 'Enregistrée : elle démarre dès qu’un agent est libre.' : r.reused === 'result' ? 'Un résultat vérifié identique existe déjà : il est réutilisé, aucun agent n’est relancé.' : 'Une demande identique est déjà en cours.';
         ui.pollComm?.(); await loadTasks();
       } catch (x) { fail(err, x); }
-    } }, h('label', {}, 'Agent', who), h('label', {}, 'Titre (facultatif)', h('input', { name: 'title', maxlength: 120 })),
+    } }, h('label', {}, 'Agent', who), h('label', {}, 'Moteur de cette tâche', engine), h('p', { class: 'note' }, 'Codex reçoit uniquement le contexte composé et filtré de cette demande. Aucun repli vers Claude ; coût Codex inconnu, quota de l’abonnement inconnu.'), h('label', {}, 'Titre (facultatif)', h('input', { name: 'title', maxlength: 120 })),
       h('label', {}, 'Demande', h('textarea', { name: 'instruction', required: true, maxlength: 4000, rows: 4, placeholder: 'Ce que l’agent doit faire, avec le résultat attendu.' })),
       h('label', { class: 'check' }, web, ' Recherche web en lecture seule (WebSearch / WebFetch) — réservée aux agents dont la fiche le prévoit ; sources vérifiées par le Studio'),
       h('label', { class: 'check' }, cat, ' Fournir le catalogue Shopify de workeda.com (relevé daté, en lecture seule : aucune écriture dans la boutique)'),
@@ -249,6 +252,23 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
       h('div', { class: 'row' }, btn), out, err];
   }
 
+  function codexSection(status) {
+    const err = errBox(), note = h('p', { class: 'note', role: 'status' });
+    const labels = { runsPerDay: 'Exécutions Codex par jour', timeoutMs: 'Délai maximal par exécution (ms)', tokensPerDay: 'Jetons rapportés par jour', durationMsPerDay: 'Durée totale par jour (ms)' };
+    const inputs = Object.fromEntries(Object.keys(labels).map(key => [key, h('input', { type: 'number', min: '1', step: '1', value: String(status.limits[key]), 'aria-label': labels[key] })]));
+    return h('details', {}, h('summary', {}, 'Limites locales Codex (concurrence : 1)'),
+      h('p', { class: 'note' }, `Coût Codex inconnu · quota inconnu · ${status.today.runs} exécution(s), ${Math.round(status.today.durationMs / 1000)} s, ${status.today.tokens} jeton(s) rapporté(s) ; ${status.today.unknownUsage} usage(s) inconnu(s). Le seuil de jetons est constaté après la réponse et peut être dépassé par la dernière exécution.`),
+      h('form', { class: 'memory-form', onsubmit: async e => {
+        e.preventDefault(); err.textContent = '';
+        try { await send('PUT', '/api/comm/codex/limits', Object.fromEntries(Object.entries(inputs).map(([key, el]) => [key, Number(el.value)]))); announce('Limites Codex enregistrées'); await loadActivity(); }
+        catch (e) { err.textContent = e.message; }
+      } }, Object.keys(labels).map(key => h('label', {}, labels[key], inputs[key])), h('button', { type: 'submit' }, 'Enregistrer les limites')),
+      h('button', { type: 'button', onclick: async () => {
+        try { const c = await get('/api/comm/codex/capabilities'); note.textContent = `${c.version ?? 'CLI non détecté'} : ${c.safe ? 'isolation disponible' : 'bloqué — ' + c.missing.join(' ; ')}. Aucun appel de modèle.`; }
+        catch (e) { err.textContent = e.message; }
+      } }, 'Vérifier le CLI (version et aide seulement)'), note, err);
+  }
+
   // --- activité ---
   async function loadActivity(msg = '') {
     reload = () => loadActivity();
@@ -260,7 +280,7 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
         h('h3', {}, 'En ce moment'), h('p', { role: 'status' }, activeText(act.active, nameOf)), act.lastPump?.quota && h('p', { class: 'err' }, 'Quota quotidien atteint : les tâches en file attendent demain.'),
         h('p', { class: 'note' }, `${act.maxActive} agents actifs au maximum à la fois. Claude Code ${status.engines.claudeCode ? 'détecté' : 'non détecté'} · Codex ${status.engines.codexCli ? 'détecté' : 'non détecté'} (« détecté » : présent sur le PC, pas forcément connecté).`),
         shop && shopSection(shop),
-        h('h3', {}, 'Coûts et quotas'), h('p', {}, costLine(usage)), h('p', { class: 'note' }, usage.note),
+        h('h3', {}, 'Coûts et quotas'), usage.codex && codexSection(usage.codex), h('p', {}, costLine(usage)), h('p', { class: 'note' }, usage.note),
         h('h3', {}, 'Historique des exécutions'), runs.length ? h('ul', { class: 'comm-runs' }, runs.map((r) => h('li', {}, `${dateFr(r.startedAt)} — ${runLine(r, nameOf)}`))) : h('p', {}, 'Aucune exécution pour le moment.'),
         h('h3', {}, 'Cohérence'), check.problems.length ? h('ul', {}, check.problems.map((p) => h('li', { class: 'err' }, p))) : h('p', {}, 'Aucun problème détecté.'), check.notes.length > 0 && h('ul', {}, check.notes.map((n) => h('li', { class: 'note' }, n))),
         h('h3', {}, 'Synchronisation entre ordinateurs'), h('p', {}, `Cet ordinateur : ${status.device} · ${check.journalFiles} journal(aux) · ${check.tasks} tâche(s) · ${check.messages} message(s).`),
