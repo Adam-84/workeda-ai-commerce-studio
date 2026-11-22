@@ -117,6 +117,46 @@ Laissées accessibles (volontairement) : `clink` vers `claude`, `gemini`, `agy` 
 - Les réglages du projet sont modifiables par quiconque modifie le dépôt ; ce n'est pas une barrière contre un attaquant local.
 - Les tests unitaires ne prouvent pas, seuls, l'activation : la preuve de chargement ci-dessus est ponctuelle (cette session).
 
+## PASSE FINALE (22/11/2026) : fail-closed, autres routes, sonde du vrai client
+
+**Verdict : le chantier n'est PAS terminé.** Les protections de routage sont renforcées ; l'intégration de Codex reste refusée : plusieurs critères d'isolation sont démontrés comme NON satisfaits (voir ci-dessous).
+
+### Versions et organisation
+- Codex CLI installé **0.164.0** (dernier publié : 0.171.0, non installé : installation système interdite). Aucune commande ne liste les modèles disponibles : le nom « GPT-6.2 Astra » n'a pas pu être vérifié hors ligne ; le client annonce par défaut le modèle `gpt-6.1-sol` (observé dans une requête vers un faux fournisseur). Aucun identifiant de modèle n'a été imposé.
+- Claude Code 2.1.101 ; Claude Opus 5.5 / Sonnet 5.5 disponibles. Codex n'a **pas** été utilisé pour ces travaux : sa seule voie de délégation (clink) lance `--dangerously-bypass-approvals-and-sandbox` et est désormais bloquée par le hook ; un `codex exec` direct enverrait du contexte à OpenAI avec un client non confiné. Travaux faits par Claude Code, revue indépendante par Claude Opus.
+
+### 1. Fail-open éliminé
+Claude Code ne bloque que sur le code de sortie 2 ; un échec de lancement (node introuvable, script corrompu) donne un code non bloquant (127, 1). La commande installée est désormais `node "$CLAUDE_PROJECT_DIR/tools/pal-hardening/guard-clink.mjs" || exit 2`. Preuves : `PATH` vide → 2 (sans le garde-fou : 127, test témoin) ; script corrompu → 2. Un plantage du script en cours de route a été observé en direct pendant ce travail (erreur de syntaxe) : le hook a alors bloqué TOUS les appels clink, preuve de fermeture. Reste : un shell de hooks absent ou une désactivation des hooks côté Claude Code échappent à cette protection.
+
+### 2. Autres routes (après revue indépendante Claude Opus)
+Réglages du projet : un hook unique (matcher `mcp__.*pal.*__.*|mcp__.*terminal.*|Bash|PowerShell`, timeout 30 s, `|| exit 2`) exécute le garde ; `permissions.deny` ajoute `Bash(codex:*)`, `.cmd`, `.exe`, `npx`/`pnpm dlx`/`bunx`/`yarn dlx`/`npm exec` (@openai/codex), `cmd /c codex`, `env codex`.
+- **clink** : liste d'autorisation `claude`, `gemini`, `agy` ; Codex, inconnu, ambigu = refus.
+- **Routes API PAL** (toutes les routes `mcp__*pal*__*` sauf `listmodels`, `version`, `apilookup`) : **liste d'autorisation de modèles non-OpenAI** (préfixes `gemini`, `flash`, `pro`, `grok`, `claude`/`sonnet`/`opus`/`haiku`, `google/`, `anthropic/`, `meta-llama/`, `deepseek`, `qwen`, `mistral`…) ; `auto`, modèle absent, alias OpenAI (`o3mini`, `mini`, `nano`, `4o`…), noms inconnus, caractères invisibles, type inattendu = refus ; `consensus` : chaque entrée de `models[]`. (La première version utilisait une liste de refus : la revue a montré qu'elle laissait passer des alias ; remplacée.) **Conséquence** : les routes API de PAL exigent maintenant un modèle explicite non-OpenAI.
+- **Shell** (Bash, PowerShell, terminal MCP) : commande lançant le CLI Codex (paquet `@openai/codex`, `codex.js|cmd|exe`, ou `codex` en position de commande, y compris après `cmd /c`, `bash -c`, `env`, `npx`…) = refus ; un simple message de commit contenant « Codex » passe.
+- **Fail-closed** : `|| exit 2` (échec de lancement = blocage), minuterie interne 3 s (stdin jamais fermé = refus), timeout du hook 30 s.
+**Toujours hors de portée** : un serveur MCP ou script qui appelle Codex sans passer par ces outils (`npm run <script>`, `node -e` important `src/codex-runner.js`, commande construite dynamiquement, retrait de l'environnement) ; une exécution hors de ce projet ou hors Claude Code ; `disableAllHooks` dans des réglages utilisateur/locaux ; un `gemini.json` utilisateur redirigé vers Codex (l'autorisation repose sur le nom du client, pas sur sa commande) ; Gemini `--yolo` et Claude `acceptEdits` (autorisés, **NON sécurisés**). La seule parade complète est de retirer la clé OpenAI de l'environnement PAL et le CLI Codex du PATH de cet utilisateur : **changements globaux non faits ici**.
+**Shell du hook** : constaté en direct que le hook s'exécute dans un shell de type bash (`$CLAUDE_PROJECT_DIR` et `|| exit 2` fonctionnent) ; sous un autre shell (PowerShell 5.1) `||` serait une erreur de syntaxe : à revérifier si Claude Code change de shell.
+
+### 3. Isolation réseau : non démontrée (blocage confirmé)
+Sous MXC avec réseau désactivé, même le loopback est refusé ; réseau activé = tout-ou-rien (d'autres ports et 127.0.0.2 joignables). Pas de filtrage par hôte/port côté noyau accessible sans modifier la sécurité globale de Windows (pare-feu par application, compte dédié : interdits). Un proxy applicatif ne prouve rien si le client peut le contourner. Conclusion : le client ne peut pas être à la fois confiné par MXC et joindre un fournisseur. **Échec du critère réseau.**
+
+### 4. Sonde du vrai client contre un faux fournisseur (sans OpenAI)
+Méthode : vrai `codex` (non confiné par MXC), fournisseur factice sur 127.0.0.1, clé factice, `CODEX_HOME` temporaire, environnement filtré, aucun compte (`test/codex-client-catalog.test.js`, opt-in `ARCHIPEL_CODEX_PROBES=1`). Aucune connexion non locale observée par instantanés `netstat` (observation, pas une garantie).
+
+| Critère | Observé (0.164.0) | Statut |
+|---|---|---|
+| Catalogue d'outils vide | **Non** : `exec` (orchestrateur JavaScript), `wait`, `request_user_input(_async)`, `sleep`, `clock`, outils multi-agents (`spawn_agent`, `send_message`…) ; `-c features.*=false` retire `sleep`/`clock` et l'outil shell mais `exec` et le multi-agent restent annoncés ; `--disable` ne change pas le catalogue annoncé | **Échec** |
+| Appel forcé | Un `exec_command` d'écriture forcé hors du cwd est rejeté (`read-only`, politique) : fichier piège non créé ; avec `features.shell_tool=false` : « exec_command is not a function » | Partiel (une observation, pas une preuve de sandbox) |
+| Skills utilisateur | **47 des 55 skills du VRAI profil utilisateur** (noms + descriptions) sont envoyés au modèle ; leur racine est résolue depuis le profil Windows réel, **indépendamment de HOME/USERPROFILE** ; `skip_host_skill_discovery` sans effet ; seul MXC les rend illisibles (mais coupe le réseau) | **Échec** |
+| Configuration utilisateur | Avec `--ignore-user-config`, le MCP déclaré dans `config.toml` n'est pas lancé ; en revanche `AGENTS.md` et les skills de `CODEX_HOME`, et `AGENTS.md` du dossier de travail, SONT chargés (donc `CODEX_HOME` et cwd doivent être vierges) | Partiel |
+| Réseau | voir §3 | **Échec** |
+
+### Critères manquants avant toute activation
+Canal fournisseur unique imposé par le noyau ; catalogue d'outils vide ou inoffensif prouvé ; aucune lecture du profil réel (skills) hors MXC ; authentification légitime d'un courtier ; arrêt robuste de l'arbre ; revue indépendante finale. **Sans eux, refus fermé conservé, aucune activation.**
+
+### Réexamen
+Relancer `ARCHIPEL_CODEX_PROBES=1 node --test test/codex-client-catalog.test.js` à chaque nouvelle version du CLI : un test qui échoue signale un changement à analyser (par ex. un catalogue réduit ou des skills non chargés), pas un bug.
+
 ## Preuves et limites
 
 `test/pal-hardening.test.js` exerce les scripts par leur vraie entrée processus : refus du hook, passage autres clients/outils, JSON invalide et volumineux, flags dangereux, refus du gate même avec faux accord/profil. Faux codex avec compteur vérifié positivement puis remis à zéro : reste absent après tous les refus. Diagnostic gate : cwd vide et seulement noms d'env autorisés. Lint config et rôles : échoue si le flag de contournement PAL est introduit. Lanceur refuse tout démarrage, dry-run sans valeurs sensibles. Chargeur PAL : accepte codex/gate, rejette nom inconnu, ne récupère aucun flag dangereux interne. Le parseur Codex réel rejette stdout vide/stderr de refus : CodexAgent ne peut pas récupérer ce refus comme un succès. Skip explicite si PAL/Python indisponible.

@@ -7,18 +7,30 @@
       "Bash(shopify theme rename:*)",
       "Bash(shopify theme share:*)",
       "Bash(shopify theme dev:*)",
-      "Bash(shopify theme duplicate:*)"
+      "Bash(shopify theme duplicate:*)",
+      "Bash(codex:*)",
+      "Bash(codex.cmd:*)",
+      "Bash(codex.exe:*)",
+      "Bash(npx codex:*)",
+      "Bash(npx @openai/codex:*)",
+      "Bash(npm exec codex:*)",
+      "Bash(cmd /c codex:*)",
+      "Bash(env codex:*)",
+      "Bash(npx -y @openai/codex:*)",
+      "Bash(pnpm dlx @openai/codex:*)",
+      "Bash(bunx @openai/codex:*)",
+      "Bash(yarn dlx @openai/codex:*)"
     ]
   },
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "mcp__.*__clink",
+        "matcher": "mcp__.*pal.*__.*|mcp__.*terminal.*|Bash|PowerShell",
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/tools/pal-hardening/guard-clink.mjs\"",
-            "timeout": 5
+            "command": "node \"$CLAUDE_PROJECT_DIR/tools/pal-hardening/guard-clink.mjs\" || exit 2",
+            "timeout": 30
           }
         ]
       }
