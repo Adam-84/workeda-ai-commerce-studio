@@ -67,6 +67,56 @@ Ce snippet reste volontairement non opérationnel : le lanceur refuse sans --dry
 
 Possible comme mode **futur**, exclusivement via l'instance vérifiée, pas comme exception du hook vers PAL standard. Accord hors Git : dated approvedAt/expiresAt, serveur exact, empreinte profil et contexte nettoyé, une seule consultation, consommation atomique, expiration courte. Refuser accord périmé, réutilisé ou modifié, et toute continuation non liée à l'accord. Un fichier/env modifiable par l'agent ne constitue pas une preuve d'accord externe. Cette version ignore tous ces indicateurs et refuse même s'ils existent ; leur validation et provenance seraient un chantier ultérieur. Rien d'activé par défaut.
 
+## INSTALLATION DU HOOK (réglages locaux du projet)
+
+Installé le 22/11/2026 dans `.claude/settings.json` **du projet** (branche `pal-hardening`) ; aucun réglage global (`~/.claude*`, Codex, PAL, Windows) modifié ; instance durcie (`.mcp.json`) **non installée**, aucun accord ni exception temporaire créé.
+
+Diff exact (ajout seul, les sept refus `shopify theme …` d'origine sont intacts) :
+
+```diff
+       "Bash(shopify theme duplicate:*)"
+     ]
+-  }
++  },
++  "hooks": {
++    "PreToolUse": [
++      {
++        "matcher": "mcp__.*__clink",
++        "hooks": [
++          {
++            "type": "command",
++            "command": "node \"$CLAUDE_PROJECT_DIR/tools/pal-hardening/guard-clink.mjs\"",
++            "timeout": 5
++          }
++        ]
++      }
++    ]
++  }
+ }
+```
+
+Écarts avec le snippet proposé : `$CLAUDE_PROJECT_DIR` remplace `<PROJET>` (réglage commité, valable sur chaque PC) ; **`onFailure` n'a pas été repris** : ce champ n'a pas pu être confirmé dans la documentation des hooks, donc la protection ne repose que sur le code de sortie 2 du script (voir risques).
+
+### Preuve de chargement réel
+- Dans la session Claude Code en cours, un appel `mcp__pal__clink` avec un `cli_name` inconnu (sans danger : PAL aurait seul rejeté) a été **intercepté par le hook** : message « PreToolUse:mcp__pal__clink hook error … Délégation PAL bloquée … Aucun CLI lancé ». Le hook est donc chargé et actif sans redémarrage.
+- Aucun appel réel avec `cli_name=codex` n'a été fait : le chemin de code « non reconnu / codex » est le même ; il est couvert par les tests, exécutés **avec la commande exacte des réglages** (`bash -c` + `CLAUDE_PROJECT_DIR`), dont un faux Codex placé dans le PATH dont le compteur d'exécutions reste à zéro.
+
+### Routes
+Bloquées : `mcp__*__clink` avec Codex (toute casse, espaces, suffixes, rôles, `continuation_id`, fichiers), client inconnu, `cli_name` absent/non texte, entrée malformée, vide, trop volumineuse, JSON invalide.
+Laissées accessibles (volontairement) : `clink` vers `claude`, `gemini`, `agy` ; tous les autres outils.
+**Hors portée du hook, NON protégées** :
+1. `chat`, `codereview`, `thinkdeep`, `consensus` (fournisseurs API, y compris un alias « codex ») ;
+2. appels shell directs (`codex exec …` via Bash/PowerShell) ;
+3. autres clients CLI : **Gemini lance `--yolo` et Claude `acceptEdits` : ce hook ne les rend PAS sûrs**, il les laisse simplement passer ;
+4. un autre serveur MCP ou un script qui lance Codex sans passer par un outil `*clink` ; une exécution depuis un terminal ou un autre projet ;
+5. les environnements où ce fichier de réglages n'est pas chargé (autre dossier de travail, réglages locaux/globaux qui désactiveraient les hooks).
+
+### Risques résiduels de l'installation
+- **Échec du hook** : selon la documentation de Claude Code, seul le code 2 bloque ; si `node` est introuvable ou plante avant d'écrire sa sortie, l'erreur peut être non bloquante et `clink` passerait. Le script refuse (exit 2) sur toute erreur qu'il détecte lui-même, mais pas sur un échec de lancement. À surveiller (mêmes conditions sur chaque PC).
+- Une allowlist (`claude`, `gemini`, `agy`) : un client ajouté plus tard à PAL est refusé par défaut (fermé), pas autorisé.
+- Les réglages du projet sont modifiables par quiconque modifie le dépôt ; ce n'est pas une barrière contre un attaquant local.
+- Les tests unitaires ne prouvent pas, seuls, l'activation : la preuve de chargement ci-dessus est ponctuelle (cette session).
+
 ## Preuves et limites
 
 `test/pal-hardening.test.js` exerce les scripts par leur vraie entrée processus : refus du hook, passage autres clients/outils, JSON invalide et volumineux, flags dangereux, refus du gate même avec faux accord/profil. Faux codex avec compteur vérifié positivement puis remis à zéro : reste absent après tous les refus. Diagnostic gate : cwd vide et seulement noms d'env autorisés. Lint config et rôles : échoue si le flag de contournement PAL est introduit. Lanceur refuse tout démarrage, dry-run sans valeurs sensibles. Chargeur PAL : accepte codex/gate, rejette nom inconnu, ne récupère aucun flag dangereux interne. Le parseur Codex réel rejette stdout vide/stderr de refus : CodexAgent ne peut pas récupérer ce refus comme un succès. Skip explicite si PAL/Python indisponible.

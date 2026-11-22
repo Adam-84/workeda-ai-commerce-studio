@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { createStudio } from '../src/studio.js';
 import { loadAgentFiles } from '../src/agent-files.js';
 import { createOrchestrator } from '../src/comm-run.js';
@@ -127,4 +127,39 @@ test('PAL optionnel : chargeur réel accepte la proposition et rejette un client
   const script = resolve('tools/pal-hardening/check-pal-loader.py');
   const out = spawnSync(python, ['-I', '-B', script, pal, configPath], { env: clean, encoding: 'utf8', timeout: 10000, windowsHide: true });
   assert.equal(out.status, 0, out.stderr); assert.deepEqual(JSON.parse(out.stdout), { accepted: true, unknownRejected: true, dangerousDefaults: false });
+});
+
+// --- Installation du hook dans les réglages LOCAUX du projet (.claude/settings.json) ----------------------------------------------------
+const installed = () => JSON.parse(readFileSync('.claude/settings.json', 'utf8'));
+const HOOK = () => installed().hooks.PreToolUse.find((h) => h.matcher === 'mcp__.*__clink').hooks[0];
+const viaSettings = (event) => spawnSync(process.env.SHELL ?? 'bash', ['-c', HOOK().command], { input: typeof event === 'string' ? event : JSON.stringify(event), encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: root }, timeout: 15000 });
+
+test('hook installé : réglages existants conservés, hook ciblé sur clink, aucun refus global des autres clients', () => {
+  const s = installed();
+  assert.equal(s.permissions.deny.length, 7); assert.ok(s.permissions.deny.every((d) => /^Bash\(shopify theme (push|publish|delete|rename|share|dev|duplicate):\*\)$/.test(d)), 'refus Shopify d\'origine intacts');
+  assert.ok(!s.permissions.deny.includes('mcp__pal__clink'), 'pas de refus grossier : les autres clients restent possibles');
+  assert.deepEqual(Object.keys(s).sort(), ['hooks', 'permissions']); assert.deepEqual(Object.keys(s.hooks), ['PreToolUse']); assert.equal(s.hooks.PreToolUse.length, 1);
+  assert.match(HOOK().command, /\$CLAUDE_PROJECT_DIR\/tools\/pal-hardening\/guard-clink\.mjs/); assert.equal(HOOK().type, 'command');
+  assert.ok(new RegExp(`^${s.hooks.PreToolUse[0].matcher}$`).test('mcp__pal__clink'), 'le matcher couvre l\'outil PAL réel');
+  assert.ok(!/<PROJET>|C:\|adamg/i.test(JSON.stringify(s)), 'aucun chemin personnel ni espace réservé');
+  assert.ok(!existsSync('.mcp.json'), 'instance durcie non installée'); assert.ok(!existsSync('tools/pal-hardening/owner-approval.local.json'), 'aucun accord temporaire');
+});
+
+test('hook installé, exécuté EXACTEMENT comme la commande des réglages : Codex et variantes bloqués, autres clients reconnus passent', () => {
+  const clink = (cli_name, extra = {}) => ({ tool_name: 'mcp__pal__clink', tool_input: { cli_name, prompt: 'x', ...extra } });
+  for (const name of ['codex', 'CODEX', ' Codex ', 'cOdEx\n', 'codex ', 'codex\u200b', 'codex.cmd', 'codex-analyse', '', 'inconnu']) assert.equal(viaSettings(clink(name)).status, 2, JSON.stringify(name));
+  for (const e of [clink(undefined), { tool_name: 'mcp__pal__clink' }, { tool_name: 'mcp__pal__clink', tool_input: null }, { tool_name: 'mcp__pal__clink', tool_input: [] }, { tool_name: 'mcp__pal__clink', tool_input: { cli_name: ['codex'] } }, { tool_name: 'mcp__pal__clink', tool_input: { cli_name: { x: 1 } } }, { tool_name: 'mcp__autre__clink', tool_input: { cli_name: 'codex' } }, { tool_name: 'MCP__PAL__CLINK', tool_input: { cli_name: 'codex' } }, clink('codex', { continuation_id: 'abc', role: 'codereviewer', absolute_file_paths: ['C:/x'] })]) assert.equal(viaSettings(e).status, 2, JSON.stringify(e).slice(0, 90));
+  for (const bad of ['', 'pas du json', '[]', 'null', '{"tool_name":', '{"tool_name":42}', 'x'.repeat(300000)]) assert.equal(viaSettings(bad).status, 2, bad.slice(0, 20));
+  for (const ok of ['claude', 'gemini', 'agy']) assert.equal(viaSettings(clink(ok)).status, 0, ok);
+  for (const other of ['Bash', 'Read', 'mcp__pal__chat', 'mcp__pal__listmodels']) assert.equal(viaSettings({ tool_name: other, tool_input: { command: 'ls', cli_name: 'codex' } }).status, 0, `${other} hors périmètre du hook`);
+  const blocked = viaSettings(clink('codex')); assert.equal(blocked.stdout, ''); assert.match(blocked.stderr, /Aucun CLI lancé/);
+});
+
+test('hook installé : un faux Codex placé dans le PATH n\'est jamais exécuté (compteur à zéro)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'archipel-fake-codex-')), counter = join(dir, 'count.txt'); writeFileSync(counter, '0');
+  writeFileSync(join(dir, 'codex.cmd'), `@echo off\r\necho x>> "${counter}.runs"\r\n`); writeFileSync(join(dir, 'codex'), `#!/bin/sh\necho x >> "${counter}.runs"\n`);
+  try {
+    for (const name of ['codex', 'CODEX', ' codex ']) assert.equal(spawnSync('bash', ['-c', HOOK().command], { input: JSON.stringify({ tool_name: 'mcp__pal__clink', tool_input: { cli_name: name } }), encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: root, PATH: `${dir}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}` }, timeout: 15000 }).status, 2);
+    assert.equal(existsSync(`${counter}.runs`), false, 'faux Codex exécuté');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

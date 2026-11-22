@@ -9,5 +9,19 @@
       "Bash(shopify theme dev:*)",
       "Bash(shopify theme duplicate:*)"
     ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__.*__clink",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/tools/pal-hardening/guard-clink.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
   }
 }
