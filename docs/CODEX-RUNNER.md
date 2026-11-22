@@ -85,7 +85,7 @@ Le shim npm est résolu par `resolveCodex` vers le processus :
 
 ```text
 C:\Program Files\nodejs\node.exe
-C:\Users\adamg\AppData\Roaming\npm\node_modules\@openai\codex\bin\codex.js
+%USERPROFILE%\AppData\Roaming\npm\node_modules\@openai\codex\bin\codex.js
 ```
 
 Arguments successifs : `--version`, `--help`, `exec --help`, `app-server --help`, `sandbox --help`. Un essai de `--ignore-user-config --ignore-rules features list` est rejeté par le parseur (code 2) : ces options sont propres à `exec`, pas globales. La sonde `features list` utilise ensuite un CODEX_HOME temporaire neuf, sans authentification.
