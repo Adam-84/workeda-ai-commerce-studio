@@ -206,3 +206,14 @@ test('fail-closed : stdin jamais fermé = refus par la minuterie interne (≈3 s
   const code = await new Promise((res) => { const kill = setTimeout(() => { child.kill('SIGKILL'); res('tué par le test (minuterie absente)'); }, 10000); child.on('exit', (c) => { clearTimeout(kill); res(c); }); });
   assert.equal(code, 2); assert.match(err, /bloquée/); assert.ok(Date.now() - t0 < 6000, 'la minuterie interne répond avant 6 s');
 });
+
+// --- Neutraliser la clé OpenAI de PAL sans la supprimer (proposition, rien d'installé) ----------------------------------------------------
+test('clé OpenAI de PAL : proposition sans secret ; l\'environnement du processus l\'emporte sur un .env FICTIF (python-dotenv, comportement par défaut de PAL)', (t) => {
+  const prop = JSON.parse(readFileSync('tools/pal-hardening/mcp-pal-no-openai.proposed.json', 'utf8'));
+  assert.deepEqual(Object.keys(prop.mcpServers.pal.env).sort(), ['AZURE_OPENAI_API_KEY', 'OPENAI_API_KEY']); assert.ok(Object.values(prop.mcpServers.pal.env).every((v) => v === 'your_openai_api_key_here'), 'seule la valeur « absente » reconnue par PAL');
+  assert.ok(!/GEMINI|XAI|OPENROUTER|DIAL/.test(JSON.stringify(prop.mcpServers.pal.env)), 'les autres fournisseurs gardent leurs clés'); assert.ok(!existsSync('.mcp.json'), 'non installé');
+  const py = join(homedir(), 'tools', 'pal-mcp-server', '.pal_venv', 'Scripts', 'python.exe'); if (!existsSync(py)) return t.skip('PAL absent : vérification python-dotenv ignorée');
+  const r = spawnSync(py, [resolve('tools/pal-hardening/check-env-precedence.py')], { encoding: 'utf8', timeout: 20000 }); assert.equal(r.status, 0, r.stderr);
+  const out = JSON.parse(r.stdout.trim().split('\n').at(-1));
+  assert.deepEqual(out, { openai_neutralisee_par_l_env_du_processus: true, azure_neutralisee: true, gemini_toujours_lue_depuis_dotenv: true, avec_override_true_le_dotenv_gagnerait: true });
+});

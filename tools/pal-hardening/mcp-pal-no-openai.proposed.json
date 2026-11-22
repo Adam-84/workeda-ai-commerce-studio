@@ -1,0 +1,13 @@
+{
+  "_commentaire": "PROPOSITION NON INSTALLEE. Entree projet « pal » (.mcp.json) qui masquerait la declaration utilisateur uniquement dans ce projet (precedence local > projet > utilisateur : a valider) et neutraliserait les cles OpenAI/Azure de PAL via l'environnement du processus, qui l'emporte sur le .env de PAL. Les autres fournisseurs gardent leurs cles. Chemins a adapter.",
+  "mcpServers": {
+    "pal": {
+      "command": "%USERPROFILE%/tools/pal-mcp-server/.pal_venv/Scripts/python.exe",
+      "args": ["%USERPROFILE%/tools/pal-mcp-server/server.py"],
+      "env": {
+        "OPENAI_API_KEY": "your_openai_api_key_here",
+        "AZURE_OPENAI_API_KEY": "your_openai_api_key_here"
+      }
+    }
+  }
+}
