@@ -1,0 +1,57 @@
+# Veille des versions de Codex CLI (lecture seule). N'installe, ne met à jour et n'exécute JAMAIS Codex ; aucune clé ni donnée du projet envoyée.
+# Seul le jeton éphémère GITHUB_TOKEN de l'Action est utilisé (lecture des releases publiques, création d'une issue de signalement).
+# Actions tierces épinglées par empreinte de commit (vérifiées sur les dépôts officiels actions/*). Les exécutions planifiées partent de la branche par défaut.
+name: codex-watch
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'   # chaque lundi, 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: codex-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          sparse-checkout: tools/codex-watch
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+      - name: Comparer les versions et analyser les notes
+        id: watch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node tools/codex-watch/check.mjs --out "$RUNNER_TEMP/codex-watch-report.md"
+      - name: Résumé du job
+        run: cat "$RUNNER_TEMP/codex-watch-report.md" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: codex-watch-report
+          path: ${{ runner.temp }}/codex-watch-report.md
+          retention-days: 30
+      - name: Ouvrir une issue si une version pertinente est détectée (une seule fois par version)
+        if: steps.watch.outputs.relevant == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSIONS: ${{ steps.watch.outputs.versions }}
+          LATEST: ${{ steps.watch.outputs.latest }}
+        run: |
+          set -euo pipefail
+          title="Codex CLI ${LATEST} : version pertinente pour l'isolation (veille)"
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state all --search "\"Codex CLI ${LATEST}\" in:title" --json number --jq 'length')"
+          if [ "$existing" = "0" ]; then
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file "$RUNNER_TEMP/codex-watch-report.md"
+          else
+            echo "Issue déjà ouverte pour ${LATEST} : aucun doublon."
+          fi
