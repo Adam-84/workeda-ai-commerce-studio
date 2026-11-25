@@ -80,6 +80,7 @@ export function createAppStore(db, { clock = () => new Date().toISOString() } = 
     const r = normalizeApp({ name, function: fn ?? 'autre', status: 'declared', detectedKeys: [key], note: `Indice : ${f.label} (non confirmé).` });
     if (!r.ok) throw bad(r.errors.join(' '));
     if (clash(r.app.name)) throw bad(`« ${r.app.name} » existe déjà : liez l'indice à cette fiche.`, 409);
+    if (count() >= MAX_APPS) throw bad(`Limite de ${MAX_APPS} applications atteinte.`, 409);
     const a = insert({ ...r.app, status: 'detected' }, 'detected'); touch(); return a;
   }
   const link = (id, key) => { const cur = byId(id); if (!cur) throw bad('Application inconnue.', 404); const scan = latestScan(); if (!scan?.findings?.some((x) => x.key === key)) throw bad('Indice inconnu : relancez une détection.', 404); return update(id, { detectedKeys: [...new Set([...cur.detectedKeys, key])] }); };

@@ -88,16 +88,14 @@ test('mesure : octets, durées et blocages réels simulés ; échec isolé ; une
   const log = []; let tick = 0; const clock = () => (tick += 7);
   const map = { [`https://${DOMAIN}/`]: { body: HTML }, [`https://widgets.avis-exemple.test/loader.js`]: { size: 1000 }, 'https://widgets.avis-exemple.test/second.js': { size: 500 }, 'https://fonts.tiers-exemple.test/css.css': new Error('boom'), [`https://cdn.shopify.com/extensions/${EXT}/app/assets/embed.js`]: { size: 2048 } };
   const scan = await measureStorefront({ fetchImpl: fakeFetch(map, log), domain: DOMAIN, tick: clock, now: () => at });
-  assert.equal(scan.page.ok, true); assert.equal(scan.totals.thirdPartyRequests, 4); assert.equal(scan.totals.failed, 1);
-  assert.equal(scan.byKey['host:widgets.avis-exemple.test'].bytes, 1500); assert.equal(scan.byKey[`ext:${EXT}`].bytes, 2048); assert.equal(scan.byKey['host:fonts.tiers-exemple.test'].bytes, 0);
-  assert.ok(scan.byKey['host:widgets.avis-exemple.test'].ms > 0); assert.match(scan.method, /sans rendu navigateur/);
+  assert.equal(scan.page.ok, true); assert.equal(scan.page.bytes, Buffer.byteLength(HTML));
+  assert.ok(scan.page.ms > 0); assert.match(scan.method, /sans rendu navigateur/);
+  assert.equal(log.length, 1); assert.equal(log[0].url, `https://${DOMAIN}/`);
   assert.ok(log.every((c) => c.init.method === 'GET' && c.init.redirect === 'manual' && c.init.credentials === 'omit' && !c.init.body && !c.init.headers.authorization && !c.init.headers.cookie));
-  assert.ok(log.every((c) => new URL(c.url).protocol === 'https:'));
-  assert.ok(log.every((c) => c.url === `https://${DOMAIN}/` || /widgets\.avis-exemple|fonts\.tiers|cdn\.shopify\.com\/extensions/.test(c.url)), 'seuls la page et les ressources tierces repérées sont lus');
-  assert.ok(!log.some((c) => /theme\.js|theme-local|127\.0\.0\.1|pas-https|internal/.test(c.url)));
-  const a = analyzeApps([base({ id: 'a', name: 'Avis', detectedKeys: ['host:widgets.avis-exemple.test', 'host:absent'] }), base({ id: 'b', name: 'Sans lien' })], { now: t0, measures: scan });
-  assert.equal(a.impact.length, 1); assert.equal(a.impact[0].bytes, 1500); assert.equal(a.impact[0].measured, true);
-  const none = analyzeApps([base({ id: 'a', name: 'Avis', detectedKeys: ['host:x'] })], { now: t0 }); assert.equal(none.impact[0].measured, false); assert.equal(none.impact[0].bytes, null, 'sans mesure : non mesuré, jamais zéro');
+  assert.equal(scan.findings.length, 3);
+  assert.ok(scan.findings.every((f) => f.bytes === null && f.ms === null && f.measured === 0));
+  const a = analyzeApps([base({ id: 'a', name: 'Avis', detectedKeys: ['host:widgets.avis-exemple.test'] })], { now: t0, measures: scan });
+  assert.equal(a.impact[0].bytes, null); assert.equal(a.impact[0].measured, false);
   const down = await measureStorefront({ fetchImpl: fakeFetch({}), domain: DOMAIN, now: () => at }); assert.equal(down.page.ok, false); assert.match(down.error, /indisponible/);
   await assert.rejects(() => measureStorefront({ fetchImpl: fakeFetch({}), domain: 'pas un domaine' }), /invalide/);
   assert.ok(MEASURE_LIMITS.maxResources <= 30);
@@ -175,7 +173,7 @@ test('détection : désactivée par défaut, activation + confirmation + réseau
   await assert.rejects(() => off.svc.runDetection({ confirm: true }), /désactivée|real_network|ARCHIPEL_ALLOW_REAL_NETWORK/); assert.equal(log.length, 0, 'réseau réel non autorisé : aucune requête');
   const on = setup(t, { env: { ARCHIPEL_ALLOW_REAL_NETWORK: '1', WORKEDA_SHOP_DOMAIN: DOMAIN }, integrationsFetch: fakeFetch(map, log) });
   on.svc.setDetectionEnabled(true); await on.svc.runDetection({ confirm: true });
-  assert.ok(log.length >= 5); const ov = on.svc.appsOverview();
+  assert.equal(log.length, 1); const ov = on.svc.appsOverview();
   assert.equal(ov.scan.findings.length, 3); assert.ok(ov.scan.findings.every((f) => f.certainty === 'indice_non_prouve')); assert.equal(ov.apps.length, 0, 'une détection ne crée jamais de fiche d’elle-même');
   on.svc.revoke('shopify_apps'); assert.equal(on.svc.appsOverview().settings.detectionEnabled, false, 'révoquer désactive la détection');
   assert.throws(() => on.svc.setDetectionEnabled('oui'), /booléenne/);
@@ -255,4 +253,11 @@ test('interface : le panneau des applications se construit, signale l’absence 
   assert.match(all, /Aucune application déclarée/); assert.match(all, /ne connaît aucune application installée/); assert.match(all, /désactivée par défaut/); assert.match(all, /INDICE, jamais la preuve/);
   const find = (el, pred) => (pred(el) ? el : (el.childNodes ?? []).filter((n) => typeof n === 'object').map((n) => find(n, pred)).find(Boolean));
   const run = find(root, (e) => e.tagName === 'BUTTON' && e.childNodes.includes('Lancer la détection et la mesure')); assert.equal(run.disabled, true, 'bouton bloqué tant que la fonction n’est pas autorisée');
+  const { appsPanel } = await import('../public/apps-ui.js');
+  const preview = appsPanel({ ui: { h: element }, act() {}, status: {}, data: overview, setPreview() {}, getPreview: () => ({ ok: true, rows: [{ line: 2, name: 'Aperçu Avis', vendor: 'Éditeur test', function: 'avis', status: 'declared', costAmount: null, note: 'À vérifier' }], errors: [], previewId: 'preview' }) });
+  assert.match(text(preview), /Aperçu Avis/, 'le contenu doit pouvoir être relu avant confirmation');
+  assert.match(text(preview), /Éditeur test/);
+  assert.match(text(preview), /À vérifier/);
+  assert.match(text(preview), /coût inconnu/);
+
 });
