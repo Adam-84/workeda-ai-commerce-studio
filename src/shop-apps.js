@@ -20,7 +20,7 @@ export const APP_CSV_TEMPLATE = `${APP_CSV_HEADERS.join(';')}\r\n`;
 export const MAX_APPS = 300;
 const CURRENCIES = new Set(Intl.supportedValuesOf('currency').filter((c) => !['XXX', 'XTS'].includes(c)));
 const text = (v, max) => scrubContacts(String(v ?? '').replace(/[\u0000-\u001f]+/g, ' ').replace(/\s+/g, ' ').trim()).slice(0, max);
-const decimal = (v) => { if (v === '' || v == null) return null; const s = String(v).trim(); if (!/^\d+(?:[.,]\d{1,2})?$/.test(s)) return undefined; return Number(s.replace(',', '.')); };
+const decimal = (v) => { if (v === '' || v == null) return null; const s = String(v).trim(); if (!/^\d+(?:[.,]\d{1,2})?$/.test(s)) return undefined; const n = Number(s.replace(',', '.')), cents = Math.round(n * 100); return Number.isSafeInteger(cents) && cents <= Math.floor(Number.MAX_SAFE_INTEGER / (MAX_APPS * 12)) ? n : undefined; };
 const dateOnly = (v) => { if (!v) return null; if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return undefined; const t = Date.parse(`${v}T00:00:00Z`); return Number.isFinite(t) && new Date(t).toISOString().startsWith(v) ? v : undefined; };
 
 // --- une application : validation commune (interface, CSV) ----------------------------------------------------------------------------
@@ -30,7 +30,7 @@ export function normalizeApp(input = {}, { allowStatus = ['declared', 'confirmed
   const name = text(o.name, 80); if (!name) errors.push('Nom de l’application obligatoire.');
   const fn = o.function ? String(o.function) : 'autre'; if (!Object.hasOwn(FUNCTIONS, fn)) errors.push(`Fonction inconnue : ${text(fn, 30)}.`);
   const status = o.status ? String(o.status) : 'declared'; if (!allowStatus.includes(status)) errors.push('Statut refusé : « déclarée » ou « confirmée » seulement (une détection n’est jamais enregistrée comme certaine).');
-  const amount = decimal(o.costAmount ?? o.cost_amount ?? ''); if (amount === undefined) errors.push('Montant : nombre positif avec au plus deux décimales attendu.');
+  const amount = decimal(o.costAmount ?? o.cost_amount ?? ''); if (amount === undefined) errors.push('Montant : nombre positif avec au plus deux décimales, dans la plage de calcul sûre pour 300 fiches, attendu.');
   const currency = String(o.costCurrency ?? o.currency ?? '').toUpperCase() || null; if (currency && !CURRENCIES.has(currency)) errors.push('Devise ISO 4217 non reconnue.');
   const billing = String(o.billingPeriod ?? o.billing_period ?? '') || (amount != null ? '' : 'unknown');
   if (billing && !Object.hasOwn(BILLING, billing)) errors.push('Périodicité : mensuel, annuel, paiement unique, à l’usage, gratuit ou inconnu.');
@@ -82,12 +82,13 @@ export function analyzeApps(apps, { now = Date.now(), measures = null } = {}) {
     if (a.billingPeriod === 'usage') { usage.push({ id: a.id, name: a.name, amount: a.costAmount, currency: a.costCurrency }); continue; }
     if (a.monthly == null) { unknownCost.push({ id: a.id, name: a.name }); continue; }
     if (a.billingPeriod === 'free') continue;
-    const t = (totals[a.costCurrency] ??= { currency: a.costCurrency, monthly: 0, yearly: 0, apps: 0 }); t.monthly = r2(t.monthly + a.monthly); t.yearly = r2(t.monthly * 12); t.apps++;
+    const t = (totals[a.costCurrency] ??= { currency: a.costCurrency, monthly: 0, yearly: 0, apps: 0 }); t.yearly += a.billingPeriod === 'yearly' ? Math.round(a.costAmount * 100) : Math.round(a.costAmount * 100) * 12; t.apps++;
   }
+  for (const t of Object.values(totals)) { t.monthly = r2(t.yearly / 1200); t.yearly /= 100; }
   const stale = list.filter((a) => now - Date.parse(a.updatedAt ?? 0) > STALE_MS).map((a) => ({ id: a.id, name: a.name, updatedAt: a.updatedAt }));
   const unconfirmed = list.filter((a) => a.status !== 'confirmed').map((a) => ({ id: a.id, name: a.name, status: a.status }));
   const impact = list.filter((a) => a.detectedKeys?.length).map((a) => {
-    const ms = measures?.byKey ?? {}; const parts = a.detectedKeys.map((k) => ms[k]).filter(Boolean);
+    const ms = measures?.byKey ?? {}; const parts = a.detectedKeys.map((k) => ms[k]).filter((p) => p && p.measured > 0);
     return { id: a.id, name: a.name, linkedKeys: a.detectedKeys, measured: parts.length > 0, bytes: parts.length ? parts.reduce((s, p) => s + (p.bytes ?? 0), 0) : null, ms: parts.length ? parts.reduce((s, p) => s + (p.ms ?? 0), 0) : null, renderBlocking: parts.length ? parts.reduce((s, p) => s + (p.renderBlocking ?? 0), 0) : null };
   });
   return { count: list.length, byStatus: Object.fromEntries(APP_STATUSES.map((s) => [s, list.filter((a) => a.status === s).length])), duplicates,
@@ -127,7 +128,7 @@ export function findingsOf(resources) {
 }
 
 // --- mesure réelle : transfert et durée de chargement, depuis CET ordinateur, sans rendu navigateur -----------------------------------
-export const MEASURE_LIMITS = { timeoutMs: 10_000, maxBytes: 2_000_000, maxResources: 30, concurrency: 4 };
+export const MEASURE_LIMITS = { timeoutMs: 10_000, maxBytes: 2_000_000, maxResources: 0 };
 async function readBytes(res, max) {
   if (!res.body?.getReader) { const b = Buffer.from(await res.arrayBuffer()); return { bytes: b.length, text: b.toString('utf8'), truncated: b.length > max }; }
   const rd = res.body.getReader(), chunks = []; let n = 0, truncated = false;
@@ -143,23 +144,14 @@ async function timed(fetchImpl, url, tick) {
   } catch (e) { return { ok: false, status: 0, ms: Math.round(tick() - t0), bytes: 0, error: e?.name === 'AbortError' ? 'délai dépassé' : 'échec réseau' }; } finally { clearTimeout(timer); }
 }
 export async function measureStorefront({ fetchImpl, domain, tick = () => performance.now(), now = () => new Date().toISOString() }) {
-  if (!HOST_OK.test(domain)) throw Object.assign(new Error('Domaine de boutique invalide.'), { status: 400 });
+  if (!isPublicHost(domain)) throw Object.assign(new Error('Domaine de boutique invalide.'), { status: 400 });
   const page = await timed(fetchImpl, `https://${domain}/`, tick);
-  const scan = { at: now(), domain, page: { ok: page.ok, status: page.status, ms: page.ms, bytes: page.bytes }, findings: [], resources: [], byKey: {}, inlineScripts: 0, partial: false, method: 'Mesure réelle depuis cet ordinateur : une passe, HTML + ressources tierces, sans rendu navigateur (ni LCP ni INP). Les durées varient d’une passe à l’autre.' };
+  const scan = { at: now(), domain, page: { ok: page.ok, status: page.status, ms: page.ms, bytes: page.bytes }, findings: [], resources: [], byKey: {}, inlineScripts: 0, partial: false, method: 'Mesure réelle depuis cet ordinateur : une passe, HTML seul, sans rendu navigateur (ni LCP ni INP). Les scripts tiers restent des indices non mesurés. Les durées varient d’une passe à l’autre.' };
   if (!page.ok) { scan.error = page.error ?? `Page d’accueil indisponible (HTTP ${page.status}).`; return scan; }
   const { resources, inlineScripts } = extractResources(page.text, domain); scan.inlineScripts = inlineScripts;
-  const targets = resources.filter((r) => r.party === 'tiers' || r.party === 'extension_shopify');
-  const unique = [...new Map(targets.map((r) => [r.url, r])).values()];
-  if (unique.length > MEASURE_LIMITS.maxResources) scan.partial = true;
-  const chosen = unique.slice(0, MEASURE_LIMITS.maxResources), results = new Array(chosen.length);
-  let next = 0; await Promise.all(Array.from({ length: Math.min(MEASURE_LIMITS.concurrency, chosen.length) }, async () => { for (;;) { const i = next++; if (i >= chosen.length) return; const m = await timed(fetchImpl, chosen[i].url, tick); results[i] = { ...chosen[i], status: m.status, ok: m.ok, ms: m.ms, bytes: m.bytes, transferBytes: m.transferBytes, truncated: Boolean(m.truncated), cache: m.cache, error: m.error }; } }));
-  scan.resources = results;
-  scan.findings = findingsOf(resources).map((f) => ({ ...f }));
-  for (const f of scan.findings) {
-    const own = results.filter((r) => (f.kind === 'extension_shopify' ? r.extensionId === f.key.slice(4) : r.host === f.key.slice(5)));
-    const sum = { bytes: own.reduce((s, r) => s + r.bytes, 0), ms: own.reduce((s, r) => s + r.ms, 0), renderBlocking: f.renderBlocking, measured: own.length };
-    Object.assign(f, sum); scan.byKey[f.key] = { ...sum };
-  }
-  scan.totals = { thirdPartyBytes: results.reduce((s, r) => s + r.bytes, 0), thirdPartyMs: results.reduce((s, r) => s + r.ms, 0), thirdPartyRequests: results.length, renderBlocking: scan.findings.reduce((s, f) => s + f.renderBlocking, 0), failed: results.filter((r) => !r.ok).length };
+  // Le HTML distant ne peut jamais élargir les destinations réseau autorisées.
+  scan.partial = Boolean(page.truncated);
+  scan.findings = findingsOf(resources).map((f) => ({ ...f, bytes: null, ms: null, measured: 0 }));
+  scan.totals = { thirdPartyBytes: null, thirdPartyMs: null, thirdPartyRequests: 0, renderBlocking: scan.findings.reduce((s, f) => s + f.renderBlocking, 0), failed: 0 };
   return scan;
 }

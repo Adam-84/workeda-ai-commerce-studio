@@ -3,13 +3,14 @@
 // Le réseau réel est désactivé tant que ARCHIPEL_ALLOW_REAL_NETWORK=1 n'est pas défini avec l'accord explicite du propriétaire.
 import { randomUUID } from 'node:crypto';
 import { validateManualCsv, CSV_TEMPLATE } from './manual-import.js';
-import { withoutStructuredIds } from './catalog-privacy.js';
+import { withoutStructuredIds, scrubContacts } from './catalog-privacy.js';
 import { untrusted } from './comm-core.js';
 import { createIntegrationStore } from './studio-integrations.js';
 import { createDsersConnector } from './dsers-connector.js';
 import { createTrack17Connector, TRACK17_DEFAULT_CAP } from './track17-connector.js';
 import { networkGate, realNetworkAllowed, IntegrationError } from './mcp-client.js';
 import { createAppStore } from './studio-apps.js';
+import { publicPageFetch } from './public-page.js';
 import { APP_CSV_TEMPLATE, validateAppsCsv, analyzeApps, measureStorefront, STATUS_LABELS, FUNCTIONS, BILLING } from './shop-apps.js';
 import { INTEGRATION_IDS, REGISTRY, DEFAULT_DAILY_CAP, MAX_DAILY_CAP, SNAPSHOT_STALE_MS, integrationPrompt, analyzeLogistics, containsPii } from './integrations-core.js';
 
@@ -96,15 +97,15 @@ export function createIntegrationService({ db, secrets, shop = null, env = proce
     apps,
     appsCsvTemplate: () => APP_CSV_TEMPLATE,
     appsOverview() { purgeExpired(); const scan = apps.latestScan(), list = apps.list(); return { apps: list, analysis: analyzeApps(list, { now: now(), measures: scan }), scan, labels: { statuses: STATUS_LABELS, functions: FUNCTIONS, billing: BILLING }, settings: { detectionEnabled: apps.setting('detectionEnabled', false) === true, realNetworkAllowed: realNetworkAllowed(env), domain: shopDomain } }; },
-    previewAppsImport(text) { purgeExpired(); appsPreview = null; const r = validateAppsCsv(text); if (r.ok) appsPreview = { id: randomUUID(), rows: structuredClone(r.rows), expiresAt: now() + 10 * 60_000 }; return { ...r, previewId: appsPreview?.id ?? null }; },
-    commitAppsImport({ previewId, confirm } = {}) { purgeExpired(); if (confirm !== true || !appsPreview || previewId !== appsPreview.id) throw bad('Aperçu validé et confirmation explicite requis (validité : 10 minutes).'); const r = apps.importRows(appsPreview.rows); appsPreview = null; return r; },
+    previewAppsImport(text) { purgeExpired(); appsPreview = null; const r = validateAppsCsv(text); if (r.ok) appsPreview = { id: randomUUID(), rows: structuredClone(r.rows), revision: apps.revision(), expiresAt: now() + 10 * 60_000 }; return { ...r, previewId: appsPreview?.id ?? null }; },
+    commitAppsImport({ previewId, confirm } = {}) { purgeExpired(); if (confirm !== true || !appsPreview || previewId !== appsPreview.id) throw bad('Aperçu validé et confirmation explicite requis (validité : 10 minutes).'); if (appsPreview.revision !== apps.revision()) { appsPreview = null; throw bad('Inventaire modifié depuis l’aperçu : prévisualisez à nouveau.', 409); } const r = apps.importRows(appsPreview.rows); appsPreview = null; return r; },
     setDetectionEnabled(enabled) { if (typeof enabled !== 'boolean') throw bad('Valeur booléenne attendue.'); apps.setSetting('detectionEnabled', enabled); return { detectionEnabled: enabled }; },
     // Détection + mesure : DÉSACTIVÉE par défaut ; exige l'activation, une confirmation explicite à chaque lancement ET le réseau réel autorisé.
     async runDetection({ confirm } = {}) {
       if (apps.setting('detectionEnabled', false) !== true) throw bad('Détection publique désactivée : activez-la d’abord.', 403);
       if (confirm !== true) throw bad('Confirmation explicite requise avant chaque détection.');
       guardReal();
-      const scan = await measureStorefront({ fetchImpl: gate, domain: shopDomain, now: iso });
+      const scan = await measureStorefront({ fetchImpl: networkGate({ env, fetchImpl: fetchImpl === globalThis.fetch ? publicPageFetch : fetchImpl }), domain: shopDomain, now: iso });
       return apps.saveScan(scan);
     },
     previewImport(text, options) {
@@ -155,7 +156,21 @@ export function createIntegrationService({ db, secrets, shop = null, env = proce
           const view = { apps: list.slice(0, 60).map((a) => ({ nom: a.name, editeur: a.vendor || null, fonction: FUNCTIONS[a.function], statut: STATUS_LABELS[a.status], offre: a.plan || null, cout: a.costAmount == null ? 'inconnu' : `${a.costAmount} ${a.costCurrency} (${BILLING[a.billingPeriod]})`, installeeLe: a.installedOn, maj: a.updatedAt, indices: a.detectedKeys, note: a.note || null })),
             analyse: (({ duplicates, costs, stale, unconfirmed, impact }) => ({ duplicates, costs, stale, unconfirmed, impact }))(analyzeApps(list, { now: now(), measures: scan })),
             detection: scan ? { at: scan.at, page: scan.page, totals: scan.totals, partial: scan.partial, methode: scan.method, indices: (scan.findings ?? []).slice(0, 25).map((f) => ({ cle: f.key, libelle: f.label, scripts: f.count, bloquantsAuRendu: f.renderBlocking, octetsMesures: f.bytes, msMesurees: f.ms, certitude: 'indice, jamais une preuve d’installation' })) } : null };
-          out.text += '\n' + untrusted('Applications Shopify — inventaire déclaré', `Inventaire Shopify déclaré par le propriétaire — ${iso()} — ${url}. Statut « Déclarée » ou « Détectée » = NON vérifié ; seul « Confirmée » a été vérifié par le propriétaire. Coût « inconnu » = ne jamais le chiffrer. Une détection publique est un indice, jamais une preuve. Aucune donnée client. Tu recommandes ; le propriétaire décide (aucune installation, désinstallation ni changement d’abonnement par toi).\n${JSON.stringify(view)}`, 18000);
+          // Garder le JSON entier et annoncer les omissions avant le contenu borné.
+          const viewSize = () => scrubContacts(JSON.stringify(view)).length;
+          view.analyseComplete = true;
+          if (viewSize() > 14000) {
+            const a = analyzeApps(list, { now: now(), measures: scan });
+            view.analyse = { note: 'Analyse détaillée omise : consulter Integration Center.', coutsConnus: a.costs.totals.slice(0, 10), devisesNonFournies: Math.max(0, a.costs.totals.length - 10), coutsInconnus: a.costs.unknownCost.length, groupesDoublons: a.duplicates.length };
+            view.analyseComplete = false;
+          }
+          if (view.detection) {
+            view.detection.totalIndices = scan.findings?.length ?? 0;
+            while (viewSize() > 14000 && view.detection.indices.length) view.detection.indices.pop();
+          }
+          while (viewSize() > 14000 && view.apps.length) view.apps.pop();
+          const volume = `${list.length} application(s) au total ; ${view.apps.length} fournie(s) ; ${list.length - view.apps.length} NON fournie(s) : ${view.apps.length < list.length ? 'analyse partielle, ne conclus pas sur les fiches absentes' : 'inventaire entier fourni'}. Analyse détaillée ${view.analyseComplete ? 'complète' : 'résumée'}.`;
+          out.text += '\n' + untrusted('Applications Shopify — inventaire déclaré', `${volume} Inventaire Shopify déclaré par le propriétaire — ${iso()} — ${url}. Statut « Déclarée » ou « Détectée » = NON vérifié ; seul « Confirmée » a été vérifié par le propriétaire. Coût « inconnu » = ne jamais le chiffrer. Une détection publique est un indice, jamais une preuve. Aucune donnée client. Tu recommandes ; le propriétaire décide (aucune installation, désinstallation ni changement d’abonnement par toi).\n${JSON.stringify(view)}\nFIN INVENTAIRE FOURNI`, 18000);
           out.provided.push(url); continue;
         }
         const snap = id === 'manual_import' ? store.latest(id, 'import') : shop?.latestAdmin?.();

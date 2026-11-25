@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-test('the real server preloads the ten agents from .claude/agents', { timeout: 20_000 }, async (t) => {
+test('the real server preloads the eleven agents from .claude/agents', { timeout: 20_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'workeda-start-'));
   const root = fileURLToPath(new URL('..', import.meta.url));
   const child = spawn(process.execPath, [fileURLToPath(new URL('../src/server.js', import.meta.url))], {
