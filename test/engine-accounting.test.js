@@ -12,6 +12,7 @@ import { observeTools, LIMITS } from '../src/comm-core.js';
 import { COMM_SCHEMA_VERSION } from '../src/studio-comm.js';
 import { checkModel } from '../src/engines.js';
 import { createOrchestrator } from '../src/comm-run.js';
+import { createApp } from '../src/app.js';
 
 const { profiles } = loadAgentFiles(fileURLToPath(new URL('../.claude/agents', import.meta.url)));
 function setup(options = {}, file = ':memory:') {
@@ -123,3 +124,40 @@ test('réponse dans un fil : avertissement visible si le modèle diffère', asyn
   orch.replyInThread(th.id, ids.noah); await orch.idle();
   assert.ok(comm.listMessages(th.id).items.some((m) => m.senderType === 'system' && /Modèle différent/.test(m.body)));
 });
+
+async function withApp(runner, fn) {
+  const { studio, comm, ids } = setup();
+  const server = createApp({ studio, publicDir: fileURLToPath(new URL('../public', import.meta.url)), detect: () => true, runClaude: runner, agentFiles: { profiles } });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const post = async (path, data) => { const r = await fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(data ?? {}) }); return { status: r.status, lines: (await r.text()).split(String.fromCharCode(10)).filter(Boolean).map((l) => JSON.parse(l)) }; };
+  try { await fn({ studio, comm, ids, post }); } finally { server.closeAllConnections(); await new Promise((r) => server.close(r)); studio.close(); }
+}
+const answers = async (o) => {
+  o.onEvent?.({ type: 'assistant', message: { model: 'claude-haiku-5-5', content: [] } });
+  o.onEvent?.({ type: 'result', total_cost_usd: 0.02, usage: { input_tokens: 10, output_tokens: 5 } });
+  if (/PROPOSITION de plan/.test(o.prompt)) return JSON.stringify({ steps: [{ action: 'Lire', agent: 'Lucas' }] });
+  if (/PROPOSE ce qui mérite/.test(o.prompt)) return JSON.stringify({ proposals: [] });
+  return 'Réponse simulée.';
+};
+
+test('discussion, fil d’équipe, plan et souvenirs : chacun laisse une exécution', () => withApp(answers, async ({ studio, comm, ids, post }) => {
+  await post(`/api/agents/${ids.lucas}/conversation`, { body: 'Bonjour' });
+  const chat = await post(`/api/agents/${ids.lucas}/reply`);
+  assert.equal(chat.lines.at(-1).type, 'done'); assert.match(chat.lines.at(-1).warning, /Modèle différent/);
+  const mission = studio.createMission({ title: 'Mission', assignedTo: ids.lucas });
+  await post(`/api/missions/${mission.id}/discussion`, { body: 'Un point ?' });
+  await post(`/api/missions/${mission.id}/discussion/reply/${ids.lucas}`);
+  await post(`/api/missions/${mission.id}/plan/propose`);
+  await post(`/api/missions/${mission.id}/memory-proposals`);
+  const runs = comm.recentRuns(10);
+  assert.deepEqual(runs.map((r) => r.kind).sort(), ['chat', 'memory', 'plan', 'team']);
+  assert.ok(runs.every((r) => r.costUsd === 0.02 && r.provider === 'claude' && r.state !== 'running'));
+  assert.equal(comm.usage().quota.remaining, LIMITS.maxRunsPerDay);
+}));
+
+test('une trace impossible à écrire n’empêche pas la réponse', () => withApp(answers, async ({ comm, ids, post }) => {
+  comm.startRun = () => { throw new Error('disque plein'); };
+  await post(`/api/agents/${ids.lucas}/conversation`, { body: 'Bonjour' });
+  assert.equal((await post(`/api/agents/${ids.lucas}/reply`)).lines.at(-1).type, 'done');
+}));
