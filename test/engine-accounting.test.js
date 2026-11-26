@@ -11,6 +11,7 @@ import { loadAgentFiles } from '../src/agent-files.js';
 import { observeTools, LIMITS } from '../src/comm-core.js';
 import { COMM_SCHEMA_VERSION } from '../src/studio-comm.js';
 import { checkModel } from '../src/engines.js';
+import { createOrchestrator } from '../src/comm-run.js';
 
 const { profiles } = loadAgentFiles(fileURLToPath(new URL('../.claude/agents', import.meta.url)));
 function setup(options = {}, file = ':memory:') {
@@ -94,4 +95,31 @@ test('budget : une exécution réussie sans coût rapporté compte l’estimatio
   comm.endRun(r.id, { state: 'done' });
   assert.equal(comm.spentOf(root.id), LIMITS.unreportedRunUsd);
   assert.equal(comm.task(root.id).unreportedRuns, 1);
+});
+
+// Runner simulé : mêmes événements stream-json que Claude Code.
+const claude = (text, { model, cost } = {}) => async (o) => {
+  if (model) o.onEvent?.({ type: 'assistant', message: { model, content: [] } });
+  if (cost !== undefined) o.onEvent?.({ type: 'result', total_cost_usd: cost, usage: { input_tokens: 10, output_tokens: 5 } });
+  return text;
+};
+
+test('tâche : un autre modèle que celui demandé passe « à vérifier » ; absent ne dégrade rien', async () => {
+  for (const [model, state] of [['claude-sonnet-5-5', 'done'], [undefined, 'done'], ['claude-haiku-5-5', 'review']]) {
+    const { studio, comm, ids } = setup();
+    const orch = createOrchestrator({ studio, profiles: () => profiles, runner: claude(JSON.stringify({ report: 'ok' }), { model, cost: 0.01 }) });
+    const t = comm.createTask({ assigneeId: ids.lucas, instruction: 'Résumer' }).task;
+    orch.pump(); await orch.idle();
+    assert.equal(comm.task(t.id).state, state, String(model));
+    if (state === 'review') assert.match(comm.resultOf(t.id).verification, /Modèle différent/);
+  }
+});
+
+test('réponse dans un fil : avertissement visible si le modèle diffère', async () => {
+  const { studio, comm, ids } = setup();
+  const orch = createOrchestrator({ studio, profiles: () => profiles, runner: claude('Bien reçu.', { model: 'claude-haiku-5-5' }) });
+  const th = comm.createThread({ kind: 'direct', members: [ids.noah] });
+  comm.postMessage(th.id, { body: 'Bonjour' });
+  orch.replyInThread(th.id, ids.noah); await orch.idle();
+  assert.ok(comm.listMessages(th.id).items.some((m) => m.senderType === 'system' && /Modèle différent/.test(m.body)));
 });
