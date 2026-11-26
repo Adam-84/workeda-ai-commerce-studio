@@ -12,6 +12,8 @@ export const TASK_STATES = ['pending_approval', 'queued', 'running', 'review', '
 export const TASK_KINDS = ['work', 'consolidation'];
 export const REF_TYPES = ['memory', 'mission', 'result', 'message', 'thread', 'link'];
 export const WEB_TOOLS = ['WebSearch', 'WebFetch']; // les seuls outils qu'une tâche peut recevoir : lecture seule, jamais Shopify ni fichiers
+export const COUNTED_RUN_KINDS = ['task', 'reply'];              // limite interne quotidienne
+export const LOCAL_RUN_KINDS = ['chat', 'team', 'plan', 'memory']; // appels immédiats : comptés dans l'usage, jamais synchronisés
 
 // Plafonds fixes : un agent ne peut pas en réclamer davantage, quel que soit le texte qu'il produit.
 export const LIMITS = {

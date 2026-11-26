@@ -12,8 +12,9 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from
 import { join, resolve } from 'node:path';
 import {
   THREAD_KINDS, MESSAGE_KINDS, DELIVERY_STATES, TASK_STATES, TASK_KINDS, TASK_TRANSITIONS, OPEN_STATES, MISSION_STATE, LIMITS, WEB_TOOLS,
-  bad, ID_RE, isoOf, clean, assertNoSecret, normalizeRefs, fingerprint, parseJsonList, normUrl
+  bad, ID_RE, isoOf, clean, assertNoSecret, normalizeRefs, fingerprint, parseJsonList, normUrl, COUNTED_RUN_KINDS, LOCAL_RUN_KINDS
 } from './comm-core.js';
+import { DEFAULT_PROVIDER, isModelId, isProviderId, checkModel } from './engines.js';
 import { findSecret } from './memory-core.js';
 import { INTEGRATION_IDS } from './integrations-core.js';
 
@@ -63,6 +64,12 @@ export const COMM_MIGRATIONS = [{
   name: 'origine locale Automation et idempotence de dispatch',
   up: `ALTER TABLE comm_tasks ADD COLUMN automation_key TEXT; ALTER TABLE comm_tasks ADD COLUMN automation_lease TEXT; CREATE UNIQUE INDEX comm_tasks_automation_key ON comm_tasks(automation_key);`,
   down: `DROP INDEX comm_tasks_automation_key; ALTER TABLE comm_tasks DROP COLUMN automation_key; ALTER TABLE comm_tasks DROP COLUMN automation_lease;`
+}, {
+  version: 5,
+  name: 'fournisseur et modèle constaté par exécution',
+  // Seul Claude a jamais été branché : les exécutions antérieures lui sont rattachées.
+  up: `ALTER TABLE comm_runs ADD COLUMN provider TEXT; ALTER TABLE comm_runs ADD COLUMN observed_models TEXT NOT NULL DEFAULT '[]'; UPDATE comm_runs SET provider = 'claude' WHERE provider IS NULL;`,
+  down: `ALTER TABLE comm_runs DROP COLUMN observed_models; ALTER TABLE comm_runs DROP COLUMN provider;`
 }];
 export const COMM_SCHEMA_VERSION = COMM_MIGRATIONS.at(-1).version;
 
@@ -149,7 +156,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
         mission: m && { id: m.id, title: redactAgentAsk(t.id, m.title), objective: redactAgentAsk(t.id, m.objective), expectedResult: redactAgentAsk(t.id, m.expected_result), contextText: redactAgentAsk(t.id, m.context_text), priority: m.priority, requiresApproval: Boolean(m.requires_approval), requestedBy: m.requested_by ? slugOf(m.requested_by) : null, assignedTo: m.assigned_to ? slugOf(m.assigned_to) : null, createdAt: m.created_at } };
     },
     result: (id) => { const r = get('SELECT * FROM comm_results WHERE id = ?', id); return r && { id: r.id, taskId: r.task_id, agent: slugOf(r.agent_id), runId: r.run_id, summary: redactFor(r.task_id, r.summary), body: redactFor(r.task_id, r.body), sources: redactFor(r.task_id, 'x') === LOCAL_ONLY ? [] : parseJsonList(r.sources), observed: redactFor(r.task_id, 'x') === LOCAL_ONLY ? {} : jsonObserved(r.observed), verified: Boolean(r.verified), level: r.level, verification: redactFor(r.task_id, r.verification), verifiedBy: r.verified_by, createdAt: r.created_at }; },
-    run: (id) => { const r = get('SELECT * FROM comm_runs WHERE id = ?', id); return r && { id: r.id, agent: slugOf(r.agent_id), kind: r.kind, taskId: r.task_id, threadId: r.thread_id, model: r.model, web: Boolean(r.web), state: r.state, error: r.error ? redactFor(r.task_id, r.error) : null, costUsd: r.cost_usd, inputTokens: r.input_tokens, outputTokens: r.output_tokens, durationMs: r.duration_ms, device: r.device, startedAt: r.started_at, finishedAt: r.finished_at }; }
+    run: (id) => { const r = get('SELECT * FROM comm_runs WHERE id = ?', id); return r && { id: r.id, agent: slugOf(r.agent_id), kind: r.kind, taskId: r.task_id, threadId: r.thread_id, model: r.model, provider: r.provider, observedModels: parseJsonList(r.observed_models), web: Boolean(r.web), state: r.state, error: r.error ? redactFor(r.task_id, r.error) : null, costUsd: r.cost_usd, inputTokens: r.input_tokens, outputTokens: r.output_tokens, durationMs: r.duration_ms, device: r.device, startedAt: r.started_at, finishedAt: r.finished_at }; }
   };
   const bump = (kind, key) => { const prev = get('SELECT rev FROM comm_versions WHERE kind = ? AND key = ?', kind, key); const rev = (prev?.rev ?? 0) + 1, at = now(); run('INSERT INTO comm_versions (kind, key, at, rev, device) VALUES (?, ?, ?, ?, ?) ON CONFLICT(kind, key) DO UPDATE SET at = excluded.at, rev = excluded.rev, device = excluded.device', kind, key, at, rev, device); return { at, rev }; };
   const lineOf = (e) => `${JSON.stringify({ ...e, data: scrubContactData(e.data) })}\n`;
@@ -175,6 +182,8 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
   };
   // Appelé après chaque changement : la base reste la source locale, le journal est la copie qui voyage avec git.
   const journal = (kind, key) => {
+    // Un appel immédiat reste sur cet ordinateur, comme la discussion qui l'a provoqué.
+    if (kind === 'run' && LOCAL_RUN_KINDS.includes(get('SELECT kind FROM comm_runs WHERE id = ?', key)?.kind)) return;
     // Automated work stays local; importing a journal cannot turn it into ordinary runnable work.
     const linked = kind === 'task' ? key : kind === 'message' ? get('SELECT task_id FROM comm_messages WHERE id=?', key)?.task_id : kind === 'result' ? get('SELECT task_id FROM comm_results WHERE id=?', key)?.task_id : kind === 'run' ? get('SELECT task_id FROM comm_runs WHERE id=?', key)?.task_id : null;
     if (linked && schemaVersion() >= 4 && get('SELECT automation_key FROM comm_tasks WHERE id=?', linked)?.automation_key) return;
@@ -360,19 +369,21 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
   };
 
   // --- exécutions (traces d'exécutions réelles) -------------------------------------------------------------------------------------------
-  const startRun = ({ agentId, kind, taskId = null, threadId = null, model = null, web = false }) => {
-    realAgent(agentId);
+  const startRun = ({ agentId, kind, taskId = null, threadId = null, model = null, provider = DEFAULT_PROVIDER, web = false }) => {
+    // Un appel immédiat n'exigeait pas un agent actif : l'enregistrer n'ajoute aucune condition.
+    if (!LOCAL_RUN_KINDS.includes(kind)) realAgent(agentId);
     const id = randomUUID();
-    run("INSERT INTO comm_runs (id, agent_id, kind, task_id, thread_id, model, web, state, device, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)", id, agentId, kind, taskId, threadId, model, Number(web), device, now());
+    run("INSERT INTO comm_runs (id, agent_id, kind, task_id, thread_id, model, provider, web, state, device, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)", id, agentId, kind, taskId, threadId, model, provider, Number(web), device, now());
     journal('run', id);
     return getRun(id);
   };
-  const getRun = (id) => { const r = get('SELECT * FROM comm_runs WHERE id = ?', id); return !r ? null : { id: r.id, agentId: r.agent_id, kind: r.kind, taskId: r.task_id, threadId: r.thread_id, model: r.model, web: Boolean(r.web), state: r.state, error: r.error, costUsd: r.cost_usd, inputTokens: r.input_tokens, outputTokens: r.output_tokens, durationMs: r.duration_ms, device: r.device, startedAt: r.started_at, finishedAt: r.finished_at }; };
-  const endRun = (id, { state = 'done', error = null, costUsd = null, usage = null } = {}) => {
+  const mapRun = (r) => { const observedModels = parseJsonList(r.observed_models); return { id: r.id, agentId: r.agent_id, kind: r.kind, taskId: r.task_id, threadId: r.thread_id, model: r.model, provider: r.provider ?? null, observedModels, modelStatus: checkModel(r.model, observedModels).status, web: Boolean(r.web), state: r.state, error: r.error, costUsd: r.cost_usd, inputTokens: r.input_tokens, outputTokens: r.output_tokens, durationMs: r.duration_ms, device: r.device, startedAt: r.started_at, finishedAt: r.finished_at }; };
+  const getRun = (id) => { const r = get('SELECT * FROM comm_runs WHERE id = ?', id); return r ? mapRun(r) : null; };
+  const endRun = (id, { state = 'done', error = null, costUsd = null, usage = null, models = [] } = {}) => {
     const r = getRun(id); if (!r) throw notFound('Exécution');
     if (r.state !== 'running') return r;
     const finished = now();
-    run('UPDATE comm_runs SET state = ?, error = ?, cost_usd = ?, input_tokens = ?, output_tokens = ?, duration_ms = ?, finished_at = ? WHERE id = ?', state === 'done' ? 'done' : 'error', error ? short(String(error), 500) : null, costUsd, usage?.input ?? null, usage?.output ?? null, Math.max(0, Date.parse(finished) - Date.parse(r.startedAt)), finished, id);
+    run('UPDATE comm_runs SET state = ?, error = ?, cost_usd = ?, input_tokens = ?, output_tokens = ?, duration_ms = ?, observed_models = ?, finished_at = ? WHERE id = ?', state === 'done' ? 'done' : 'error', error ? short(String(error), 500) : null, costUsd, usage?.input ?? null, usage?.output ?? null, Math.max(0, Date.parse(finished) - Date.parse(r.startedAt)), JSON.stringify((models ?? []).filter(isModelId).slice(0, 8)), finished, id);
     journal('run', id);
     return getRun(id);
   };
@@ -554,7 +565,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     for (const r of all(`SELECT id FROM comm_tasks WHERE state IN ('pending_approval', 'queued', 'blocked') AND due_at < ?`, t0)) { setTaskState(r.id, 'expired', 'Échéance dépassée'); n += 1; }
     return n;
   };
-  const runsToday = () => get('SELECT COUNT(*) AS n FROM comm_runs WHERE device = ? AND started_at >= ?', device, `${now().slice(0, 10)}T00:00:00.000Z`).n;
+  const runsToday = () => get(`SELECT COUNT(*) AS n FROM comm_runs WHERE device = ? AND started_at >= ? AND kind IN (${COUNTED_RUN_KINDS.map(() => '?').join(',')})`, device, `${now().slice(0, 10)}T00:00:00.000Z`, ...COUNTED_RUN_KINDS).n;
   const interruptAutomation = (id, note) => {
     for (const r of all("SELECT id FROM comm_runs WHERE task_id=? AND state='running'", id)) endRun(r.id, { state: 'error', error: note });
     setTaskState(id, 'blocked', note);
@@ -693,8 +704,13 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
         d.id, d.taskId, needAgent(d.agent), d.runId, d.summary ?? '', d.body, JSON.stringify(d.sources ?? []), JSON.stringify(d.observed ?? {}), Number(d.verified), d.level, d.verification, d.verifiedBy ?? 'systeme', d.createdAt);
     },
     run(d) {
+      if (LOCAL_RUN_KINDS.includes(d.kind)) throw new Error('exécution locale : jamais importée');
+      if (d.provider != null && !isProviderId(d.provider)) throw new Error('fournisseur invalide');
       run('INSERT INTO comm_runs (id, agent_id, kind, task_id, thread_id, model, web, state, error, cost_usd, input_tokens, output_tokens, duration_ms, device, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET state = excluded.state, error = excluded.error, cost_usd = excluded.cost_usd, input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens, duration_ms = excluded.duration_ms, finished_at = excluded.finished_at',
         d.id, needAgent(d.agent), d.kind, d.taskId ?? null, d.threadId ?? null, d.model ?? null, Number(d.web), d.state, d.error ?? null, d.costUsd ?? null, d.inputTokens ?? null, d.outputTokens ?? null, d.durationMs ?? null, d.device ?? '', d.startedAt, d.finishedAt ?? null);
+      // Champs de la migration 5 : un champ absent (journal plus ancien) n'efface rien.
+      run("UPDATE comm_runs SET provider = COALESCE(?, provider, 'claude') WHERE id = ?", d.provider ?? null, d.id);
+      if (Array.isArray(d.observedModels)) run('UPDATE comm_runs SET observed_models = ? WHERE id = ?', JSON.stringify(d.observedModels.filter(isModelId).slice(0, 8)), d.id);
     }
   };
   const IMMUTABLE = new Set(['message']);
