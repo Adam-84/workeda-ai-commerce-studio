@@ -1,7 +1,11 @@
 # Private Claude workers
 
 The cloud process stores worker identities and jobs in a separate `control.db`.
-The central server accepts jobs only for the models named in the agent files. The
+The central server accepts jobs for the closed Claude catalogue (`opus`, `sonnet`,
+`haiku`). Each worker still serves only the models of its own enrollment: serving
+a newly chosen model needs a new enrollment. Without a connected worker for the
+chosen model the mission waits; no other model or provider replaces it.
+The
 operator CLI reads `ARCHIPEL_WORKER_MODELS` to limit which models an identity may
 be enrolled with; an empty value disables enrollment. A model name is
 configuration, not a claim that the account has access to it. Quota is reported as
