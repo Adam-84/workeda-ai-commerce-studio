@@ -3,6 +3,7 @@
 import { scrubContacts, scrubProjectedPrompt } from './catalog-privacy.js';
 import { createHash } from 'node:crypto';
 import { findSecret } from './memory-core.js';
+import { modelOfEvent } from './engines.js';
 
 export const THREAD_KINDS = ['direct', 'department', 'mission', 'group'];
 export const MESSAGE_KINDS = ['message', 'delegation', 'result', 'help', 'blocker', 'proposal', 'decision', 'system'];
@@ -119,12 +120,13 @@ export function normUrl(u) {
 const URL_IN_TEXT = /https?:\/\/[^\s"'<>)\]]+/g;
 // Lit les événements stream-json de Claude Code : ce que l'agent a réellement consulté (et non ce qu'il dit avoir consulté).
 export function observeTools() {
-  const state = { fetched: [], searched: [], found: [], cost: null, usage: null, turns: 0 };
+  const state = { fetched: [], searched: [], found: [], models: [], cost: null, usage: null, turns: 0 };
   const pending = new Map(); // tool_use id → { name, url } : une consultation n'est confirmée que par un tool_result sans erreur
   const add = (list, v) => { if (v && !list.includes(v)) list.push(v); };
   return {
     state,
     feed(event) {
+      if (state.models.length < 8) add(state.models, modelOfEvent(event));
       if (event?.type === 'assistant') for (const b of event.message?.content ?? []) {
         if (b.type !== 'tool_use') continue;
         pending.set(b.id, { name: b.name, url: b.name === 'WebFetch' ? normUrl(b.input?.url) : null });
@@ -139,7 +141,7 @@ export function observeTools() {
           for (const u of text.match(URL_IN_TEXT) ?? []) add(state.found, normUrl(u.replace(/[\\,.;]+$/, '')));
         }
       }
-      if (event?.type === 'result') { state.cost = typeof event.total_cost_usd === 'number' ? event.total_cost_usd : null; state.usage = event.usage ? { input: event.usage.input_tokens ?? 0, output: event.usage.output_tokens ?? 0 } : null; state.turns = event.num_turns ?? 0; }
+      if (event?.type === 'result') { state.cost = typeof event.total_cost_usd === 'number' ? event.total_cost_usd : null; state.usage = event.usage ? { input: event.usage.input_tokens ?? null, output: event.usage.output_tokens ?? null } : null; state.turns = event.num_turns ?? 0; }
     }
   };
 }
