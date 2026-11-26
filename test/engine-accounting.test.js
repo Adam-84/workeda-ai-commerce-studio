@@ -74,3 +74,24 @@ test('migration : les anciennes exécutions sont rattachées à Claude, le retou
     b.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('usage : sans donnée rapportée, null et jamais 0 ; détail par moteur et par agent', () => {
+  const { comm, ids } = setup();
+  const a = comm.startRun({ agentId: ids.noah, kind: 'task', model: 'sonnet' }); comm.endRun(a.id, { state: 'done' });
+  let u = comm.usage();
+  assert.equal(u.today.costUsd, null); assert.equal(u.today.inputTokens, null); assert.equal(u.total.costUsd, null); assert.equal(u.byAgent[0].costUsd, null);
+  const b = comm.startRun({ agentId: ids.noah, kind: 'task', model: 'opus' }); comm.endRun(b.id, { state: 'done', costUsd: 0.5, usage: { input: 10, output: 5 } });
+  u = comm.usage();
+  assert.equal(u.today.costUsd, 0.5); assert.equal(u.today.runs, 2); assert.equal(u.today.runsWithCost, 1);
+  assert.deepEqual(u.byEngine.map((e) => [e.provider, e.model, e.total.costUsd]), [['claude', 'opus', 0.5], ['claude', 'sonnet', null]]);
+});
+
+test('budget : une exécution réussie sans coût rapporté compte l’estimation, jamais 0', () => {
+  const { comm, ids } = setup();
+  const root = comm.createTask({ assigneeId: ids.lucas, instruction: 'Audit', budgetUsd: 1 }).task;
+  const r = comm.startRun({ agentId: ids.lucas, kind: 'task', taskId: root.id });
+  assert.equal(comm.spentOf(root.id), 0, 'une exécution en cours n’est pas encore comptée');
+  comm.endRun(r.id, { state: 'done' });
+  assert.equal(comm.spentOf(root.id), LIMITS.unreportedRunUsd);
+  assert.equal(comm.task(root.id).unreportedRuns, 1);
+});

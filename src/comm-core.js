@@ -31,7 +31,7 @@ export const LIMITS = {
   reuseMs: 7 * 24 * 3_600_000,    // un résultat vérifié identique est réutilisé pendant 7 jours
   webTimeoutMs: 600_000, plainTimeoutMs: 180_000, // plainTimeoutMs : réponses dans un fil
   taskTimeoutMs: 600_000,        // tâche sans web : un audit complet dépasse 3 minutes (mesuré : 372 s)
-  unreportedRunUsd: 0.25         // une exécution en erreur SANS coût rapporté compte pour cette somme dans le budget (estimation prudente, affichée comme telle)
+  unreportedRunUsd: 0.25         // une exécution terminée SANS coût rapporté compte pour cette somme dans le budget (estimation, affichée comme telle)
 };
 
 export const TASK_TRANSITIONS = {

@@ -389,16 +389,15 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
   };
 
   // --- tâches (délégations = sous-missions) --------------------------------------------------------------------------------------------------
-  // Coût rapporté par Claude Code pour toutes les exécutions d'une demande racine (une exécution sans coût rapporté compte pour 0).
+  // Exécutions d'une demande racine : ses tâches ET les réponses données dans le fil de sa mission.
+  const OF_ROOT = "(r.task_id IN (SELECT id FROM comm_tasks WHERE root_task_id = ?) OR (r.kind = 'reply' AND r.thread_id IN (SELECT id FROM comm_threads WHERE mission_id = ?)))";
+  const missionOfRoot = (rootId) => get('SELECT mission_id FROM comm_tasks WHERE id = ?', rootId)?.mission_id ?? '';
+  // Terminée sans coût rapporté (réussie ou non) : le coût réel est inconnu, on compte une estimation prudente, jamais 0.
+  const unreportedOf = (rootId) => get(`SELECT COUNT(*) AS n FROM comm_runs r WHERE r.state != 'running' AND r.cost_usd IS NULL AND ${OF_ROOT}`, rootId, missionOfRoot(rootId)).n;
   const spentOf = (rootId) => {
-    // Toutes les exécutions de la demande : ses tâches ET les réponses données dans le fil de sa mission.
-    const root = get('SELECT mission_id FROM comm_tasks WHERE id = ?', rootId);
-    const c = get("SELECT COALESCE(SUM(r.cost_usd), 0) AS c FROM comm_runs r WHERE r.task_id IN (SELECT id FROM comm_tasks WHERE root_task_id = ?) OR (r.kind = 'reply' AND r.thread_id IN (SELECT id FROM comm_threads WHERE mission_id = ?))", rootId, root?.mission_id ?? '').c;
-    // D3 : une exécution EN ERREUR sans coût rapporté (délai dépassé, arrêt) a pu coûter : on compte une estimation prudente, jamais 0.
-    const unknown = get("SELECT COUNT(*) AS n FROM comm_runs r WHERE r.state = 'error' AND r.cost_usd IS NULL AND (r.task_id IN (SELECT id FROM comm_tasks WHERE root_task_id = ?) OR (r.kind = 'reply' AND r.thread_id IN (SELECT id FROM comm_threads WHERE mission_id = ?)))", rootId, root?.mission_id ?? '').n;
-    return Math.round((c + unknown * LIMITS.unreportedRunUsd) * 1e4) / 1e4;
+    const reported = get(`SELECT COALESCE(SUM(r.cost_usd), 0) AS c FROM comm_runs r WHERE ${OF_ROOT}`, rootId, missionOfRoot(rootId)).c;
+    return Math.round((reported + unreportedOf(rootId) * LIMITS.unreportedRunUsd) * 1e4) / 1e4;
   };
-  const unreportedOf = (rootId) => { const root = get('SELECT mission_id FROM comm_tasks WHERE id = ?', rootId); return get("SELECT COUNT(*) AS n FROM comm_runs r WHERE r.state = 'error' AND r.cost_usd IS NULL AND (r.task_id IN (SELECT id FROM comm_tasks WHERE root_task_id = ?) OR (r.kind = 'reply' AND r.thread_id IN (SELECT id FROM comm_threads WHERE mission_id = ?)))", rootId, root?.mission_id ?? '').n; };
   // Le budget d'une mission est-il épuisé ? (utilisé aussi pour les réponses dans son fil)
   const budgetExceeded = (missionId) => {
     for (const r of all('SELECT id, budget_usd FROM comm_tasks WHERE mission_id = ? AND root_task_id = id AND budget_usd IS NOT NULL', missionId || '')) if (spentOf(r.id) >= r.budget_usd) return `Budget de la mission atteint (${spentOf(r.id).toFixed(2)} sur ${r.budget_usd.toFixed(2)} $) : augmentez-le pour continuer.`;
@@ -630,10 +629,18 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
   const recentRuns = (limit = 50) => all('SELECT r.id, t.title AS task_title FROM comm_runs r LEFT JOIN comm_tasks t ON t.id = r.task_id ORDER BY r.started_at DESC, r.rowid DESC LIMIT ?', Math.min(Math.max(Number(limit) || 50, 1), 200)).map((r) => ({ ...getRun(r.id), taskTitle: r.task_title ?? null }));
   const usage = () => {
     const today = `${now().slice(0, 10)}T00:00:00.000Z`;
-    const sum = (where, ...a) => get(`SELECT COUNT(*) AS runs, COUNT(cost_usd) AS costed, COALESCE(SUM(cost_usd), 0) AS cost, COALESCE(SUM(input_tokens), 0) AS inT, COALESCE(SUM(output_tokens), 0) AS outT FROM comm_runs WHERE ${where}`, ...a);
-    const t = sum('started_at >= ?', today), a = sum('1 = 1');
-    return { today: { runs: t.runs, runsWithCost: t.costed, costUsd: t.cost, inputTokens: t.inT, outputTokens: t.outT }, total: { runs: a.runs, costUsd: a.cost }, quota: { runsPerDay: LIMITS.maxRunsPerDay, remaining: Math.max(0, LIMITS.maxRunsPerDay - runsToday()) }, note: 'Coût et jetons tels que rapportés par Claude Code ; abonnement existant, aucune API payante.',
-      byAgent: all("SELECT agent_id, COUNT(*) AS runs, COALESCE(SUM(cost_usd), 0) AS cost FROM comm_runs GROUP BY agent_id ORDER BY runs DESC").map((r) => ({ agentId: r.agent_id, runs: r.runs, costUsd: r.cost })) };
+    // SUM sans aucune valeur rend NULL : une donnée absente reste absente, jamais 0.
+    const COLUMNS = 'COUNT(*) AS runs, COUNT(cost_usd) AS costed, SUM(cost_usd) AS cost, COUNT(input_tokens) AS tokened, SUM(input_tokens) AS inT, SUM(output_tokens) AS outT';
+    const shape = (r) => ({ runs: r?.runs ?? 0, runsWithCost: r?.costed ?? 0, costUsd: r?.cost ?? null, runsWithTokens: r?.tokened ?? 0, inputTokens: r?.inT ?? null, outputTokens: r?.outT ?? null });
+    const sum = (where, ...a) => shape(get(`SELECT ${COLUMNS} FROM comm_runs WHERE ${where}`, ...a));
+    const todays = new Map(all(`SELECT provider, model, ${COLUMNS} FROM comm_runs WHERE started_at >= ? GROUP BY provider, model`, today).map((r) => [`${r.provider}|${r.model}`, shape(r)]));
+    return {
+      today: sum('started_at >= ?', today), total: sum('1 = 1'),
+      quota: { runsPerDay: LIMITS.maxRunsPerDay, remaining: Math.max(0, LIMITS.maxRunsPerDay - runsToday()) },
+      note: 'Coût et jetons tels que rapportés par Claude Code ; abonnement existant, aucune API payante.',
+      byEngine: all(`SELECT provider, model, ${COLUMNS} FROM comm_runs GROUP BY provider, model ORDER BY provider, model`).map((r) => ({ provider: r.provider, model: r.model, today: todays.get(`${r.provider}|${r.model}`) ?? shape(null), total: shape(r) })),
+      byAgent: all(`SELECT agent_id, ${COLUMNS} FROM comm_runs GROUP BY agent_id ORDER BY runs DESC`).map((r) => ({ agentId: r.agent_id, ...shape(r) }))
+    };
   };
   const notifications = () => {
     const seen = meta('seen_at') ?? '';
