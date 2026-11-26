@@ -191,7 +191,7 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
   function engineForm(t) {
     const line = h('p', { class: 'note' }, `Moteur : ${t.model ? engineLabel(t) : 'celui de la fiche'}${t.engineSource ? ` (${SOURCES[t.engineSource]})` : ''}`);
     if (t.automationKey || !CHANGEABLE.includes(t.state)) return line;
-    const err = errBox(), select = h('select', { 'aria-label': 'Moteur de la tâche' }), apply = h('button', { type: 'submit', disabled: true }, 'Changer le moteur');
+    const err = errBox(), select = h('select', { class: 'engine-select', 'aria-label': 'Moteur de la tâche' }), apply = h('button', { type: 'submit', disabled: true }, 'Changer le moteur');
     get('/api/engines').then((d) => { select.replaceChildren(...optionNodes(h, d.catalog, t.engineSource === 'task' ? t : null, 'Choix par défaut')); apply.disabled = false; }).catch((x) => fail(err, x));
     return h('form', { class: 'memory-form', onsubmit: async (e) => { e.preventDefault(); err.textContent = ''; try { await send('POST', `/api/comm/tasks/${enc(t.id)}/engine`, { engine: engineFromValue(select.value) }); announce('Moteur de la tâche changé'); ui.pollComm?.(); await loadTasks(); } catch (x) { fail(err, x); } } },
       line, h('label', {}, 'Nouveau moteur', select), apply, err);
@@ -209,7 +209,7 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
     const cat = h('input', { type: 'checkbox', name: 'withCatalog' }), budget = h('input', { name: 'budgetUsd', type: 'number', min: '0.1', max: '100', step: '0.1', value: '3', 'aria-label': 'Budget en dollars' });
     const ints = { manual_import: h('input', { type: 'checkbox', name: 'withManualImport' }), shopify_admin: h('input', { type: 'checkbox', name: 'withShopifyAdmin' }), shopify_apps: h('input', { type: 'checkbox', name: 'withShopifyApps' }), dsers: h('input', { type: 'checkbox', name: 'withDsers' }), track17: h('input', { type: 'checkbox', name: 'withTrack17' }) };
     const web = h('input', { type: 'checkbox', name: 'allowWeb' }), approval = h('input', { type: 'checkbox', name: 'requiresApproval', checked: true });
-    const engine = h('select', { name: 'engine', 'aria-label': 'Moteur IA' }, optionNodes(h, [], null, 'Chaque agent garde le sien'));
+    const engine = h('select', { name: 'engine', class: 'engine-select', 'aria-label': 'Moteur IA' }, optionNodes(h, [], null, 'Chaque agent garde le sien'));
     get('/api/engines').then((d) => engine.replaceChildren(...optionNodes(h, d.catalog, null, 'Chaque agent garde le sien'))).catch(() => {});
     const syncWeb = () => { web.disabled = !webOk(who.value); if (web.disabled) web.checked = false; };
     who.addEventListener('change', syncWeb);

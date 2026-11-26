@@ -437,7 +437,7 @@ function engineBlock(p) {
   async function load() {
     const data = await get('/api/engines'), me = data.agents.find((a) => a.agentId === p.agentId);
     if (!me) return;
-    const select = h('select', { 'aria-label': `Moteur IA de ${p.displayName}` }, optionNodes(h, data.catalog, me.choice, `Fiche (${engineLabel(me.fiche)})`));
+    const select = h('select', { class: 'engine-select', 'aria-label': `Moteur IA de ${p.displayName}` }, optionNodes(h, data.catalog, me.choice, `Fiche (${engineLabel(me.fiche)})`));
     select.addEventListener('change', async () => {
       err.textContent = '';
       try {

@@ -56,7 +56,7 @@ export function missionsTab({ agent, agents, missions, save, get, send, announce
     const url = `/api/missions/${encodeURIComponent(m.id)}/engine`, err = h('p', { class: 'err', role: 'alert' });
     const load = async () => {
       const [data, mine] = await Promise.all([get('/api/engines'), get(url)]);
-      const select = h('select', { 'aria-label': 'Moteur IA de cette mission' }, optionNodes(h, data.catalog, mine.choice, 'Chaque agent garde le sien'));
+      const select = h('select', { class: 'engine-select', 'aria-label': 'Moteur IA de cette mission' }, optionNodes(h, data.catalog, mine.choice, 'Chaque agent garde le sien'));
       select.addEventListener('change', async () => { err.textContent = ''; try { await send('PUT', url, { engine: engineFromValue(select.value) }); announce('Moteur de la mission enregistré'); await load(); } catch (x) { err.textContent = x.message; } });
       box.replaceChildren(h('h4', {}, 'Moteur IA'), select, h('p', { class: 'note' }, 'Les tâches déjà créées gardent leur moteur.'), err);
     };
