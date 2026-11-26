@@ -230,3 +230,17 @@ test('écran : libellés, options et automatisations concernées', () => {
   assert.match(options[1].label, /indisponible/);
   assert.deepEqual(affectedAutomations([{ name: 'A', enabled: true, allowAi: true, agentSlug: 'lucas' }, { name: 'B', enabled: false, allowAi: true, agentSlug: 'lucas' }], 'lucas'), ['A']);
 });
+
+test('à vérifier : un résultat ne se valide pas sous un autre moteur que celui qui l’a produit', () => {
+  const { comm, ids } = setup();
+  const t = comm.createTask({ assigneeId: ids.lucas, instruction: 'Audit' }).task;
+  const run = comm.startRun({ agentId: ids.lucas, kind: 'task', taskId: t.id, model: 'sonnet' }); comm.endRun(run.id, { state: 'done' });
+  comm.setTaskState(t.id, 'running');
+  comm.recordResult(t.id, { agentId: ids.lucas, runId: run.id, body: 'ok', verified: false, level: 'none', verification: 'simulé' });
+  comm.setTaskState(t.id, 'review');
+  comm.setTaskEngine(t.id, claude('opus'));
+  assert.throws(() => comm.verifyTask(t.id), /autre moteur/);
+  assert.equal(comm.task(t.id).state, 'review');
+  comm.setTaskEngine(t.id, null);
+  assert.equal(comm.verifyTask(t.id).state, 'done');
+});
