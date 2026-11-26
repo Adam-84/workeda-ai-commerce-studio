@@ -284,3 +284,12 @@ button.link{border:0;padding:0;background:none;color:var(--accent);font-weight:7
 .integration-card progress{height:8px;accent-color:var(--accent)}
 .integration-card details>summary{cursor:pointer;font-weight:600}
 .integration-card button:disabled{opacity:.55;cursor:default}
+
+/* Automation Center shares the island palette and existing panel components. */
+.automation-actions{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin:.6rem 0}
+.automation-form,.automation-consent{display:grid;gap:.8rem;border:2px solid var(--border,#64748b);padding:1rem;margin:1rem 0}
+.automation-form label,.automation-consent label{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem}
+.automation-form input:not([type=checkbox]),.automation-form select,.automation-form textarea{max-width:100%;min-width:0}
+.automation-form textarea{width:100%}.automation-form fieldset{display:grid;gap:.5rem}
+.automation-center .skill-row{align-items:flex-start;flex-wrap:wrap}.automation-center .skill-row>div{min-width:0;overflow-wrap:anywhere}
+.automation-center details{margin:.8rem 0}.automation-center summary{cursor:pointer}

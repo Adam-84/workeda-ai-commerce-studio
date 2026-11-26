@@ -229,6 +229,8 @@ test('dépendances, échéance, reprise et annulation', () => {
   const c = comm.createTask({ assigneeId: ids.alexander, kind: 'consolidation', instruction: 'Assembler', parentTaskId: root.id, dependsOn: [b.id] }, asAgent(comm, ids.alexander)).task;
   const first = comm.claimNext().task; assert.equal(first.id, a.id);
   const second = comm.claimNext({ busy: new Set([ids.sophia]) }).task; assert.equal(second.id, root.id);
+  assert.equal(comm.claimNext({ busy: new Set([ids.sophia, ids.alexander]) }).task, null, 'concurrence globale bornée à deux');
+  comm.setTaskState(root.id, 'failed', 'Fin simulée de la racine');
   const third = comm.claimNext({ busy: new Set([ids.sophia, ids.alexander]) }).task; assert.equal(third.id, b.id);
   assert.equal(comm.task(c.id).state, 'queued', 'attend B');
   // B échoue → la consolidation est bloquée explicitement
@@ -363,7 +365,7 @@ test('persistance : tout survit à la fermeture de la base', () => {
   const two = createStudio(file, { device: 'pc-a' });
   assert.equal(two.comm.task(task.id).instruction, 'Étudier');
   assert.equal(two.comm.listMessages(task.threadId).items.at(-1).body, 'Bonjour');
-  assert.equal(two.comm.schemaVersion(), 3);
+  assert.equal(two.comm.schemaVersion(), 4);
   assert.equal(two.comm.recover(), 0);
   two.close();
 });
@@ -378,6 +380,6 @@ test('migration réversible : le retour arrière ne retire que les tables de com
   assert.ok(r.backup && existsSync(r.backup), 'sauvegarde avant retour arrière');
   studio.close();
   const again = createStudio(file, { device: 'pc-a' }); // se recrée proprement au démarrage suivant
-  assert.equal(again.comm.schemaVersion(), 3);
+  assert.equal(again.comm.schemaVersion(), 4);
   again.close();
 });

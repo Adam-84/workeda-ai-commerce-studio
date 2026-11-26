@@ -7,6 +7,11 @@ import { connectorState, MAX_PRELOADED } from './agent-files.js';
 import { runClaude as realClaude, systemPrompt, conversationPrompt, missionsPrompt, teamPrompt, planRequestPrompt, parsePlan, memoryPrompt, memoryProposalPrompt, parseMemoryProposals } from './claude-reply.js';
 import { createOrchestrator } from './comm-run.js';
 import { INTEGRATION_IDS } from './integrations-core.js';
+import { AUTOMATION_TEMPLATES } from './automation-templates.js';
+import { EVENTS } from './automation-core.js';
+import { nextSlots } from './automation-schedule.js';
+import { readAutomationSources } from './automation-sources.js';
+import { createAutomationRunner } from './automation-run.js';
 
 // Détection réelle d'un binaire dans le PATH (« détecté » ne veut pas dire « connecté »).
 export const cliPresent = (command, run = execFileSync) => {
@@ -36,7 +41,7 @@ const SKILL_PATH = /^\/api\/(?:skills(?:\/|$)|agents\/[^/]+\/skills)/;
 const MEMORY_PATH = /^\/api\/(?:memory(?:\/|$)|missions\/[^/]+\/(?:memory-proposals$|memory(?:\/|$)))/;
 // Communication entre agents : lancer une tâche fait travailler un agent (Claude Code) et écrire dans les fils lus par les autres.
 // Tout est réservé à cette machine, lectures comprises (les fils contiennent le travail de l'entreprise).
-const COMM_PATH = /^\/api\/(?:comm|shop|shop-apps|integrations)(?:\/|$)/; // le catalogue Shopify aussi : lectures et relevés réservés à cette machine
+const COMM_PATH = /^\/api\/(?:comm|shop|shop-apps|integrations|automations)(?:\/|$)/; // le catalogue Shopify aussi : lectures et relevés réservés à cette machine
 // Lecture : la mémoire contient le savoir de l'entreprise — réservée à cette machine (même contrôle, sans l'origine).
 function assertLocalWrite(req, { checkOrigin = true } = {}) {
   const deny = (why) => Object.assign(new Error(`${checkOrigin ? 'Modification' : 'Lecture'} refusée : ${why}.`), { status: 403 });
@@ -318,10 +323,38 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
       `${recalled}${memoryProposalPrompt(mission, studio.listDiscussion(missionId).slice(-50), nameOf, notes, studio.currentPlan(missionId), profile.displayName)}`,
       (text) => memory.propose(agentId, parseMemoryProposals(text), { missionId }));
   }
+  const automations = studio.automation;
+  if (automations) {
+    const a = automations;
+    Object.assign(routes, {
+      'GET /api/automations': () => ({ status: a.status(), rules: a.list().map((d) => ({ ...d, availability: readAutomationSources(studio, d).missing })), agents: linked().list.map((p) => ({ slug: p.slug, name: p.displayName })), templates: AUTOMATION_TEMPLATES, events: EVENTS }),
+      'POST /api/automations': (d) => a.save(d),
+      'GET /api/automations/export': () => a.exportDefinitions(),
+      'POST /api/automations/import': (d) => a.importDefinitions(d?.definitions),
+      'POST /api/automations/executor': (d) => a.designate(d),
+      'POST /api/automations/pause': (d) => { if (typeof d?.paused !== 'boolean') fail(400, 'État de suspension requis.'); return a.pause(d.paused); },
+      'POST /api/automations/ai-resume': (d) => { if (d?.confirm !== true) fail(400, 'Confirmation requise.'); return a.pauseAi(false); },
+      'POST /api/automations/preview': (d) => ({ slots: nextSlots(d?.schedule, new Date().toISOString()) }),
+      'GET /api/automations/history': (_, q) => a.history({ ruleId: q.get('ruleId'), offset: q.get('offset') }).map((r) => { const t = r.task_id ? studio.comm.task(r.task_id) : null; const runs = t ? studio.comm.recentRuns(500).filter((x) => x.taskId === t.id) : []; return { ...r, missionId: t?.missionId ?? r.mission_id, costUsd: runs.length && runs.every((x) => x.costUsd != null) ? runs.reduce((n,x) => n+x.costUsd,0) : null, tokens: runs.length && runs.every((x) => x.inputTokens != null && x.outputTokens != null) ? runs.reduce((n,x) => n+x.inputTokens+x.outputTokens,0) : null }; })
+    });
+    paramRoutes.push(
+      ['POST', /^\/api\/automations\/([a-zA-Z0-9-]+)$/, (m,d) => a.save({ ...d, id: m[1] })],
+      ['POST', /^\/api\/automations\/([a-zA-Z0-9-]+)\/activate$/, (m,d) => a.activate(m[1],d)],
+      ['POST', /^\/api\/automations\/([a-zA-Z0-9-]+)\/disable$/, (m) => a.disable(m[1])],
+      ['POST', /^\/api\/automations\/([a-zA-Z0-9-]+)\/run$/, (m,d) => a.manual(m[1],d)]
+    );
+  }
   if (comm) orch = createOrchestrator({ studio, profiles: () => profiles, runner: runClaude, memoryFor, pumpEveryMs });
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://localhost');
+      // One boundary before every handler, including streaming AI and legacy routes.
+      if (url.pathname.startsWith('/api/')) {
+        res.setHeader('cache-control', 'no-store');
+        res.setHeader('x-content-type-options', 'nosniff');
+        assertLocalWrite(req, { checkOrigin: req.method !== 'GET' && req.method !== 'HEAD' });
+        if (req.headers['sec-fetch-site'] === 'cross-site') throw Object.assign(new Error('Requête intersite refusée.'), { status: 403 });
+      }
       const key = `${req.method} ${url.pathname}`;
       const replyMatch = req.method === 'POST' && url.pathname.match(/^\/api\/agents\/([^/]+)\/reply$/);
       if (replyMatch) return await reply(decodeURIComponent(replyMatch[1]), res);
@@ -355,6 +388,7 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
     } catch (error) { req.resume(); send(res, error.status ?? 400, { error: error.message }); } // corps non lu (refus avant lecture) : vidé
   });
   server.orchestrator = orch; // server.js le démarre (reprise après arrêt, passage régulier) ; les tests le pilotent à la main
-  server.on('close', () => orch?.stop());
+  server.automationRunner = automations ? createAutomationRunner({ studio }) : null;
+  server.on('close', () => { orch?.stop(); server.automationRunner?.stop(); });
   return server;
 }

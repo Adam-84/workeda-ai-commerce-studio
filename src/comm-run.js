@@ -60,7 +60,7 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
     const mayRead = (need = []) => need.length === 0 || (!task.allowWeb && need.every((i) => (task.withIntegrations ?? []).includes(i) && (ints?.used ?? []).includes(i)));
     const depsSafe = deps.map((d) => (mayRead(d.integrations) ? d : { ...d, title: 'tâche issue de données DSers/17TRACK/imports/Shopify Admin', report: NOT_SHARED, sources: [], resultId: null }));
     const recentSafe = recent.map((m) => (!mayRead(m.integrations) ? { ...m, body: NOT_SHARED } : m));
-    const canDelegate = task.depth < LIMITS.maxDepth && task.kind !== 'consolidation';
+    const canDelegate = !task.automationKey && task.depth < LIMITS.maxDepth && task.kind !== 'consolidation';
     // Une exécution qui lit le web ne reçoit pas la mémoire : une page piégée ne doit pas pouvoir la lui faire exfiltrer.
     const memoryText = web.length ? '' : scrubContacts(memoryFor(participants(thread), { missionId: task.missionId, query: `${mission?.title ?? ''} ${task.instruction}` }));
     const peers = canDelegate ? roster().filter((a) => a.id !== task.assigneeId && mayDelegate(profile, a.slug)) : [];
@@ -75,6 +75,7 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
   // Délégations demandées par l'agent : chacune est contrôlée côté serveur ; les refus sont expliqués, jamais silencieux.
   function applyDelegations(task, parsed, run) {
     const out = { created: [], reused: [], rejected: [] };
+    if (task.automationKey) { if (parsed.delegate.length || parsed.consolidate) out.rejected.push('Délégations désactivées pour Automation.'); return out; }
     const by = { type: 'agent', agentId: task.assigneeId, runId: run.id };
     const profile = profileOf(task.assigneeId), canDelegate = task.depth < LIMITS.maxDepth && task.kind !== 'consolidation';
     const ask = parsed.delegate;
@@ -107,6 +108,7 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
   async function execute(task, key) {
     const agentId = task.assigneeId, profile = profileOf(agentId);
     let run = null;
+    const heartbeat = task.automationKey ? setInterval(() => { try { comm.renewAutomation(task.id); } catch {} }, 25000) : null; heartbeat?.unref?.();
     try {
       if (!profile) { comm.setTaskState(task.id, 'blocked', 'Fiche de l’agent introuvable dans .claude/agents.'); return; }
       // Une tâche DÉLÉGUÉE par un agent à partir de données DSers/17TRACK/imports/Shopify Admin ne s'exécute que chez un agent qui a lui-même reçu l'accès et ne lit pas le web.
@@ -114,8 +116,10 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
         const missing = task.withIntegrations.filter((i) => !studio.integrations?.store.hasGrant(i, profile.slug)), web = task.allowWeb && webToolsOf(profile).length > 0;
         if (missing.length || web) { comm.setTaskState(task.id, 'blocked', web ? 'Demande issue de données DSers/17TRACK/imports/Shopify Admin : refusée pour une tâche qui lit le web. Le propriétaire doit la relancer sans web.' : `Demande issue de données DSers/17TRACK/imports/Shopify Admin : ${profile.displayName ?? profile.slug} n'a pas reçu l'accès (${missing.join(', ')}). Accordez-le dans l'Integration Center ou reformulez.`); return; }
       }
-      if (task.withCatalog) await studio.shop?.ensureFresh(); // relevé en lecture seule, daté ; ne lève jamais
+      if (task.automationKey && !comm.automationAllowed(task)) { comm.setTaskState(task.id, 'blocked', 'Automatisation suspendue, permission ou source modifiée.'); return; }
+      if (task.withCatalog && !task.automationKey) await studio.shop?.ensureFresh(); // relevé en lecture seule, daté ; ne lève jamais
       const built = buildTask(task);
+      if (task.automationKey && !comm.automationAllowed(task)) { comm.setTaskState(task.id, 'blocked', 'Autorisation retirée avant lancement.'); return; }
       run = comm.startRun({ agentId, kind: 'task', taskId: task.id, threadId: task.threadId, model: profile.model, web: built.web.length > 0 });
       active.set(key, { agentId, runId: run.id, taskId: task.id, threadId: task.threadId, kind: 'task', startedAt: run.startedAt });
       setActivity(agentId, 'working', `Tâche : ${short(task.instruction, 100)}`);
@@ -130,14 +134,15 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
     } catch (e) {
       if (run) fail(task, run, e);
       else { try { comm.setTaskState(task.id, 'failed', `Impossible de préparer l’exécution : ${short(e.message, 200)}`); } catch { /* déjà dans un autre état */ } }
-    } finally { active.delete(key); }
+    } finally { clearInterval(heartbeat); active.delete(key); }
   }
 
   function fail(task, run, error, inbox = [], observed = null) {
     const message = String(error?.message ?? error);
     comm.endRun(run.id, { state: 'error', error: message, costUsd: observed?.cost ?? null, usage: observed?.usage ?? null }); // un coût déjà rapporté avant l'erreur est conservé
     for (const id of inbox) { try { comm.markDelivery(id, task.assigneeId, 'error', message); } catch { /* distribution déjà traitée */ } }
-    const retry = TRANSIENT.test(message) && task.attempts < task.maxAttempts;
+    if (task.automationKey) { studio.automation.pauseAi(true); const ar = studio.automation.forTask(task.id); if (ar) studio.automation.finish(ar.id, 'uncertain', 'Appel IA interrompu ou indisponible ; décision humaine requise dans Comms.'); }
+    const retry = !task.automationKey && TRANSIENT.test(message) && task.attempts < task.maxAttempts;
     if (retry) comm.setTaskState(task.id, 'queued', `Nouvel essai après : ${short(message, 160)}`, { extra: { notBefore: new Date(Date.now() + LIMITS.backoffMs).toISOString() } });
     else comm.setTaskState(task.id, TRANSIENT.test(message) ? 'failed' : 'blocked', short(message, 300));
     try { comm.postMessage(task.threadId, { kind: 'system', body: `${comm.nameOf(task.assigneeId)} n'a pas pu terminer : ${short(message, 300)}${retry ? ' Un nouvel essai est prévu.' : ''}`, taskId: task.id }, { type: 'system' }); } catch { /* fil clos */ }
