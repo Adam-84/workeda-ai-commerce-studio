@@ -117,3 +117,14 @@ test('resolved logistics anomaly does not generate a new anomaly mission', async
     time += 2 * 3600000; snapshot('Delivered'); await worker.tick(); assert.equal(s.automation.history().length, 1);
   } finally { s.close(); }
 });
+test('other work finishing while a local analysis waits does not block it', async () => {
+  const s = setup(); let calls = 0; try {
+    s.automation.designate({ confirm: true }); const d = s.automation.save({ ...def, allowAi: true }); s.automation.activate(d.id, { confirm: true, ai: true }); s.automation.manual(d.id, { confirm: true });
+    const worker = createAutomationRunner({ studio: s }); await worker.tick();
+    const agentId = s.comm.agentOfSlug('sophia');
+    const other = s.createMission({ title: 'Autre travail', assignedTo: agentId });
+    s.memory.propose(agentId, [{ type: 'recommendation', title: 'Nouvelle idée', content: 'Proposée pendant l’attente', sources: [] }], { missionId: other.id });
+    const orch = createOrchestrator({ studio: s, profiles: () => profiles, runner: async () => { calls++; return 'Rapport simulé'; } }); orch.pump(); await orch.idle();
+    assert.equal(calls, 1, s.comm.listTasks()[0].stateNote);
+  } finally { s.close(); }
+});

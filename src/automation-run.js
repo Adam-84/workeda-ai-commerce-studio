@@ -52,7 +52,7 @@ export function createAutomationRunner({ studio, clock = () => new Date().toISOS
         if (!a.reserveAi(r.id)) return a.finish(r.id, 'waiting_ai', 'Autorisation, moteur IA, quota ou place indisponible ; reprise explicite.');
         a.tx(() => {
           const created = studio.comm.createTask({ assigneeId: agentId, title: d.name, instruction: `${d.objective}\nSources choisies, datées (aperçu borné) :\n${data.summary.slice(0, 1600)}\nLecture seule. Coûts absents inconnus ; pas de délégation. Toute action sensible exige une validation humaine.`, withCatalog: d.sources.includes('catalog'), withIntegrations: d.sources.filter((s) => ['shopify_apps', 'manual_import', 'shopify_admin', 'dsers', 'track17'].includes(s)), budgetUsd: d.budgetUsd, requiresApproval: true, dueAt: r.due_at, cacheKey: `${d.id}:${d.revision}:${data.hash}` }, { type: 'automation', runId: r.id });
-          a.link(r.id, created.task.id, data.hash);
+          a.link(r.id, created.task.id, data.launchHash);
           if (!created.created && created.task.state === 'done') a.finish(r.id, 'done', 'Résultat vérifié récent réutilisé');
         });
       } catch (e) { if (a.owns(r.id, worker)) a.finish(r.id, 'blocked', 'Collecte ou préparation refusée ; consultez les sources et permissions.'); }
