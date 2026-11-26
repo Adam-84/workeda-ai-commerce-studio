@@ -99,6 +99,10 @@ The wire protocol uses `Authorization: Bearer WORKER_TOKEN` and JSON POSTs:
 Usage and cost are provider-reported observations, not independently verified
 billing. Missing values remain unknown; they are never replaced with a zero cost.
 
+A report may also carry `models`, up to eight model names observed in the answer.
+An older server ignores the field; with an older worker the observed model stays
+unknown.
+
 ## Uncertain outcomes
 
 Claims are exclusive across database connections, with one active job per worker.
