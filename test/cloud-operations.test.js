@@ -225,3 +225,15 @@ test('writes keep working while a backup runs, and the backup completes', async 
   assert.ok(writes > 0);
   assert.equal(s.runtime.status().backup.error, false);
 });
+
+test('arriving from a link on another site shows the login page, and the API stays closed', async (t) => {
+  const s = await central(t);
+  const { request } = await import('node:http');
+  const arrive = (path, headers = {}) => new Promise((resolve, reject) => {
+    const req = request(s.runtime.origin + path, { headers: { 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'navigate', ...headers } }, (res) => { res.resume(); res.on('end', () => resolve({ status: res.statusCode, location: res.headers.location })); });
+    req.on('error', reject); req.end();
+  });
+  assert.deepEqual(await arrive('/'), { status: 303, location: '/login.html' });
+  assert.equal((await arrive('/api/agents')).status, 403);
+  assert.equal((await arrive('/', { host: 'rebind.invalid' })).status, 403);
+});

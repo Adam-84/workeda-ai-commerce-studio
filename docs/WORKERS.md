@@ -1,15 +1,17 @@
 # Private Claude workers
 
 The cloud process stores worker identities and jobs in a separate `control.db`.
-An operator configures `ARCHIPEL_WORKER_MODELS` explicitly; an empty allowlist
-disables enrollment and AI jobs. A model name is configuration, not a claim that
-the account has access to it. Quota is reported as unknown. No Codex runner exists.
+The central server accepts jobs only for the models named in the agent files. The
+operator CLI reads `ARCHIPEL_WORKER_MODELS` to limit which models an identity may
+be enrolled with; an empty value disables enrollment. A model name is
+configuration, not a claim that the account has access to it. Quota is reported as
+unknown. No Codex runner exists.
 
 ## Enrollment and revocation
 
 Run the operator CLI on the central host. These commands only change identities;
-they never invoke a provider. For example, after configuring the same server
-model allowlist in the environment:
+they never invoke a provider. For example, after setting
+`ARCHIPEL_WORKER_MODELS` to the models this worker may serve:
 
 ```sh
 node tools/workers.mjs enroll --db /private/data/control.db --name laptop --models sonnet --token-file /private/laptop-worker-token

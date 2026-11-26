@@ -10,7 +10,7 @@ const usage = `Worker identities (operator-only; no AI invocation):
   node tools/workers.mjs revoke --id WORKER_ID [--db /private/data/control.db]
   node tools/workers.mjs release --id WORKER_ID --process-stopped [--db /private/data/control.db]
 Release unblocks an identity held by an uncertain job. Run it only after checking that the earlier process has stopped.
-Configure the server allowlist through ARCHIPEL_WORKER_MODELS (comma separated).
+Set ARCHIPEL_WORKER_MODELS (comma separated) to the models an identity may be enrolled with.
 Token files are created exclusively and never overwritten. Keep them outside source control.`;
 
 let db;

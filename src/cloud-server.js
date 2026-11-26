@@ -136,7 +136,12 @@ export async function createCloudRuntime({ dataDir, passwordHash, origin, port =
         return res.end(await readFile(join(root, 'public', path.slice(1))));
       }
       try { auth.authorize(req); }
-      catch (e) { if (e.status === 401 && path === '/') { res.writeHead(303, { location: '/login.html' }); return res.end(); } throw e; }
+      catch (e) {
+        // Un lien suivi depuis un autre site mène à la connexion ; rien d'autre n'est ouvert à une requête intersite.
+        const followed = req.headers['sec-fetch-site'] === 'cross-site' && req.headers['sec-fetch-mode'] === 'navigate' && req.headers.host === new URL(auth.origin).host;
+        if (path === '/' && req.method === 'GET' && (e.status === 401 || followed)) { res.writeHead(303, { location: '/login.html' }); return res.end(); }
+        throw e;
+      }
       if (path === '/api/operations' && req.method === 'GET') return json(res, 200, status());
       if (path === '/api/operations/stop' && req.method === 'POST') {
         const input = await readJson(req); if (typeof input.halted !== 'boolean') throw error('État requis.', 400);
