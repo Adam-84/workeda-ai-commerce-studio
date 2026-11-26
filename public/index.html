@@ -2,7 +2,12 @@
 <html lang="fr" data-phase="noon">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#14242c">
+  <meta name="mobile-web-app-capable" content="yes">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icons/icon-192.png">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
   <title>Workeda AI Commerce Studio</title>
   <link rel="stylesheet" href="/style.css">
 </head>
@@ -17,6 +22,7 @@
       <span id="missions-count" class="chip">0 mission ouverte</span>
       <button id="phase-pill" class="chip accent" type="button" aria-haspopup="true">Midi</button>
       <span id="connections" class="chip soft">Vérification locale…</span>
+      <button id="home-btn" type="button" aria-haspopup="dialog">Tableau de bord</button>
       <button id="skills-btn" type="button" aria-haspopup="dialog">Skills</button>
       <button id="memory-btn" type="button" aria-haspopup="dialog">Memory</button>
       <button id="comm-btn" type="button" aria-haspopup="dialog">Comms</button>
@@ -41,8 +47,16 @@
       <div id="minimap-grid"><div id="minimap-view"></div></div>
     </aside>
     <section id="pop" class="panel" hidden tabindex="-1" role="dialog" aria-label="Détails"></section>
+    <nav id="mobile-nav" class="panel" aria-label="Navigation principale">
+      <button type="button" data-nav="home">Accueil</button>
+      <button type="button" data-nav="team">Équipe</button>
+      <button type="button" data-nav="missions">Missions</button>
+      <button type="button" data-nav="comm">Messages</button>
+      <button type="button" data-nav="more">Plus</button>
+    </nav>
     <div id="live" class="sr" aria-live="polite"></div>
   </main>
   <script type="module" src="/app.js"></script>
+  <script type="module" src="/pwa.js"></script>
 </body>
 </html>

@@ -63,6 +63,24 @@ option{background:var(--panel-solid);color:var(--text)}::placeholder{color:var(-
   #minimap{width:150px}#minimap-grid{height:100px}#missionbar{bottom:8px}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 .emblem{width:18px;height:18px;image-rendering:pixelated;flex:none}
+#mobile-nav{display:none}
+#home-btn{font-weight:600;white-space:nowrap}
+.net-banner{position:fixed;left:50%;transform:translateX(-50%);top:76px;z-index:20;max-width:calc(100vw - 16px);padding:10px 14px;background:#7a2e1d;color:#fff;border:2px solid #ffc4af;box-shadow:4px 4px 0 rgba(0,0,0,.35);font-size:13px;text-align:center}
+#net-update{top:130px;background:#21333b;border-color:#e3c381}
+.hq{display:grid;gap:10px;align-content:start;overflow:auto;min-height:0;padding-right:2px}
+.hq h2{margin-right:44px}
+.hq-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.hq-card{display:grid;gap:4px;align-content:start;text-align:left;padding:10px 12px;border:2px solid color-mix(in srgb,var(--text) 22%,transparent);border-radius:4px;box-shadow:3px 3px 0 color-mix(in srgb,var(--text) 14%,transparent);overflow-wrap:anywhere}
+.hq-card strong{font-size:17px}
+.hq-label{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--soft);font-weight:700}
+.hq-card.tone-warn{border-color:#d9822b}
+.hq-card.tone-unknown{border-style:dashed;box-shadow:none}
+#pop .hq-list{display:grid;gap:8px}
+.hq-list button,.hq-list li>div{width:100%;display:grid;gap:3px;text-align:left;padding:10px 12px;min-height:44px;overflow-wrap:anywhere}
+.hq-actions{display:flex;gap:8px;flex-wrap:wrap}
+.hq-actions button{min-height:44px}
+.hq button.danger{border-color:#e5484d;color:color-mix(in srgb,#e5484d 65%,var(--text));font-weight:700}
+#pop.agent-panel>.hq{height:100%}
 fieldset{border:1px solid var(--border);border-radius:10px;padding:8px 10px;margin:8px 0;display:grid;gap:8px;min-width:0}
 legend{font-size:12px;color:var(--soft);padding:0 4px}
 select,fieldset{color:var(--text)}
@@ -278,7 +296,7 @@ button.link{border:0;padding:0;background:none;color:var(--accent);font-weight:7
 
 /* Integration Center (Phase 6) : même panneau que Skills / Memory / Comms */
 #pop.agent-panel:has(.integrations-center){width:min(700px,calc(100vw - 32px))}
-.integrations-center{display:grid;gap:10px;align-content:start;max-height:calc(100vh - 130px);overflow:auto;padding-right:6px}
+.integrations-center{grid-template-columns:minmax(0,1fr);overflow-wrap:anywhere;display:grid;gap:10px;align-content:start;max-height:calc(100vh - 130px);overflow:auto;padding-right:6px}
 .integration-card{display:grid;gap:6px;padding:12px 14px;border:1px solid color-mix(in srgb,var(--text) 18%,transparent);border-radius:14px}
 .integration-card h3{margin:0}.integration-card h4{margin:6px 0 0}
 .integration-card progress{height:8px;accent-color:var(--accent)}
@@ -293,3 +311,28 @@ button.link{border:0;padding:0;background:none;color:var(--accent);font-weight:7
 .automation-form textarea{width:100%}.automation-form fieldset{display:grid;gap:.5rem}
 .automation-center .skill-row{align-items:flex-start;flex-wrap:wrap}.automation-center .skill-row>div{min-width:0;overflow-wrap:anywhere}
 .automation-center details{margin:.8rem 0}.automation-center summary{cursor:pointer}
+
+/* Largeurs intermédiaires : la barre du haut doit garder tous ses boutons à l’écran. */
+@media(min-width:701px) and (max-width:1500px){.sub,#connections{display:none}.search-wrap{min-width:0;flex:0 1 200px}#search{width:100%}#topbar{gap:8px;padding:0 10px}#topbar>button:not(#settings-btn){padding:6px 8px;white-space:nowrap}#phase-pill{min-width:0;overflow:hidden;text-overflow:ellipsis}}
+@media(min-width:701px) and (max-width:1100px){#missions-count,#logo{display:none}#topbar{gap:4px;font-size:12px}#topbar>button:not(#settings-btn){padding:5px 6px;font-size:12px}#phase-pill{max-width:64px}.search-wrap{flex-basis:110px}#settings-btn{flex:none;width:30px;height:30px}}
+/* Mobile : barre de navigation en bas, panneaux plein écran au-dessus d'elle, cibles tactiles. En dernier pour primer. */
+@media(max-width:700px){
+  #map{touch-action:none}
+  #topbar{top:max(8px,env(safe-area-inset-top))}
+  #topbar>button:not(#settings-btn):not(#phase-pill){display:none}
+  #missionbar,#minimap{display:none}
+  #mobile-nav{display:grid;grid-template-columns:repeat(5,1fr);position:fixed;left:0;right:0;bottom:0;z-index:12;padding:4px 4px max(4px,env(safe-area-inset-bottom));border-radius:0;border-width:2px 0 0;background:var(--panel-solid)}
+  #mobile-nav button{min-height:52px;padding:4px 2px;border:2px solid transparent;border-radius:4px;font-size:12px;font-weight:700}
+  #mobile-nav button[aria-current=true]{background:var(--accent);color:var(--on-accent);box-shadow:3px 3px 0 rgba(0,0,0,.25)}
+  #pop,#pop.agent-panel{bottom:calc(64px + env(safe-area-inset-bottom))}
+  #pop.agent-panel,#pop.agent-panel:has(.skills-center),#pop.agent-panel:has(.memory-center){width:100%!important;max-width:100%}
+  #pop.agent-panel{inset:0 0 calc(64px + env(safe-area-inset-bottom)) 0!important;height:auto;padding:max(16px,env(safe-area-inset-top)) 16px 12px}
+  .hq input,.hq select{font-size:16px;min-height:44px}
+  .hq form button{min-height:44px}
+  .hq label.check{min-height:44px}
+  .integrations-center{max-height:none;height:100%}
+  .integration-card,.integration-card>*{min-width:0;max-width:100%}
+  .integration-card progress{width:100%}
+  .integrations-center select,.integrations-center input{max-width:100%}
+  .net-banner{top:calc(72px + env(safe-area-inset-top))}
+}

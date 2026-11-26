@@ -605,9 +605,9 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
   const recentRuns = (limit = 50) => all('SELECT r.id, t.title AS task_title FROM comm_runs r LEFT JOIN comm_tasks t ON t.id = r.task_id ORDER BY r.started_at DESC, r.rowid DESC LIMIT ?', Math.min(Math.max(Number(limit) || 50, 1), 200)).map((r) => ({ ...getRun(r.id), taskTitle: r.task_title ?? null }));
   const usage = () => {
     const today = `${now().slice(0, 10)}T00:00:00.000Z`;
-    const sum = (where, ...a) => get(`SELECT COUNT(*) AS runs, COALESCE(SUM(cost_usd), 0) AS cost, COALESCE(SUM(input_tokens), 0) AS inT, COALESCE(SUM(output_tokens), 0) AS outT FROM comm_runs WHERE ${where}`, ...a);
+    const sum = (where, ...a) => get(`SELECT COUNT(*) AS runs, COUNT(cost_usd) AS costed, COALESCE(SUM(cost_usd), 0) AS cost, COALESCE(SUM(input_tokens), 0) AS inT, COALESCE(SUM(output_tokens), 0) AS outT FROM comm_runs WHERE ${where}`, ...a);
     const t = sum('started_at >= ?', today), a = sum('1 = 1');
-    return { today: { runs: t.runs, costUsd: t.cost, inputTokens: t.inT, outputTokens: t.outT }, total: { runs: a.runs, costUsd: a.cost }, quota: { runsPerDay: LIMITS.maxRunsPerDay, remaining: Math.max(0, LIMITS.maxRunsPerDay - runsToday()) }, note: 'Coût et jetons tels que rapportés par Claude Code ; abonnement existant, aucune API payante.',
+    return { today: { runs: t.runs, runsWithCost: t.costed, costUsd: t.cost, inputTokens: t.inT, outputTokens: t.outT }, total: { runs: a.runs, costUsd: a.cost }, quota: { runsPerDay: LIMITS.maxRunsPerDay, remaining: Math.max(0, LIMITS.maxRunsPerDay - runsToday()) }, note: 'Coût et jetons tels que rapportés par Claude Code ; abonnement existant, aucune API payante.',
       byAgent: all("SELECT agent_id, COUNT(*) AS runs, COALESCE(SUM(cost_usd), 0) AS cost FROM comm_runs GROUP BY agent_id ORDER BY runs DESC").map((r) => ({ agentId: r.agent_id, runs: r.runs, costUsd: r.cost })) };
   };
   const notifications = () => {

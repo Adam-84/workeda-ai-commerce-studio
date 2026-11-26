@@ -101,16 +101,16 @@ test('a worker held by an uncertain job is reported blocked and receives no new 
 });
 
 test('time spent waiting behind another job does not abandon a queued job', async (t) => {
-  const s = await central(t, { maxJobMs: 900 });
+  const s = await central(t, { maxJobMs: 3000 });
   const w = s.worker();
   const first = await s.delegate('olivia', 'Premier contrôle fictif');
   const second = await s.delegate('lucas', 'Second contrôle fictif');
   for (let i = 0; i < 2; i += 1) {
     const job = s.runtime.broker.claim(w.id);
     assert.ok(job, `travail ${i + 1} disponible`);
-    await delay(600);
+    await delay(1800);
     s.runtime.broker.complete(w.id, job.id, job.leaseToken, { status: 'done', output: 'Rapport fictif.' });
-    await delay(250);
+    await delay(200);
   }
   await s.runtime.app.orchestrator.idle();
   assert.notEqual(first().state, 'blocked', first().stateNote);

@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createStudio } from './studio.js';
@@ -101,6 +101,9 @@ export async function createCloudRuntime({ dataDir, passwordHash, origin, port =
     usage: studio.comm.usage(), backup: { lastSuccessfulAt: lastBackup?.at ?? null, error: backupError, scope: 'databases-only; secrets and mutable Skills require separate protected backup' },
     freshness: { measuredAt: new Date().toISOString(), catalog: studio.shop.latest?.()?.fetchedAt ?? null },
     notifications: studio.comm.notifications(), quotas: 'unknown' });
+  // Seuls fichiers servis sans session : la page de connexion et ce qu'exige l'installation. Aucun ne contient de donnée.
+  const types = { '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.html': 'text/html; charset=utf-8', '.png': 'image/png', '.webmanifest': 'application/manifest+json; charset=utf-8' };
+  const publicFiles = new Set(['/login.html', '/login.css', '/login.js', '/pwa.js', '/sw.js', '/offline.html', '/manifest.webmanifest', ...(await readdir(join(root, 'public', 'icons'))).map(name => `/icons/${name}`)]);
   const server = createServer(async (req, res) => {
     if (!auth || !app || stopped) return json(res, 503, { error: 'Service indisponible.' });
     auth.headers(res);
@@ -120,8 +123,10 @@ export async function createCloudRuntime({ dataDir, passwordHash, origin, port =
         throw error('Introuvable.', 404);
       }
       if (await auth.handle(req, res)) return;
-      if (['/login.html', '/login.css', '/login.js'].includes(path) && req.method === 'GET') {
-        res.writeHead(200, { 'content-type': path.endsWith('.css') ? 'text/css' : path.endsWith('.js') ? 'text/javascript' : 'text/html; charset=utf-8', 'content-security-policy': "default-src 'self'; frame-ancestors 'none'; base-uri 'none'" });
+      if (publicFiles.has(path) && req.method === 'GET') {
+        // La page hors ligne porte son style en ligne et ne charge rien d'autre.
+        const policy = path === '/offline.html' ? "default-src 'none'; style-src 'unsafe-inline'" : "default-src 'self'";
+        res.writeHead(200, { 'content-type': types[extname(path)], 'content-security-policy': `${policy}; frame-ancestors 'none'; base-uri 'none'` });
         return res.end(await readFile(join(root, 'public', path.slice(1))));
       }
       try { auth.authorize(req); }
