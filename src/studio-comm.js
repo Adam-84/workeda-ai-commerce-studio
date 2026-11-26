@@ -77,7 +77,15 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
   const get = (sql, ...a) => db.prepare(sql).get(...a);
   const all = (sql, ...a) => db.prepare(sql).all(...a);
   const run = (sql, ...a) => db.prepare(sql).run(...a);
-  const tx = (fn) => { if (db.isTransaction) return fn(); db.exec('BEGIN IMMEDIATE'); try { const r = fn(); db.exec('COMMIT'); return r; } catch (e) { if (db.isTransaction) db.exec('ROLLBACK'); throw e; } };
+  let held = null; // écritures du journal retenues jusqu'à la validation de la transaction ouverte ici
+  const tx = (fn) => {
+    if (db.isTransaction) return fn();
+    db.exec('BEGIN IMMEDIATE'); held = [];
+    let r;
+    try { r = fn(); db.exec('COMMIT'); } catch (e) { held = null; if (db.isTransaction) db.exec('ROLLBACK'); throw e; }
+    const ready = held; held = null; for (const [kind, key] of ready) publish(kind, key);
+    return r;
+  };
   const now = () => clock();
   let journalError = null;
   let automationGate = () => false;
@@ -171,6 +179,9 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     const linked = kind === 'task' ? key : kind === 'message' ? get('SELECT task_id FROM comm_messages WHERE id=?', key)?.task_id : kind === 'result' ? get('SELECT task_id FROM comm_results WHERE id=?', key)?.task_id : kind === 'run' ? get('SELECT task_id FROM comm_runs WHERE id=?', key)?.task_id : null;
     if (linked && schemaVersion() >= 4 && get('SELECT automation_key FROM comm_tasks WHERE id=?', linked)?.automation_key) return;
     bump(kind, key);
+    if (held) held.push([kind, key]); else publish(kind, key);
+  };
+  const publish = (kind, key) => {
     if (!journalDir) return;
     const tag = `${kind}#${key}`;
     try { const e = eventFor(kind, key); if (e) append(e); journalError = null; const q = outbox(); if (q.includes(tag)) setOutbox(q.filter((x) => x !== tag)); }
