@@ -73,12 +73,12 @@ test('compteur et activité : chaque bouton qui ouvre les messages les affiche, 
   const { paintCommButtons } = await import('../public/comm-view.js');
   const button = () => { const classes = new Set(); return { textContent: '', title: '', classes, classList: { toggle: (name, on) => (on ? classes.add(name) : classes.delete(name)) } }; };
   const top = button(), bottom = button();
-  paintCommButtons([[top, 'Comms'], [bottom, 'Messages'], [null, 'Absent']], { notifications: 3, active: [{}] });
-  assert.equal(top.textContent, 'Comms · 3'); assert.equal(bottom.textContent, 'Messages · 3');
+  paintCommButtons([[top, 'Comms'], [bottom, 'Messages', '\n'], [null, 'Absent']], { notifications: 3, active: [{}] });
+  assert.equal(top.textContent, 'Comms · 3'); assert.equal(bottom.textContent, 'Messages\n3');
   assert.ok(bottom.classes.has('busy')); assert.match(bottom.title, /1 agent au travail/);
   paintCommButtons([[bottom, 'Messages']], { notifications: 0, active: [] });
   assert.equal(bottom.textContent, 'Messages'); assert.equal(bottom.classes.size, 0);
   const read = (path) => readFileSync(new URL(`../public/${path}`, import.meta.url), 'utf8');
-  assert.match(read('app.js'), /paintCommButtons\(\[\[\$\('#comm-btn'\), 'Comms'\], \[\$\('#mobile-nav \[data-nav=comm\]'\), 'Messages'\]\], act\)/);
+  assert.match(read('app.js'), /paintCommButtons\(\[\[\$\('#comm-btn'\), 'Comms'\], \[\$\('#mobile-nav \[data-nav=comm\]'\), 'Messages', '\\n'\]\], act\)/);
   assert.match(read('style.css'), /#mobile-nav button\.busy::after/);
 });

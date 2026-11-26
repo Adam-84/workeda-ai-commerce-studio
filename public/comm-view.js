@@ -70,9 +70,9 @@ export const costLine = (u) => `${u.today.runs} exécution${u.today.runs > 1 ? '
 // Compteur et activité Comms, sur chaque bouton qui ouvre les messages (barre du haut et barre mobile).
 export function paintCommButtons(buttons, { notifications = 0, active = [] } = {}) {
   const title = active.length ? `${active.length} agent${active.length > 1 ? 's' : ''} au travail en ce moment` : 'Communication entre agents';
-  for (const [button, label] of buttons) {
+  for (const [button, label, separator = ' · '] of buttons) {
     if (!button) continue;
-    button.textContent = notifications ? `${label} · ${notifications}` : label;
+    button.textContent = notifications ? `${label}${separator}${notifications}` : label;
     button.classList.toggle('busy', active.length > 0);
     button.title = title;
   }

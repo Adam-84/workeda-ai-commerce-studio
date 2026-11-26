@@ -521,7 +521,7 @@ export async function pollComm() {
   try {
     const act = await get('/api/comm/activity');
     dispatchEvent(new CustomEvent('archipel:link', { detail: true }));
-    paintCommButtons([[$('#comm-btn'), 'Comms'], [$('#mobile-nav [data-nav=comm]'), 'Messages']], act);
+    paintCommButtons([[$('#comm-btn'), 'Comms'], [$('#mobile-nav [data-nav=comm]'), 'Messages', '\n']], act); // étroit : le compteur passe sous le libellé
     const sig = `${act.active.map((a) => a.runId ?? a.taskId).join(',')}|${act.notifications}`;
     if (sig !== commSig) { const first = commSig === null; commSig = sig; if (!first) { dispatchEvent(new Event('comm:changed')); await refresh(); } }
   } catch (e) { if (e instanceof TypeError) dispatchEvent(new CustomEvent('archipel:link', { detail: false })); /* l'affichage reste tel quel, signalé comme ancien */ }

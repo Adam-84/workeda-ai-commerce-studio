@@ -322,7 +322,7 @@ button.link{border:0;padding:0;background:none;color:var(--accent);font-weight:7
   #topbar>button:not(#settings-btn):not(#phase-pill){display:none}
   #missionbar,#minimap{display:none}
   #mobile-nav{display:grid;grid-template-columns:repeat(5,1fr);position:fixed;left:0;right:0;bottom:0;z-index:12;padding:4px 4px max(4px,env(safe-area-inset-bottom));border-radius:0;border-width:2px 0 0;background:var(--panel-solid)}
-  #mobile-nav button{min-height:52px;padding:4px 2px;border:2px solid transparent;border-radius:4px;font-size:12px;font-weight:700}
+  #mobile-nav button{white-space:pre-line;min-height:52px;padding:4px 2px;border:2px solid transparent;border-radius:4px;font-size:12px;font-weight:700}
   #mobile-nav button[aria-current=true]{background:var(--accent);color:var(--on-accent);box-shadow:3px 3px 0 rgba(0,0,0,.25)}
   #pop,#pop.agent-panel{bottom:calc(64px + env(safe-area-inset-bottom))}
   #pop.agent-panel,#pop.agent-panel:has(.skills-center),#pop.agent-panel:has(.memory-center){width:100%!important;max-width:100%}
