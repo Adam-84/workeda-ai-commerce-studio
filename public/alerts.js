@@ -11,8 +11,9 @@ export const ALERT_KINDS = [
 
 const ids = (list, keep) => (list ?? []).filter(keep).map((x) => String(x.id));
 
-export function snapshot({ notifications, tasks, history, operations } = {}) {
-  const budget = (n) => n.type === 'blocked' && /budget/i.test(n.detail ?? '');
+export function snapshot({ notifications, tasks, history, operations } = {}, previous = null) {
+  // Le motif de blocage suit la demande après « — » : le mot « budget » dans la demande elle-même ne compte pas.
+  const budget = (n) => n.type === 'blocked' && /(^|— )Budget de la mission atteint/.test(n.detail ?? '');
   return {
     approval: ids(notifications, (n) => ['approval', 'review'].includes(n.type)),
     done: ids(tasks, (t) => t.state === 'done'),
@@ -20,7 +21,8 @@ export function snapshot({ notifications, tasks, history, operations } = {}) {
     budget: ids(notifications, budget),
     automation: ids(history, (r) => ['blocked', 'failed', 'uncertain', 'expired'].includes(r.state)),
     // Pour les workers, on retient ceux qui répondent : l'alerte naît de leur disparition.
-    online: ids(operations?.workers, (w) => w.online && !w.blocked && !w.revoked)
+    // Relevé d'exploitation manqué (`false`) : on garde le dernier état connu.
+    online: operations === false ? previous?.online ?? [] : ids(operations?.workers, (w) => w.online && !w.blocked && !w.revoked)
   };
 }
 

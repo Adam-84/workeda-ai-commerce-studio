@@ -1,7 +1,7 @@
 // Tableau de bord et alertes : fonctions pures, aucune donnée inventée.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildDashboard } from '../public/dashboard-view.js';
+import { buildDashboard, readOperations } from '../public/dashboard-view.js';
 import { snapshot, newAlerts, ALERT_KINDS } from '../public/alerts.js';
 
 const card = (cards, id) => cards.find((c) => c.id === id);
@@ -71,4 +71,30 @@ test('a worker that goes offline raises one alert', () => {
   const offline = snapshot({ operations: { workers: [{ id: 'w', online: false, revoked: false }] } });
   assert.deepEqual(newAlerts(online, offline, { worker: true }).map((a) => a.kind), ['worker']);
   assert.deepEqual(newAlerts(offline, offline, { worker: true }), []);
+});
+
+test('only a 404 means local mode; any other failure of the central server stays unavailable', async () => {
+  const failing = (error) => async () => { throw error; };
+  assert.equal(await readOperations(failing(Object.assign(new Error('Introuvable'), { status: 404 }))), null);
+  assert.equal(await readOperations(failing(Object.assign(new Error('Erreur'), { status: 503 }))), false);
+  assert.equal(await readOperations(failing(new TypeError('réseau'))), false);
+  assert.deepEqual(await readOperations(async (path) => ({ path })), { path: '/api/operations' });
+  const cards = buildDashboard({ operations: false, localHealth: { mode: 'local-only' } });
+  for (const id of ['server', 'workers', 'backup']) { assert.equal(card(cards, id).value, 'Indisponible', id); assert.match(card(cards, id).detail, /pas répondu/, id); }
+});
+
+test('a missed operations reading neither raises nor hides a worker alert', () => {
+  const online = snapshot({ operations: { workers: [{ id: 'w', online: true, revoked: false }] } });
+  const unread = snapshot({ operations: false }, online);
+  assert.deepEqual(newAlerts(online, unread, { worker: true }), []);
+  const offline = snapshot({ operations: { workers: [{ id: 'w', online: false, revoked: false }] } }, unread);
+  assert.deepEqual(newAlerts(unread, offline, { worker: true }).map((a) => a.kind), ['worker']);
+});
+
+test('a blocked task that merely mentions a budget is not a budget alert', () => {
+  const next = snapshot({ notifications: [
+    { type: 'blocked', id: '1', detail: 'Préparer le budget publicitaire — Agent indisponible (désactivé ou sans fiche).' },
+    { type: 'blocked', id: '2', detail: 'Analyser les prix — Budget de la mission atteint (3.00 sur 3.00 $) : augmentez-le pour continuer.' }
+  ] });
+  assert.deepEqual(next.budget, ['2']); assert.deepEqual(next.failed, ['1']);
 });

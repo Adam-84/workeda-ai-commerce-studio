@@ -7,10 +7,15 @@ const when = (iso) => new Date(iso).toLocaleString('fr-FR', { dateStyle: 'short'
 const DAY = 86400000;
 export const DECISIONS = ['approval', 'review'];
 
+// 404 : serveur local, sans exploitation centrale. Toute autre panne vaut `false` : indisponible, pas « local ».
+export const readOperations = (get) => get('/api/operations').catch((error) => (error.status === 404 ? null : false));
+const SILENT = 'Le serveur n’a pas répondu.';
+
 export function buildDashboard({ agents, missions, notifications, memoryPending, automations, usage, integrations, operations = null, localHealth, now = Date.now() } = {}) {
   const cards = [];
 
-  if (operations) cards.push(operations.halted ? card('server', 'Serveur', 'Arrêt général actif', 'Aucune mission ni automatisation ne part.', 'warn') : card('server', 'Serveur', 'En ligne', 'Serveur central.'));
+  if (operations === false) cards.push(missing('server', 'Serveur', SILENT));
+  else if (operations) cards.push(operations.halted ? card('server', 'Serveur', 'Arrêt général actif', 'Aucune mission ni automatisation ne part.', 'warn') : card('server', 'Serveur', 'En ligne', 'Serveur central.'));
   else cards.push(localHealth ? card('server', 'Serveur', 'Local actif', 'Disponible tant que cet ordinateur reste allumé.') : missing('server', 'Serveur'));
 
   if (agents) {
@@ -45,7 +50,8 @@ export function buildDashboard({ agents, missions, notifications, memoryPending,
     cards.push(card('integrations', 'Intégrations', `${tested} sur ${all.length} ${tested > 1 ? 'testées' : 'testée'}`, 'Testée ne signifie pas à jour.', 'ok', 'integrations'));
   } else cards.push(missing('integrations', 'Intégrations', 'Source non disponible.', 'integrations'));
 
-  if (operations) {
+  if (operations === false) cards.push(missing('workers', 'Moteurs (workers)', SILENT));
+  else if (operations) {
     const active = operations.workers.filter((w) => !w.revoked), ready = active.filter((w) => w.online && !w.blocked).length;
     cards.push(card('workers', 'Moteurs (workers)', `${ready} ${ready > 1 ? 'disponibles' : 'disponible'} sur ${active.length}`, ready ? 'Codex désactivé.' : 'Les missions IA restent en attente. Codex désactivé.', ready ? 'ok' : 'warn'));
   } else cards.push(localHealth ? card('workers', 'Moteurs (workers)', 'Mode local', 'Claude Code de cet ordinateur ; Codex désactivé.', 'unknown') : missing('workers', 'Moteurs (workers)'));
@@ -55,7 +61,7 @@ export function buildDashboard({ agents, missions, notifications, memoryPending,
   cards.push(latest ? card('freshness', 'Dernier relevé de données', when(latest), 'Le plus récent, toutes sources confondues.', now - Date.parse(latest) > DAY ? 'warn' : 'ok', 'integrations') : missing('freshness', 'Dernier relevé de données', 'Aucun relevé daté.', 'integrations'));
 
   const backup = operations?.backup;
-  if (!backup) cards.push(missing('backup', 'Dernière sauvegarde', 'Sauvegarde automatique réservée au serveur central.'));
+  if (!backup) cards.push(missing('backup', 'Dernière sauvegarde', operations === false ? SILENT : 'Sauvegarde automatique réservée au serveur central.'));
   else if (!backup.lastSuccessfulAt) cards.push(card('backup', 'Dernière sauvegarde', 'Aucune', backup.error ? 'La dernière tentative a échoué.' : '', 'warn'));
   else cards.push(card('backup', 'Dernière sauvegarde', when(backup.lastSuccessfulAt), backup.error ? 'La dernière tentative a échoué.' : 'Bases seules : secrets et Skills à sauvegarder à part.', backup.error || now - Date.parse(backup.lastSuccessfulAt) > 2 * DAY ? 'warn' : 'ok'));
 

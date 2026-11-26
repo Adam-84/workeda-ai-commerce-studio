@@ -44,7 +44,7 @@ Autres guides : [automatisations](AUTOMATION-SYSTEM.md), [communications](COMMUN
 | `Cannot find package '@js-temporal/polyfill'` | Dépendance non installée | `npm ci` |
 | « Hôte refusé » sur le serveur central | Adresse ouverte différente de `ARCHIPEL_ORIGIN` | Utiliser exactement la même (`127.0.0.1` n'est pas `localhost`) |
 | Missions IA qui restent en file | Aucun worker disponible pour le modèle, ou arrêt général | Tableau de bord : serveur et moteurs |
-| Worker « bloqué » | Résultat incertain sur son identité | Vérifier le processus, révoquer, réinscrire |
+| Worker « bloqué » | Résultat incertain sur son identité | Vérifier que l’ancien processus est arrêté, puis `node tools/workers.mjs release --id … --process-stopped` sur le serveur |
 | Automatisations inactives après installation | Exécuteur non désigné ou règle désactivée | Automations : désigner, puis activer chaque règle |
 | Connexion refusée plusieurs minutes | Cinq mots de passe erronés | Attendre quinze minutes |
 

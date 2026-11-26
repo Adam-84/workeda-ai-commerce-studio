@@ -1,5 +1,5 @@
 // public/hq-ui.js — tableau de bord, équipe, missions, menu « Plus » et réglages d'exploitation.
-import { buildDashboard, DECISIONS } from './dashboard-view.js';
+import { buildDashboard, readOperations, DECISIONS } from './dashboard-view.js';
 import { ALERT_KINDS, snapshot, newAlerts } from './alerts.js';
 
 const STATUS = { idle: 'En attente', working: 'Au travail', waiting: 'Attend une réponse', blocked: 'Bloqué' };
@@ -16,9 +16,9 @@ export function homeView({ ui, open }) {
   const button = (label, run, cls) => h('button', { type: 'button', class: cls, onclick: run }, label);
 
   async function load() {
-    const [agents, missions, notifications, memoryPending, automations, usage, integrations, operations, localHealth] = await Promise.all([
-      '/api/agents', '/api/missions', '/api/comm/notifications', '/api/memory?state=pending', '/api/automations', '/api/comm/usage', '/api/integrations', '/api/operations', '/api/health'
-    ].map((path) => optional(get(path))));
+    const [agents, missions, notifications, memoryPending, automations, usage, integrations, localHealth, operations] = await Promise.all([
+      '/api/agents', '/api/missions', '/api/comm/notifications', '/api/memory?state=pending', '/api/automations', '/api/comm/usage', '/api/integrations', '/api/health'
+    ].map((path) => optional(get(path))).concat(readOperations(get)));
     cards.replaceChildren(...buildDashboard({ agents, missions, notifications, memoryPending, automations, usage, integrations, operations, localHealth }).map((c) => {
       const body = [h('span', { class: 'hq-label' }, c.label), h('strong', {}, c.value), c.detail ? h('span', { class: 'note' }, c.detail) : null];
       return c.open ? h('button', { type: 'button', class: `hq-card tone-${c.tone}`, onclick: () => open(c.open) }, body) : h('div', { class: `hq-card tone-${c.tone}` }, body);
@@ -32,7 +32,9 @@ export function homeView({ ui, open }) {
   }
 
   function drawControls(operations, automations) {
-    if (operations) {
+    if (operations === false) {
+      controls.replaceChildren(h('h3', {}, 'Exploitation'), h('p', { class: 'note' }, 'Réglages indisponibles : le serveur n’a pas répondu. Actualisez.'));
+    } else if (operations) {
       const stop = operations.halted
         ? button('Reprendre l’activité…', () => { if (confirm('Reprendre ? Les missions en file pourront de nouveau partir. Les calendriers retrouvent leur état d’avant l’arrêt.')) act(() => send('POST', '/api/operations/stop', { halted: false }), 'Activité reprise'); }, 'primary')
         : button('Arrêt général…', () => { if (confirm('Arrêt général ? Plus aucune mission ni automatisation ne partira. Une demande IA déjà envoyée ne peut pas être rappelée.')) act(() => send('POST', '/api/operations/stop', { halted: true }), 'Arrêt général actif'); }, 'danger');
@@ -101,8 +103,8 @@ export function startAlerts({ get, announce, everyMs = 30000 }) {
     try {
       // Un relevé incomplet est ignoré : il ferait réapparaître d'anciennes alertes au tour suivant.
       const [notifications, tasks, history] = await Promise.all([get('/api/comm/notifications'), get('/api/comm/tasks?state=done'), get('/api/automations/history')]);
-      const operations = await optional(get('/api/operations'));
-      const next = snapshot({ notifications, tasks, history, operations });
+      const operations = await readOperations(get);
+      const next = snapshot({ notifications, tasks, history, operations }, previous);
       for (const alert of newAlerts(previous, next, wanted)) {
         const registration = 'Notification' in window && Notification.permission === 'granted' ? await navigator.serviceWorker?.getRegistration() : null;
         if (registration) await registration.showNotification(alert.title, { body: alert.body, tag: alert.kind, icon: '/icons/icon-192.png' }); else announce(alert.body);

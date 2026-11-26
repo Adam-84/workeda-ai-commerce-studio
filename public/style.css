@@ -266,7 +266,7 @@ button.link{border:0;padding:0;background:none;color:var(--accent);font-weight:7
 #pop .mission-plan details .plan-version{margin-top:8px}
 /* Communication entre agents : Comms Center et onglet de la fiche agent (réutilise les composants Skills et la discussion). */
 #comm-btn{font-weight:600;white-space:nowrap}
-#comm-btn.busy::after{content:"";display:inline-block;width:8px;height:8px;margin-left:7px;border-radius:50%;background:#2f8f5a;vertical-align:middle}
+#comm-btn.busy::after,#mobile-nav button.busy::after{content:"";display:inline-block;width:8px;height:8px;margin-left:7px;border-radius:50%;background:#2f8f5a;vertical-align:middle}
 #pop.agent-panel:has(.comm-center){width:min(760px,calc(100vw - 32px))}
 .comm-center .chat-scroll{max-height:50vh;border:1px solid color-mix(in srgb,var(--text) 15%,transparent);border-radius:12px}
 .comm-system{align-self:center;text-align:center;max-width:94%;margin:0}

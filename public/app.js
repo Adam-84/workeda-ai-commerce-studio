@@ -17,11 +17,12 @@ import { integrationsCenter } from './integrations-ui.js';
 import { automationCenter } from './automation-ui.js';
 import { homeView, teamView, missionsView, moreView, alertsView, startAlerts } from './hq-ui.js';
 import { missionsTab } from './missions.js';
+import { paintCommButtons } from './comm-view.js';
 import { instructionsBlock } from './instructions.js';
 
 const $ = (s) => document.querySelector(s);
 // Session du serveur central expirée ou révoquée : retour à la page de connexion (jamais émis en mode local).
-const answer = async (r) => { const d = await r.json(); if (!r.ok) { if (r.status === 401 && d.error === 'Connexion requise.') location.replace('/login.html'); throw new Error(d.error); } return d; };
+const answer = async (r) => { const d = await r.json(); if (!r.ok) { if (r.status === 401 && d.error === 'Connexion requise.') location.replace('/login.html'); throw Object.assign(new Error(d.error), { status: r.status }); } return d; };
 const get = (p) => fetch(p).then(answer);
 const send = (method, p, data) => fetch(p, { method, headers: { 'content-type': 'application/json' }, body: data && JSON.stringify(data) }).then(answer);
 const h = (tag, props = {}, ...kids) => { const el = document.createElement(tag); for (const [k, v] of Object.entries(props)) { if (k.startsWith('on')) el.addEventListener(k.slice(2), v); else if (v !== false && v != null) el.setAttribute(k, v === true ? '' : v); } el.append(...kids.flat().filter((k) => k != null && k !== false)); return el; };
@@ -518,11 +519,9 @@ for (const b of document.querySelectorAll('#mobile-nav button')) b.addEventListe
 let commSig = null;
 export async function pollComm() {
   try {
-    const act = await get('/api/comm/activity'), b = $('#comm-btn');
+    const act = await get('/api/comm/activity');
     dispatchEvent(new CustomEvent('archipel:link', { detail: true }));
-    b.textContent = act.notifications ? `Comms · ${act.notifications}` : 'Comms';
-    b.classList.toggle('busy', act.active.length > 0);
-    b.title = act.active.length ? `${act.active.length} agent${act.active.length > 1 ? 's' : ''} au travail en ce moment` : 'Communication entre agents';
+    paintCommButtons([[$('#comm-btn'), 'Comms'], [$('#mobile-nav [data-nav=comm]'), 'Messages']], act);
     const sig = `${act.active.map((a) => a.runId ?? a.taskId).join(',')}|${act.notifications}`;
     if (sig !== commSig) { const first = commSig === null; commSig = sig; if (!first) { dispatchEvent(new Event('comm:changed')); await refresh(); } }
   } catch (e) { if (e instanceof TypeError) dispatchEvent(new CustomEvent('archipel:link', { detail: false })); /* l'affichage reste tel quel, signalé comme ancien */ }
