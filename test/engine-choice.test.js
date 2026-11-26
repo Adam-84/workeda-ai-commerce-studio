@@ -140,3 +140,81 @@ test('journal : le moteur voyage ; absent il est conservé, inconnu il est gard�
     a.studio.close(); b.studio.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+import { createOrchestrator } from '../src/comm-run.js';
+import { createApp } from '../src/app.js';
+
+test('lanceur : le moteur figé est celui appelé ; indisponible, rien ne part', async () => {
+  const { studio, comm, ids } = setup(); const models = []; let down = true;
+  const orch = createOrchestrator({ studio, profiles: () => profiles, runner: async (o) => { models.push(o.model); return JSON.stringify({ report: 'ok' }); }, engineReason: (e) => (down && e?.model === 'opus' ? 'Opus indisponible' : '') });
+  const opus = comm.createTask({ assigneeId: ids.ryan, instruction: 'Code' }).task;
+  const haiku = comm.createTask({ assigneeId: ids.lucas, instruction: 'Audit', engine: claude('haiku') }).task;
+  orch.pump(); await orch.idle();
+  assert.deepEqual(models, ['haiku']);
+  assert.equal(comm.task(opus.id).state, 'queued'); assert.equal(comm.task(opus.id).attempts, 0);
+  assert.equal(comm.runsOfTask(haiku.id)[0].model, 'haiku');
+  down = false; orch.pump(); await orch.idle();
+  assert.deepEqual(models, ['haiku', 'opus']);
+});
+
+async function withApp(options, fn) {
+  const { studio, comm, engines, ids } = setup(); const models = [];
+  const server = createApp({ studio, publicDir: fileURLToPath(new URL('../public', import.meta.url)), detect: () => true, runClaude: async (o) => { models.push(o.model); return 'ok'; }, agentFiles: { profiles }, ...options });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const call = async (method, path, data, headers = {}) => { const r = await fetch(base + path, { method, headers: { 'content-type': 'application/json', ...headers }, body: data === undefined ? undefined : JSON.stringify(data) }); const text = await r.text(); return { status: r.status, body: text ? JSON.parse(text.trim().split('\n').at(-1)) : null }; };
+  try { await fn({ studio, comm, engines, ids, models, call, orch: server.orchestrator }); } finally { server.closeAllConnections(); await new Promise((r) => server.close(r)); studio.close(); }
+}
+
+test('API : choisir, refuser, appliquer à la discussion, à la mission et à la tâche', () => withApp({}, async ({ studio, ids, models, call, orch }) => {
+  assert.equal((await call('PUT', `/api/agents/${ids.lucas}/engine`, { engine: claude('opus') })).status, 200);
+  assert.equal((await call('PUT', `/api/agents/${ids.lucas}/engine`, { engine: { provider: 'codex', model: 'x' } })).status, 400);
+  assert.equal((await call('PUT', `/api/agents/${ids.lucas}/engine`, {})).status, 400);
+  assert.equal((await call('PUT', `/api/agents/${ids.lucas}/engine`, { engine: null }, { origin: 'https://evil.invalid' })).status, 403);
+  await call('POST', `/api/agents/${ids.lucas}/conversation`, { body: 'Bonjour' });
+  await call('POST', `/api/agents/${ids.lucas}/reply`, {});
+  assert.equal(models.at(-1), 'opus');
+  const m = studio.createMission({ title: 'Mission', assignedTo: ids.lucas });
+  assert.equal((await call('PUT', `/api/missions/${m.id}/engine`, { engine: claude('haiku') })).body.choice.model, 'haiku');
+  await call('POST', `/api/missions/${m.id}/discussion`, { body: 'Un point ?' });
+  await call('POST', `/api/missions/${m.id}/discussion/reply/${ids.lucas}`, {});
+  assert.equal(models.at(-1), 'haiku');
+  const made = await call('POST', '/api/comm/delegations', { assigneeId: ids.noah, instruction: 'Veille', engine: claude('opus'), requiresApproval: false });
+  assert.equal(made.body.task.model, 'opus');
+  await orch.idle();
+  const view = (await call('GET', '/api/engines')).body;
+  assert.equal(view.catalog.find((p) => p.provider === 'codex').state, 'disabled');
+  assert.equal(view.agents.find((a) => a.slug === 'lucas').effective.source, 'agent');
+}));
+
+test('API : un appel immédiat sur un moteur indisponible est refusé clairement', () => withApp({ engineReason: () => 'Moteur indisponible.' }, async ({ ids, models, call }) => {
+  await call('POST', `/api/agents/${ids.lucas}/conversation`, { body: 'Bonjour' });
+  const r = await call('POST', `/api/agents/${ids.lucas}/reply`, {});
+  assert.equal(r.status, 409); assert.equal(r.body.error, 'Moteur indisponible.'); assert.equal(models.length, 0);
+  const made = await call('POST', '/api/comm/delegations', { assigneeId: ids.lucas, instruction: 'Audit' });
+  assert.equal((await call('POST', `/api/comm/tasks/${made.body.task.id}/engine`, {})).status, 400);
+  assert.equal((await call('POST', `/api/comm/tasks/${made.body.task.id}/engine`, { engine: claude('haiku') })).body.model, 'haiku');
+}));
+
+import { createCloudRuntime } from '../src/cloud-server.js';
+import { hashPassword } from '../src/cloud-auth.js';
+import { runWorkerOnce } from '../src/worker-client.js';
+
+test('central : sans worker pour le modèle choisi la tâche attend ; un worker adapté la prend', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'archipel-lot2-c-'));
+  const runtime = await createCloudRuntime({ dataDir: dir, passwordHash: await hashPassword('test-only-password-long'), port: 0, env: {} });
+  try {
+    const { comm, engines } = runtime.studio;
+    const lucas = runtime.studio.listAgentFiles().find((f) => f.slug === 'lucas').agentId;
+    runtime.broker.heartbeat(runtime.broker.enroll({ name: 'sonnet', models: ['sonnet'] }).id);
+    engines.setAgentChoice(lucas, claude('haiku'));
+    const t = comm.createTask({ assigneeId: lucas, instruction: 'Résumer' }).task;
+    runtime.app.orchestrator.pump();
+    assert.equal(comm.task(t.id).state, 'queued'); assert.match(comm.task(t.id).stateNote, /haiku/);
+    const h = runtime.broker.enroll({ name: 'haiku', models: ['haiku'] }); runtime.broker.heartbeat(h.id);
+    runtime.app.orchestrator.pump();
+    await runWorkerOnce({ baseUrl: runtime.origin, token: h.token, models: ['haiku'], runner: async (o) => { assert.equal(o.model, 'haiku'); return JSON.stringify({ report: 'ok' }); } });
+    await runtime.app.orchestrator.idle();
+    assert.equal(comm.task(t.id).state, 'done');
+  } finally { await runtime.close(); rmSync(dir, { recursive: true, force: true }); }
+});

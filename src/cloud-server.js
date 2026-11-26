@@ -13,6 +13,7 @@ import { createCloudAuth } from './cloud-auth.js';
 import { createWorkerBroker } from './worker-broker.js';
 import { backupDatabase } from './database-transfer.js';
 import { findSecret } from './memory-core.js';
+import { FAMILIES } from './engines.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const error = (message, status = 503) => Object.assign(new Error(message), { status });
@@ -38,7 +39,7 @@ export async function createCloudRuntime({ dataDir, passwordHash, origin, port =
   dataDir = resolve(dataDir); await mkdir(dataDir, { recursive: true, mode: 0o700 });
   const dbPath = join(dataDir, 'workeda.db'), controlPath = join(dataDir, 'control.db');
   const loaded = loadAgentFiles(join(root, '.claude', 'agents'));
-  const models = [...new Set(loaded.profiles.map(p => p.model))];
+  const models = [...new Set([...loaded.profiles.map(p => p.model), ...FAMILIES])];
   // WAL : la sauvegarde lit un instantané pendant que les écritures continuent.
   const journalled = new DatabaseSync(dbPath); journalled.exec('PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL'); journalled.close();
   const control = new DatabaseSync(controlPath); control.exec('PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL');
@@ -48,6 +49,11 @@ export async function createCloudRuntime({ dataDir, passwordHash, origin, port =
   const readState = key => control.prepare('SELECT value FROM runtime_state WHERE key=?').get(key)?.value;
   const writeState = (key, value) => control.prepare('INSERT INTO runtime_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, String(value));
   const liveWorkers = model => broker.status().workers.filter(w => !w.revoked && !w.blocked && w.lastSeenAt && Date.now() - w.lastSeenAt < 60000 && (!model || w.models.includes(model)));
+  // Motif d'attente d'un moteur : refus du catalogue, ou aucun worker connecté qui l'offre. Jamais de remplacement.
+  const engineReason = engine => {
+    if (!engine) return '';
+    return studio.engines.reason(engine) || (liveWorkers(engine.model).length ? '' : `Aucun worker disponible n’offre le modèle « ${engine.model} » : la demande attend, sans bascule.`);
+  };
   let stopped = false, halted = readState('halted') === 'true', auth, app, backupBusy = false, lastBackup = null, backupError = false;
   const backupsDir = join(dataDir, 'backups');
   for (const name of (await readdir(backupsDir).catch(() => [])).sort().reverse()) {
@@ -55,7 +61,7 @@ export async function createCloudRuntime({ dataDir, passwordHash, origin, port =
     try { lastBackup = JSON.parse(await readFile(join(backupsDir, name, 'manifest.json'), 'utf8')); break; } catch { /* suivant */ }
   }
   const studio = createStudio(dbPath, { env, memoryJournalDir: join(dataDir, 'memory-journal'), commJournalDir: join(dataDir, 'comm-journal'),
-    aiAvailable: slug => !halted && liveWorkers(loaded.profiles.find(p => p.slug === slug)?.model).length > 0 });
+    aiAvailable: slug => !halted && !engineReason(studio.engines.resolve(studio.comm.agentOfSlug(slug))) });
   studio.syncAgentFiles(loaded.profiles);
   // No import from Git or from another machine during central startup.
   const skills = createSkillManager({ root, studio, profiles: loaded.profiles }); skills.startup();
@@ -171,7 +177,7 @@ export async function createCloudRuntime({ dataDir, passwordHash, origin, port =
   auth = createCloudAuth({ passwordHash, origin: origin ?? `http://127.0.0.1:${server.address().port}` });
   app = createApp({ studio, skills, publicDir: join(root, 'public'), detect: () => false, agentFiles: loaded, runClaude: runRemote,
     authorizeRequest: auth.authorize, canRun: () => !halted, pumpEveryMs: 5000,
-    agentReady: agentId => liveWorkers(loaded.profiles.find(p => p.slug === studio.comm.slugOf(agentId))?.model).length > 0 });
+    engineReason });
   app.orchestrator.start(); app.automationRunner.start();
   // Contrôle d'échéance plutôt qu'un délai depuis le démarrage : des redémarrages fréquents ne repoussent plus la sauvegarde.
   const overdue = () => !lastBackup || Date.now() - Date.parse(lastBackup.at) >= backupEveryMs;

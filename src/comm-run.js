@@ -16,13 +16,16 @@ const TRANSIENT = /surcharg|à temps|n’a pas pu répondre|n'a pas pu répondre
 const short = (s, n) => { s = scrubContacts(s); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
 
 const NOT_SHARED = '[Résultat issu de données DSers/17TRACK/imports/Shopify Admin : non transmis (accès différent ou tâche qui lit le web).]';
-export function createOrchestrator({ studio, profiles = () => [], runner = realClaude, memoryFor = () => '', maxActive = LIMITS.maxActive, pumpEveryMs = 0, canRun = () => true, agentReady = () => true } = {}) {
+export function createOrchestrator({ studio, profiles = () => [], runner = realClaude, memoryFor = () => '', maxActive = LIMITS.maxActive, pumpEveryMs = 0, canRun = () => true, engineReason = (engine) => studio.engines?.reason(engine) ?? '' } = {}) {
   const comm = studio.comm;
   const active = new Map();      // clé d'exécution → { agentId, runId, taskId, threadId, kind, startedAt }
   const inflight = new Set();
   let pumping = false, timer = null, lastPump = { at: null, quota: false };
 
   const profileOf = (agentId) => { const slug = comm.slugOf(agentId); return slug ? profiles().find((p) => p.slug === slug) ?? null : null; };
+  const ficheEngine = (agentId) => { const p = profileOf(agentId); return p ? { provider: 'claude', model: p.model, source: 'fiche' } : null; };
+  const taskEngine = (task) => studio.engines?.ofTask(task) ?? ficheEngine(task.assigneeId);
+  const agentEngine = (agentId, missionId) => studio.engines?.resolve(agentId, missionId) ?? ficheEngine(agentId);
   const webToolsOf = (profile) => (profile?.tools ?? []).filter((t) => WEB_TOOLS.includes(t));
   const mayDelegate = (profile, slug) => Boolean(profile) && (profile.collaboratesAll || profile.collaborates.includes(slug));
   const busyAgents = () => new Set([...active.values()].map((a) => a.agentId));
@@ -112,6 +115,7 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
     const heartbeat = task.automationKey ? setInterval(() => { try { comm.renewAutomation(task.id); } catch {} }, 25000) : null; heartbeat?.unref?.();
     try {
       if (!profile) { comm.setTaskState(task.id, 'blocked', 'Fiche de l’agent introuvable dans .claude/agents.'); return; }
+      const engine = taskEngine(task);
       // Une tâche DÉLÉGUÉE par un agent à partir de données DSers/17TRACK/imports/Shopify Admin ne s'exécute que chez un agent qui a lui-même reçu l'accès et ne lit pas le web.
       if ((task.withIntegrations ?? []).length && task.requestedBy !== 'user') {
         const missing = task.withIntegrations.filter((i) => !studio.integrations?.store.hasGrant(i, profile.slug)), web = task.allowWeb && webToolsOf(profile).length > 0;
@@ -121,14 +125,14 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
       if (task.withCatalog && !task.automationKey) await studio.shop?.ensureFresh(); // relevé en lecture seule, daté ; ne lève jamais
       const built = buildTask(task);
       if (task.automationKey && !comm.automationAllowed(task)) { comm.setTaskState(task.id, 'blocked', 'Autorisation retirée avant lancement.'); return; }
-      run = comm.startRun({ agentId, kind: 'task', taskId: task.id, threadId: task.threadId, model: profile.model, web: built.web.length > 0 });
+      run = comm.startRun({ agentId, kind: 'task', taskId: task.id, threadId: task.threadId, model: engine.model, provider: engine.provider, web: built.web.length > 0 });
       active.set(key, { agentId, runId: run.id, taskId: task.id, threadId: task.threadId, kind: 'task', startedAt: run.startedAt });
       setActivity(agentId, 'working', `Tâche : ${short(task.instruction, 100)}`);
       const inbox = comm.pendingFor(agentId, task.threadId).filter((id) => built.included.has(id));
       for (const id of inbox) comm.markDelivery(id, agentId, 'received');
       const seen = observeTools(); seen.state.provided = built.provided;
       let text;
-      try { text = await runner({ model: profile.model, system: built.system, prompt: built.prompt, tools: built.web, onEvent: seen.feed, timeoutMs: built.web.length ? LIMITS.webTimeoutMs : LIMITS.taskTimeoutMs }); }
+      try { text = await runner({ model: engine.model, system: built.system, prompt: built.prompt, tools: built.web, onEvent: seen.feed, timeoutMs: built.web.length ? LIMITS.webTimeoutMs : LIMITS.taskTimeoutMs }); }
       catch (e) { return fail(task, run, e, inbox, seen.state); }
       const ended = comm.endRun(run.id, { state: 'done', costUsd: seen.state.cost, usage: seen.state.usage, models: seen.state.models });
       succeed(task, ended, text, seen.state, inbox);
@@ -197,9 +201,8 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
     pumping = true;
     try {
       while (active.size < maxActive) {
-        // Un agent sans moteur disponible est traité comme occupé : sa tâche reste en file, sans essai consommé.
-        const busy = busyAgents(); for (const a of roster()) if (!agentReady(a.id)) busy.add(a.id);
-        const c = comm.claimNext({ busy });
+        // Un moteur indisponible laisse la tâche en file avec son motif, sans essai consommé ni repli.
+        const c = comm.claimNext({ busy: busyAgents(), blocked: (t) => engineReason(taskEngine(t)) });
         lastPump = { at: new Date().toISOString(), quota: Boolean(c.quota) };
         if (c.quota || !c.task) break;
         launch(c.task);
@@ -220,7 +223,9 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
     const msgs = comm.visibleMessages(threadId, agentId, 30); // seulement ce qui a été adressé à cet agent
     if (!msgs.length) throw bad('Écrivez d’abord un message dans le fil.');
     if (msgs.at(-1).senderAgentId === agentId) throw bad(`${a.name} vient déjà de répondre.`, 409);
-    const run = comm.startRun({ agentId, kind: 'reply', threadId, model: profile.model, web: false });
+    const engine = agentEngine(agentId, t.missionId), unavailable = engineReason(engine);
+    if (unavailable) throw bad(unavailable, 409);
+    const run = comm.startRun({ agentId, kind: 'reply', threadId, model: engine.model, provider: engine.provider, web: false });
     const key = `reply:${threadId}:${agentId}`;
     active.set(key, { agentId, runId: run.id, taskId: null, threadId, kind: 'reply', startedAt: run.startedAt });
     setActivity(agentId, 'working', `Répond dans « ${short(t.title, 60)} »`);
@@ -232,10 +237,10 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
       try {
         const memoryText = scrubContacts(memoryFor(participants(t), { missionId: t.missionId, query: msgsSafe.slice(-3).map((m) => m.body).join(' ') }));
         const prompt = replyPrompt({ agentName: a.name, title: privateMission(t.missionId) ? 'Sous-mission issue des intégrations' : t.title, memoryText, thread: msgsSafe.map((m) => ({ sender: m.senderType === 'user' ? 'user' : 'agent', who: m.senderAgentId ? comm.nameOf(m.senderAgentId) : 'Propriétaire', at: m.createdAt, body: m.body })) });
-        const text = await runner({ model: profile.model, system: systemPrompt(profile, studio.getInstructions(agentId)), prompt: scrubContacts(prompt), tools: [], onEvent: seen.feed, timeoutMs: LIMITS.plainTimeoutMs });
+        const text = await runner({ model: engine.model, system: systemPrompt(profile, studio.getInstructions(agentId)), prompt: scrubContacts(prompt), tools: [], onEvent: seen.feed, timeoutMs: LIMITS.plainTimeoutMs });
         const ended = comm.endRun(run.id, { state: 'done', costUsd: seen.state.cost, usage: seen.state.usage, models: seen.state.models });
         comm.postMessage(threadId, { kind: 'message', body: short(String(text).trim(), LIMITS.body), replyTo: msgs.at(-1)?.id ?? null }, { type: 'agent', agentId, runId: ended.id });
-        const check = checkModel(profile.model, seen.state.models);
+        const check = checkModel(engine.model, seen.state.models);
         if (check.status === 'mismatch') comm.postMessage(threadId, { kind: 'system', body: `${a.name} : ${mismatchText(check)}` }, { type: 'system' });
         for (const id of inbox) comm.markDelivery(id, agentId, 'processed');
         setActivity(agentId, 'idle', 'Réponse envoyée');
