@@ -9,7 +9,11 @@ const digest = value => createHash('sha256').update(value).digest('hex');
 function openSource(path) {
   if (!statSync(path).isFile()) throw new Error('Source must be a database file');
   const db = new DatabaseSync(path, { readOnly: true, enableLoadExtension: false });
-  db.exec('PRAGMA query_only=ON; PRAGMA trusted_schema=OFF; BEGIN');
+  try {
+    db.exec('PRAGMA query_only=ON; PRAGMA trusted_schema=OFF; PRAGMA busy_timeout=5000; BEGIN');
+    // La lecture ouvre réellement la transaction : un seul instantané du début à la fin, sans redémarrage de la copie à chaque écriture.
+    db.prepare('SELECT count(*) FROM sqlite_schema').get();
+  } catch (error) { db.close(); throw error; }
   return db;
 }
 

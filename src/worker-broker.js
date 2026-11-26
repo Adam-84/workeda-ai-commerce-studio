@@ -53,6 +53,7 @@ export function createWorkerBroker(db, { now = Date.now, models = [], leaseMs = 
       lease_hash TEXT, lease_expires_at INTEGER, deadline_at INTEGER, result TEXT);
     CREATE INDEX IF NOT EXISTS worker_jobs_queue ON worker_jobs(status,created_at);
     CREATE UNIQUE INDEX IF NOT EXISTS worker_one_running ON worker_jobs(worker_id) WHERE status='running';`);
+  if (!db.prepare('PRAGMA table_info(worker_jobs)').all().some(c => c.name === 'released_at')) db.exec('ALTER TABLE worker_jobs ADD COLUMN released_at INTEGER');
   const tx = (fn) => {
     if (db.isTransaction) return fn();
     db.exec('BEGIN IMMEDIATE');
@@ -77,7 +78,7 @@ export function createWorkerBroker(db, { now = Date.now, models = [], leaseMs = 
     return j;
   }
   // Une identité tenue par un résultat incertain ne reçoit plus rien : la dire disponible bloquerait les missions.
-  const held = () => new Set(db.prepare("SELECT DISTINCT worker_id AS id FROM worker_jobs WHERE status='uncertain' AND worker_id IS NOT NULL").all().map(r => r.id));
+  const held = () => new Set(db.prepare("SELECT DISTINCT worker_id AS id FROM worker_jobs WHERE status='uncertain' AND released_at IS NULL AND worker_id IS NOT NULL").all().map(r => r.id));
   return {
     enroll({ name, models: requested } = {}) {
       const chosen = modelList(requested);
@@ -92,6 +93,16 @@ export function createWorkerBroker(db, { now = Date.now, models = [], leaseMs = 
         db.prepare('UPDATE workers SET revoked_at=COALESCE(revoked_at,?) WHERE id=?').run(now(), id);
         db.prepare("UPDATE worker_jobs SET status='uncertain',updated_at=?,lease_hash=NULL WHERE worker_id=? AND status='running'").run(now(), id);
         return workerValue(readWorker(id));
+      });
+    },
+    isBlocked(id) { expire(); return held().has(id); },
+    // Décision de l'opérateur, une fois l'ancien processus arrêté : le travail reste « incertain », seule l'identité est libérée.
+    release(id) {
+      expire();
+      return tx(() => {
+        if (!readWorker(id)) throw fault('WORKER_NOT_FOUND', 'Worker not found.', 404);
+        const released = Number(db.prepare("UPDATE worker_jobs SET released_at=? WHERE worker_id=? AND status='uncertain' AND released_at IS NULL").run(now(), id).changes);
+        return { ...workerValue(readWorker(id)), blocked: false, released };
       });
     },
     authenticate(token) {
@@ -115,7 +126,7 @@ export function createWorkerBroker(db, { now = Date.now, models = [], leaseMs = 
       return tx(() => {
         const w = requireWorker(id);
         // An uncertain run may still be executing: this identity cannot start more work.
-        if (db.prepare("SELECT id FROM worker_jobs WHERE worker_id=? AND status IN ('running','uncertain') LIMIT 1").get(id)) return null;
+        if (db.prepare("SELECT id FROM worker_jobs WHERE worker_id=? AND (status='running' OR (status='uncertain' AND released_at IS NULL)) LIMIT 1").get(id)) return null;
         const allowed = JSON.parse(w.models).filter(m => models.includes(m));
         const j = db.prepare("SELECT * FROM worker_jobs WHERE status='queued' ORDER BY created_at,id").all().find(r => allowed.includes(JSON.parse(r.payload).model));
         if (!j) return null;

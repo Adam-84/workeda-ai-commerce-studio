@@ -76,6 +76,8 @@ Au démarrage, les travaux encore en file chez le courtier sont annulés et les 
 
 Le runtime sauvegarde les deux bases quand la dernière sauvegarde complète a plus de 24 heures : au démarrage si elle est en retard, puis par contrôle horaire. La date survit aux redémarrages. L'action Sauvegarder du tableau d'exploitation déclenche aussi un snapshot. Les artefacts vont dans `/var/lib/archipel/backups/<date-id>/`, avec un manifeste contenant les hashes et résultats d'intégrité. Consulter `lastSuccessfulAt` et `error` ; un healthcheck vert ne suffit pas. Il n'y a pas de rétention automatique ni d'export hors hôte : surveiller l'espace et organiser une copie externe protégée. Les deux bases sont sauvegardées successivement, pas dans une transaction distribuée ; pour une restauration coordonnée, arrêter les travaux et prendre une sauvegarde à froid avant une mise à jour importante.
 
+Les deux bases du serveur central fonctionnent en journal WAL : la sauvegarde lit un instantané pendant que le service continue d'écrire. Des fichiers `-wal` et `-shm` accompagnent alors chaque base ; ne jamais copier à la main le seul fichier principal d'un service actif, et ne jamais déposer une base restaurée à côté des anciens fichiers `-wal`.
+
 Procédure de sauvegarde manuelle d'une base, sans remplacer aucun fichier :
 
 ```bash

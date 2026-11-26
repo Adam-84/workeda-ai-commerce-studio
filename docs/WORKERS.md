@@ -15,6 +15,7 @@ model allowlist in the environment:
 node tools/workers.mjs enroll --db /private/data/control.db --name laptop --models sonnet --token-file /private/laptop-worker-token
 node tools/workers.mjs status --db /private/data/control.db
 node tools/workers.mjs revoke --db /private/data/control.db --id WORKER_ID
+node tools/workers.mjs release --db /private/data/control.db --id WORKER_ID --process-stopped
 ```
 
 `--token-file` creates a new file exclusively with owner-only POSIX permissions.
@@ -52,11 +53,19 @@ node tools/worker.mjs --server http://127.0.0.1:4319 --token-file /private/lapto
 `--once` handles at most one job and exits. The loop retries a failed poll after a
 longer pause, never a job, and exits when the server rejects the identity.
 
+A lost heartbeat does not abandon a running job. When the report cannot be delivered
+(network failure, timeout, 408, 429 or 5xx), the worker keeps its lease alive and
+sends the same report again until the job's time limit; the job itself never runs
+twice. An explicit refusal from the server ends the attempts. A failed job shows the
+reason reported by the worker, unless it looks like it contains a secret.
+
 A mission whose model no connected worker offers stays queued and consumes no
 attempt. A worker that has not sent a heartbeat for 60 seconds, is revoked or holds
 an uncertain job counts as unavailable; the operations status reports it as
-`blocked` in the last case. To recover a blocked identity, stop and inspect the
-process, then revoke it and enrol a new one.
+`blocked` in the last case, and the worker itself prints that it is blocked. To
+recover it, check that the earlier process has stopped, then run `release` with
+`--process-stopped` on the central host. Revoke the identity instead if its token
+may be compromised.
 
 ## Provider terms (read on 26 November 2026)
 
@@ -80,7 +89,8 @@ The wire protocol uses `Authorization: Bearer WORKER_TOKEN` and JSON POSTs:
 
 - `/worker/heartbeat`: `{}` or `{jobId, leaseToken}` while holding a job.
 - `/worker/claim`: `{}`; returns a job with `leaseToken` and `heartbeatIntervalMs`,
-  or `null` when no eligible job exists.
+  or `null` when no eligible job exists, with `blocked: true` while the identity is
+  held by an uncertain job.
 - `/worker/jobs/:id/complete`: `{leaseToken, result}`, where result contains
   `status` (`done` or `failed`), `output` or `error`, and nullable `usage`/`costUsd`.
 
@@ -94,9 +104,10 @@ Heartbeat cannot extend the absolute job timeout. A missed lease, timeout or
 revocation makes a running job `uncertain`; it is never automatically reassigned
 or retried. Late or incorrect lease tokens cannot change its result. An uncertain
 job also blocks new claims for that identity because its original process may
-still be executing. Stop and inspect that process before revoking and enrolling a
-replacement identity. Revocation prevents new accepted work but cannot remotely
-terminate an already executing provider request.
+still be executing. Stop and inspect that process before releasing the identity.
+Release leaves the job `uncertain`: nothing is replayed and a late report stays
+refused. Revocation prevents new accepted work but cannot remotely terminate an
+already executing provider request.
 
 An idempotency key identifies one immutable payload and result. Reusing the key
 returns the existing job; it cannot replace its prompt or restart execution.

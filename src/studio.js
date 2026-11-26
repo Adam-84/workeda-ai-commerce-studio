@@ -67,6 +67,7 @@ const mapMessage = (row) => ({ ...row, fromAgentId: row.from_agent_id, toAgentId
 export function createStudio(filename = 'data/workeda.db', options = {}) {
   const db = new DatabaseSync(filename);
   db.exec(`PRAGMA foreign_keys = ON;
+    PRAGMA busy_timeout = 5000;
     CREATE TABLE IF NOT EXISTS departments (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL, department_id TEXT NOT NULL REFERENCES departments(id), enabled INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'idle', status_source TEXT NOT NULL DEFAULT 'manual', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS missions (id TEXT PRIMARY KEY, title TEXT NOT NULL, requested_by TEXT REFERENCES agents(id), assigned_to TEXT REFERENCES agents(id), state TEXT NOT NULL DEFAULT 'draft', requires_approval INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
