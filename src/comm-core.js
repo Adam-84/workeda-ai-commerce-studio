@@ -109,7 +109,7 @@ export function normalizeRefs(list) {
 const flat = (s) => String(s ?? '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
 // Deux demandes qui disent la même chose au même agent ont la même empreinte.
 // Empreinte sur la demande COMPLÈTE et sur l'accès web : deux demandes qui ne diffèrent qu'en fin de texte ne sont pas des doublons.
-export const fingerprint = (assigneeRef, instruction, web = false, catalog = false, integrations = []) => createHash('sha1').update(`${assigneeRef}\n${web ? 'web' : 'noweb'}\n${catalog ? 'cat' : 'nocat'}${integrations.length ? `\nint:${[...integrations].sort().join(',')}` : ''}\n${flat(instruction)}`).digest('hex').slice(0, 16);
+export const fingerprint = (assigneeRef, instruction, web = false, catalog = false, integrations = [], engine = '') => createHash('sha1').update(`${assigneeRef}\n${web ? 'web' : 'noweb'}\n${catalog ? 'cat' : 'nocat'}${integrations.length ? `\nint:${[...integrations].sort().join(',')}` : ''}${engine ? `\nengine:${engine}` : ''}\n${flat(instruction)}`).digest('hex').slice(0, 16);
 
 export const parseJsonList = (text, fallback = []) => { try { const v = JSON.parse(text); return Array.isArray(v) ? v : fallback; } catch { return fallback; } };
 

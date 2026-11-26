@@ -49,3 +49,94 @@ test('magasin : mission, agent, fiche ; refus côté serveur', () => {
   const hired = studio.hireAgent({ name: 'Sans fiche', role: 'Test', departmentId: studio.listDepartments()[0].id });
   assert.throws(() => engines.setAgentChoice(hired.id, claude('opus')), { status: 409 });
 });
+
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { parseAgentOutput } from '../src/comm-core.js';
+
+const asAgent = (comm, agentId, taskId) => ({ type: 'agent', agentId, runId: comm.startRun({ agentId, kind: 'task', taskId }).id });
+
+test('moteur figé à la création : changer le choix ensuite ne touche pas la tâche', () => {
+  const { comm, engines, ids } = setup();
+  engines.setAgentChoice(ids.lucas, claude('opus'));
+  const t = comm.createTask({ assigneeId: ids.lucas, instruction: 'Audit' }).task;
+  engines.setAgentChoice(ids.lucas, claude('haiku'));
+  assert.deepEqual([comm.task(t.id).model, comm.task(t.id).engineSource], ['opus', 'agent']);
+});
+
+test('mission : les sous-tâches héritent ; un agent ne choisit jamais', () => {
+  const { comm, ids } = setup();
+  const root = comm.createTask({ assigneeId: ids.alexander, instruction: 'Coordonner', engine: claude('haiku') }).task;
+  assert.equal(root.engineSource, 'mission');
+  const child = comm.createTask({ assigneeId: ids.noah, instruction: 'Veille', parentTaskId: root.id, engine: claude('opus') }, asAgent(comm, ids.alexander, root.id)).task;
+  assert.deepEqual([child.model, child.engineSource], ['haiku', 'mission']);
+  const free = comm.createTask({ assigneeId: ids.alexander, instruction: 'Autre demande' }).task;
+  const other = comm.createTask({ assigneeId: ids.noah, instruction: 'Autre veille', parentTaskId: free.id, engine: claude('opus') }, asAgent(comm, ids.alexander, free.id)).task;
+  assert.deepEqual([other.model, other.engineSource], ['sonnet', 'fiche']);
+  const parsed = parseAgentOutput(JSON.stringify({ report: 'ok', delegate: [{ to: 'Noah', task: 'x', engine: claude('opus') }] }));
+  assert.equal('engine' in parsed.delegate[0], false);
+});
+
+test('doublons : deux moteurs font deux demandes', () => {
+  const { comm, ids } = setup();
+  const ask = (extra) => comm.createTask({ assigneeId: ids.lucas, instruction: 'Même demande', ...extra });
+  assert.equal(ask({}).created, true);
+  assert.equal(ask({ engine: claude('opus') }).created, true);
+  assert.equal(ask({ engine: claude('opus') }).reused, 'open');
+  assert.equal(ask({ engine: claude('sonnet') }).reused, 'open', 'le modèle de la fiche garde l’empreinte d’origine');
+});
+
+test('automatisation : un résultat d’un autre moteur n’est pas réutilisé', () => {
+  const { comm, engines, ids } = setup();
+  comm.setAutomationGate(() => true);
+  const t = comm.createTask({ assigneeId: ids.lucas, instruction: 'Contrôle', cacheKey: 'k' }, { type: 'automation', runId: 'r1' }).task;
+  const run = comm.startRun({ agentId: ids.lucas, kind: 'task', taskId: t.id }); comm.endRun(run.id, { state: 'done' });
+  comm.setTaskState(t.id, 'running');
+  comm.recordResult(t.id, { agentId: ids.lucas, runId: run.id, body: 'ok', verified: true, level: 'run', verification: 'simulé' });
+  comm.setTaskState(t.id, 'done');
+  assert.ok(comm.reusableAutomation('lucas', 'k', 3_600_000));
+  engines.setAgentChoice(ids.lucas, claude('opus'));
+  assert.equal(comm.reusableAutomation('lucas', 'k', 3_600_000), null);
+  assert.throws(() => comm.setTaskEngine(t.id, claude('haiku')), /automatisation/);
+});
+
+test('moteur indisponible : la tâche attend avec le motif, sans essai consommé', () => {
+  const { comm, ids } = setup();
+  const t = comm.createTask({ assigneeId: ids.ryan, instruction: 'Code' }).task;
+  assert.equal(comm.claimNext({ blocked: () => 'Opus indisponible' }).task, null);
+  const waiting = comm.task(t.id);
+  assert.deepEqual([waiting.state, waiting.attempts, waiting.stateNote], ['queued', 0, 'Opus indisponible']);
+  assert.equal(comm.claimNext({ blocked: () => '' }).task.id, t.id);
+});
+
+test('changement manuel : seulement sur une tâche non partie, tracé dans le fil', () => {
+  const { comm, ids } = setup();
+  const t = comm.createTask({ assigneeId: ids.lucas, instruction: 'Audit' }).task;
+  const changed = comm.setTaskEngine(t.id, claude('opus'));
+  assert.deepEqual([changed.model, changed.engineSource], ['opus', 'task']);
+  assert.ok(comm.listMessages(t.threadId, null, 100).items.some((m) => /Moteur changé/.test(m.body)));
+  assert.equal(comm.setTaskEngine(t.id, null).engineSource, 'fiche');
+  comm.setTaskState(t.id, 'running');
+  assert.throws(() => comm.setTaskEngine(t.id, claude('opus')), /ne se change que/);
+});
+
+test('journal : le moteur voyage ; absent il est conservé, inconnu il est gardé tel quel', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'archipel-lot2-'));
+  try {
+    const a = setup({ commJournalDir: dir, device: 'pc-a' }), b = setup({ commJournalDir: dir, device: 'pc-b' });
+    const t = a.comm.createTask({ assigneeId: a.ids.lucas, instruction: 'Audit', engine: claude('opus') }).task;
+    b.comm.importJournal();
+    assert.deepEqual([b.comm.task(t.id).model, b.comm.task(t.id).engineSource], ['opus', 'mission']);
+    assert.equal(b.engines.resolve(b.ids.lucas, t.missionId).model, 'opus');
+    const last = readFileSync(join(dir, 'pc-a.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((e) => e.kind === 'task').at(-1);
+    const send = (n, data) => { writeFileSync(join(dir, `pc-z${n}.jsonl`), `${JSON.stringify({ ...last, eid: `z-${n}`, device: 'pc-z', at: new Date(Date.now() + n * 1000).toISOString(), rev: 90 + n, data })}\n`); b.comm.importJournal(); };
+    const old = { ...last.data }; delete old.provider; delete old.model; delete old.engineSource;
+    send(1, old);
+    assert.equal(b.comm.task(t.id).model, 'opus');
+    send(2, { ...last.data, provider: 'codex', model: 'x' });
+    assert.equal(b.comm.task(t.id).provider, 'codex');
+    assert.match(b.engines.reason(b.engines.ofTask(b.comm.task(t.id))), /Codex/);
+    a.studio.close(); b.studio.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
