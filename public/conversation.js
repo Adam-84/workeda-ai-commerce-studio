@@ -152,15 +152,15 @@ export function createConversation({ agent, agents, get, send, announce, replies
   async function askReply() {
     if (reply.busy) return;
     reply.busy = true; reply.text = ''; reply.error = ''; draft.saved = false; notify();
-    let final = null;
+    let final = null, warning = '';
     try {
       await readReply(`/api/agents/${encodeURIComponent(agent.id)}/reply`, (event) => {
         if (event.type === 'text') { reply.text += event.text; notify(); }
-        else if (event.type === 'done') final = event.message;
+        else if (event.type === 'done') { final = event.message; warning = event.warning ?? ''; }
         else if (event.type === 'error') throw new Error(event.error);
       });
       if (!final) throw new Error('La réponse s’est interrompue avant la fin.');
-      reply.busy = false; reply.text = ''; notify(final); announce(`Réponse de ${agent.name} reçue.`);
+      reply.busy = false; reply.text = ''; reply.error = warning; notify(final); announce(warning || `Réponse de ${agent.name} reçue.`);
     } catch (error) {
       reply.error = `${agent.name} n’a pas pu répondre. ${error.message} Votre message reste enregistré.`;
       announce(reply.error);

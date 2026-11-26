@@ -3,7 +3,7 @@
 // Rien n'est affiché qui ne vienne du serveur : pas de réponse inventée, pas d'activité simulée.
 import {
   groupThreads, filterThreads, threadTitle, threadKindLabel, messageKindLabel, deliveryLabel, taskStateLabel, taskActions, taskTree, isOpen,
-  dateFr, dueLabel, attemptsLabel, sourceLine, verificationLine, costLine, activeText, runLine, side, NOTIFICATION
+  dateFr, dueLabel, attemptsLabel, sourceLine, verificationLine, costLine, engineLine, activeText, runLine, side, NOTIFICATION
 } from './comm-view.js';
 
 const enc = encodeURIComponent;
@@ -161,7 +161,7 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
       : a === 'verify' ? h('button', { type: 'button', onclick: () => detail(t, slot, true) }, label) : h('button', { type: 'button', onclick: () => act(a).catch(() => {}) }, label)));
     const detailBtn = h('button', { type: 'button', class: 'comm-detail-btn', onclick: () => detail(t, slot, false) }, 'Détails');
     return h('li', { class: 'skill-row comm-task', 'data-task': t.id, style: `margin-left:${Math.min(level, 3) * 16}px` }, h('div', {},
-      h('div', { class: 'skill-chips' }, h('strong', {}, short(t.instruction, 110)), stateChip(t), chip(nameOf(t.assigneeId)), t.kind === 'consolidation' && chip('Consolidation'), t.withCatalog && chip('Catalogue Shopify (lecture seule)'), (t.withIntegrations ?? []).map((i) => chip(({ dsers: 'DSers direct', track17: '17TRACK', manual_import: 'Import manuel', shopify_admin: 'Shopify Admin' }[i] ?? i) + ' (lecture seule)')), t.budgetUsd != null && chip(`Budget ${(t.spentUsd ?? 0).toFixed(2)} / ${t.budgetUsd.toFixed(2)} $`), t.allowWeb && chip('Web en lecture seule')),
+      h('div', { class: 'skill-chips' }, h('strong', {}, short(t.instruction, 110)), stateChip(t), chip(nameOf(t.assigneeId)), t.kind === 'consolidation' && chip('Consolidation'), t.withCatalog && chip('Catalogue Shopify (lecture seule)'), (t.withIntegrations ?? []).map((i) => chip(({ dsers: 'DSers direct', track17: '17TRACK', manual_import: 'Import manuel', shopify_admin: 'Shopify Admin' }[i] ?? i) + ' (lecture seule)')), t.budgetUsd != null && chip(`Budget ${(t.spentUsd ?? 0).toFixed(2)} / ${t.budgetUsd.toFixed(2)} $${t.unreportedRuns ? ' (dont estimation)' : ''}`), t.allowWeb && chip('Web en lecture seule')),
       h('p', { class: 'note' }, [`${t.requestedBy === 'user' ? 'Vous' : nameOf(t.requestedBy)} → ${nameOf(t.assigneeId)}`, `niveau ${t.depth}`, dueLabel(t), attemptsLabel(t), t.verified ? 'résultat vérifié' : ''].filter(Boolean).join(' · ')),
       t.stateNote && h('p', { class: 'note' }, t.stateNote), slot, err), h('div', { class: 'comm-actions' }, detailBtn, buttons));
   }
@@ -188,7 +188,7 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
   function budgetForm(t) {
     const err = errBox(), input = h('input', { type: 'number', min: '0.1', max: '100', step: '0.1', value: String(t.budgetUsd), 'aria-label': 'Nouveau budget en dollars' });
     return h('form', { class: 'memory-form', onsubmit: async (e) => { e.preventDefault(); err.textContent = ''; try { await send('POST', `/api/comm/tasks/${enc(t.id)}/budget`, { usd: Number(input.value) }); announce('Budget mis à jour'); ui.pollComm?.(); await loadTasks(); } catch (x) { fail(err, x); } } },
-      h('p', { class: 'note' }, `Dépensé : ${(t.spentUsd ?? 0).toFixed(2)} $ sur ${t.budgetUsd.toFixed(2)} $ (coût rapporté par Claude Code${t.unreportedRuns ? `, dont ${t.unreportedRuns} exécution(s) interrompue(s) sans coût rapporté comptée(s) à 0,25 $ chacune : estimation prudente` : ''}).`),
+      h('p', { class: 'note' }, `Dépensé : ${(t.spentUsd ?? 0).toFixed(2)} $ sur ${t.budgetUsd.toFixed(2)} $ (coût rapporté par Claude Code${t.unreportedRuns ? `, dont ${t.unreportedRuns} exécution(s) sans coût rapporté comptée(s) à 0,25 $ chacune : estimation, pas un coût constaté` : ''}).`),
       h('label', {}, 'Budget de la mission ($)', input), h('button', { type: 'submit' }, 'Modifier le budget'), err);
   }
   function delegateForm() {
@@ -261,7 +261,7 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
         h('h3', {}, 'En ce moment'), h('p', { role: 'status' }, activeText(act.active, nameOf)), act.lastPump?.quota && h('p', { class: 'err' }, 'Quota quotidien atteint : les tâches en file attendent demain.'),
         h('p', { class: 'note' }, `${act.maxActive} agents actifs au maximum à la fois. Claude Code ${status.engines.claudeCode ? 'détecté' : 'non détecté'} · Codex ${status.engines.codexCli ? 'détecté' : 'non détecté'} (« détecté » : présent sur le PC, pas forcément connecté).`),
         shop && shopSection(shop),
-        h('h3', {}, 'Coûts et quotas'), h('p', {}, costLine(usage)), h('p', { class: 'note' }, usage.note),
+        h('h3', {}, 'Coûts et quotas'), h('p', {}, costLine(usage)), usage.byEngine.length > 0 && h('ul', {}, usage.byEngine.map((e) => h('li', {}, engineLine(e)))), h('p', { class: 'note' }, usage.note),
         h('h3', {}, 'Historique des exécutions'), runs.length ? h('ul', { class: 'comm-runs' }, runs.map((r) => h('li', {}, `${dateFr(r.startedAt)} — ${runLine(r, nameOf)}`))) : h('p', {}, 'Aucune exécution pour le moment.'),
         h('h3', {}, 'Cohérence'), check.problems.length ? h('ul', {}, check.problems.map((p) => h('li', { class: 'err' }, p))) : h('p', {}, 'Aucun problème détecté.'), check.notes.length > 0 && h('ul', {}, check.notes.map((n) => h('li', { class: 'note' }, n))),
         h('h3', {}, 'Synchronisation entre ordinateurs'), h('p', {}, `Cet ordinateur : ${status.device} · ${check.journalFiles} journal(aux) · ${check.tasks} tâche(s) · ${check.messages} message(s).`),

@@ -42,7 +42,7 @@ export function buildDashboard({ agents, missions, notifications, memoryPending,
   else if (!today.runsWithCost) cards.push(card('costs', 'Coûts IA du jour', 'Inconnu', `${plural(today.runs, 'exécution')} sans coût rapporté.`, 'unknown'));
   else cards.push(card('costs', 'Coûts IA du jour', `${today.costUsd.toFixed(2).replace('.', ',')} $ rapportés`, `Coût rapporté pour ${today.runsWithCost} sur ${today.runs} exécutions ; ce n’est pas une facture.`, today.runsWithCost < today.runs ? 'unknown' : 'ok'));
 
-  const limit = usage?.quota ? ` Limite interne Archipel : ${usage.quota.remaining} exécutions restantes sur ${usage.quota.runsPerDay} aujourd’hui.` : '';
+  const limit = usage?.quota ? ` Limite interne Archipel : ${usage.quota.remaining} exécutions restantes sur ${usage.quota.runsPerDay} aujourd’hui pour les tâches et réponses.` : '';
   cards.push(card('quotas', 'Quotas fournisseurs', 'Inconnu', `Les abonnements ne communiquent pas leur solde à Archipel.${limit}`, 'unknown'));
 
   if (integrations) {

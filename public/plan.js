@@ -23,14 +23,14 @@ export function planBlock({ mission: m, agents, get, send, announce, h, canReply
     busy = true; status.textContent = ''; render();
     const who = nameOf(responsible), progress = h('p', { class: 'note plan-progress' }, `${who} prépare ${revision ? 'une révision du plan' : 'un plan'}…`);
     status.before(progress);
-    let chars = 0, done = false;
+    let chars = 0, done = false, warning = '';
     try {
       await readReply(`${base}/plan/propose`, (ev) => {
         if (ev.type === 'text') { chars += ev.text.length; progress.textContent = `${who} prépare ${revision ? 'une révision du plan' : 'un plan'}… (${chars} caractères reçus)`; }
-        else if (ev.type === 'done') done = true; else if (ev.type === 'error') throw new Error(ev.error);
+        else if (ev.type === 'done') { done = true; warning = ev.warning ?? ''; } else if (ev.type === 'error') throw new Error(ev.error);
       }, revision ? { revision } : {});
       if (!done) throw new Error('La proposition s’est interrompue avant la fin.');
-      busy = false; await load(); ok(`Nouvelle version proposée par ${who} : c’est une proposition, à valider ou non.`);
+      busy = false; await load(); ok(`Nouvelle version proposée par ${who} : c’est une proposition, à valider ou non.${warning ? ` ${warning}` : ''}`);
     } catch (x) { busy = false; render(); fail(new Error(`${who} n’a pas pu proposer de plan. ${x.message}`)); }
   }
   const decide = async (p, decision, note) => {

@@ -66,7 +66,17 @@ export function sourceLine(s) {
 }
 export const verificationLine = (r) => (r ? `${r.verified ? 'Vérifié' : 'Non vérifié'} · ${levelLabel(r.level)} — ${r.verification}` : 'Aucun résultat.');
 
-export const costLine = (u) => `${u.today.runs} exécution${u.today.runs > 1 ? 's' : ''} aujourd’hui (reste ${u.quota.remaining} sur ${u.quota.runsPerDay}) · ${u.today.costUsd ? `${u.today.costUsd.toFixed(2)} $ rapportés par Claude Code` : 'coût non rapporté'} · ${u.total.runs} au total`;
+const dollars = (v) => `${v.toFixed(2).replace('.', ',')} $`;
+const partial = (n, runs) => (n < runs ? ` (${n} sur ${runs} exécutions)` : '');
+// Coût d'un groupe d'exécutions : inconnu et partiel sont dits, jamais remplacés par zéro.
+export function costText(s) {
+  if (!s?.runs) return 'aucune exécution';
+  if (!s.runsWithCost || s.costUsd == null) return 'coût inconnu';
+  return `${dollars(s.costUsd)} rapportés${partial(s.runsWithCost, s.runs)}`;
+}
+export const tokensText = (s) => (!s?.runsWithTokens || s.inputTokens == null || s.outputTokens == null ? 'jetons inconnus' : `${s.inputTokens + s.outputTokens} jetons rapportés${partial(s.runsWithTokens, s.runs)}`);
+export const costLine = (u) => `${u.today.runs} exécution${u.today.runs > 1 ? 's' : ''} aujourd’hui (reste ${u.quota.remaining} sur ${u.quota.runsPerDay} pour les tâches et réponses) · ${costText(u.today)} · ${u.total.runs} au total`;
+export const engineLine = (e) => `${e.provider ?? 'fournisseur inconnu'} · ${e.model ?? 'modèle inconnu'} — aujourd’hui : ${e.today.runs ? `${e.today.runs} exécution(s), ${costText(e.today)}, ${tokensText(e.today)}` : 'aucune exécution'} · au total : ${e.total.runs} exécution(s), ${costText(e.total)}`;
 // Compteur et activité Comms, sur chaque bouton qui ouvre les messages (barre du haut et barre mobile).
 export function paintCommButtons(buttons, { notifications = 0, active = [] } = {}) {
   const title = active.length ? `${active.length} agent${active.length > 1 ? 's' : ''} au travail en ce moment` : 'Communication entre agents';
@@ -80,11 +90,14 @@ export function paintCommButtons(buttons, { notifications = 0, active = [] } = {
 
 export const activeText = (active, nameOf) => (active.length ? `${active.map((a) => nameOf(a.agentId)).join(', ')} ${active.length > 1 ? 'travaillent' : 'travaille'} en ce moment` : 'Aucun agent au travail en ce moment');
 
+const RUN_KINDS = { reply: 'réponse dans un fil', chat: 'discussion directe', team: 'fil d’équipe', plan: 'proposition de plan', memory: 'proposition de souvenirs' };
 // Une exécution réelle, en une ligne.
 export function runLine(r, nameOf) {
   const state = { running: 'en cours', done: 'terminée', error: 'en erreur' }[r.state] ?? r.state;
   const dur = r.durationMs != null ? ` · ${Math.round(r.durationMs / 1000)} s` : '';
-  return `${nameOf(r.agentId)} · ${r.kind === 'task' ? `tâche « ${r.taskTitle ?? '?'} »` : 'réponse dans un fil'} · ${state}${dur}${r.web ? ' · web en lecture seule' : ''}${r.error ? ` — ${r.error}` : ''}`;
+  const what = r.kind === 'task' ? `tâche « ${r.taskTitle ?? '?'} »` : RUN_KINDS[r.kind] ?? r.kind;
+  const model = !r.model ? '' : r.modelStatus === 'mismatch' ? ` · ⚠ ${r.observedModels.join(', ')} constaté au lieu de ${r.model}` : ` · ${r.model}${r.modelStatus === 'unknown' && r.state === 'done' ? ' (modèle constaté inconnu)' : ''}`;
+  return `${nameOf(r.agentId)} · ${what} · ${state}${dur}${r.web ? ' · web en lecture seule' : ''}${model}${r.error ? ` — ${r.error}` : ''}`;
 }
 
 // Le message est-il d'un agent ? (jamais du propriétaire) ; système = Studio.

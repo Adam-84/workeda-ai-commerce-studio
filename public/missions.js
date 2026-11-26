@@ -127,6 +127,7 @@ export function missionsTab({ agent, agents, missions, save, get, send, announce
       e.preventDefault(); if (busy) return;
       const text = input.value.trim(), who = chosen();
       busy = true; status.textContent = ''; status.classList.remove('err'); sync();
+      const warnings = [];
       try {
         if (text) { await send('POST', base, { body: text }); input.value = ''; await load(); }
         for (const id of speakers.filter((x) => who.includes(x))) {
@@ -135,13 +136,13 @@ export function missionsTab({ agent, agents, missions, save, get, send, announce
           status.textContent = `${name} rédige sa réponse…`;
           let done = false;
           await readReply(`${base}/reply/${encodeURIComponent(id)}`, (ev) => {
-            if (ev.type === 'text') live.textContent += ev.text; else if (ev.type === 'done') done = true; else if (ev.type === 'error') throw new Error(ev.error);
+            if (ev.type === 'text') live.textContent += ev.text; else if (ev.type === 'done') { done = true; if (ev.warning) warnings.push(`${name} : ${ev.warning}`); } else if (ev.type === 'error') throw new Error(ev.error);
           }).catch((x) => { throw new Error(`${name} n’a pas pu répondre. ${x.message}`); });
           if (!done) throw new Error(`La réponse de ${name} s’est interrompue avant la fin.`);
           announce(`Réponse de ${name} reçue.`); await load();
         }
         picks.forEach((l) => { l.firstChild.checked = false; });
-        status.textContent = who.length ? 'Réponses enregistrées dans le fil.' : 'Message enregistré dans le fil.';
+        status.textContent = [who.length ? 'Réponses enregistrées dans le fil.' : 'Message enregistré dans le fil.', ...warnings].join(' ');
       } catch (x) { status.textContent = x.message; status.classList.add('err'); await load(); }
       finally { busy = false; sync(); }
     } },
