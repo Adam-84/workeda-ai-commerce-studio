@@ -15,7 +15,7 @@ const TRANSIENT = /surcharg|à temps|n’a pas pu répondre|n'a pas pu répondre
 const short = (s, n) => { s = scrubContacts(s); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
 
 const NOT_SHARED = '[Résultat issu de données DSers/17TRACK/imports/Shopify Admin : non transmis (accès différent ou tâche qui lit le web).]';
-export function createOrchestrator({ studio, profiles = () => [], runner = realClaude, memoryFor = () => '', maxActive = LIMITS.maxActive, pumpEveryMs = 0 } = {}) {
+export function createOrchestrator({ studio, profiles = () => [], runner = realClaude, memoryFor = () => '', maxActive = LIMITS.maxActive, pumpEveryMs = 0, canRun = () => true, agentReady = () => true } = {}) {
   const comm = studio.comm;
   const active = new Map();      // clé d'exécution → { agentId, runId, taskId, threadId, kind, startedAt }
   const inflight = new Set();
@@ -186,11 +186,13 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
     inflight.add(p);
   }
   function pump() {
-    if (pumping) return;
+    if (pumping || !canRun()) return;
     pumping = true;
     try {
       while (active.size < maxActive) {
-        const c = comm.claimNext({ busy: busyAgents() });
+        // Un agent sans moteur disponible est traité comme occupé : sa tâche reste en file, sans essai consommé.
+        const busy = busyAgents(); for (const a of roster()) if (!agentReady(a.id)) busy.add(a.id);
+        const c = comm.claimNext({ busy });
         lastPump = { at: new Date().toISOString(), quota: Boolean(c.quota) };
         if (c.quota || !c.task) break;
         launch(c.task);

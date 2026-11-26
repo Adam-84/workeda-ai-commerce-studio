@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readAutomationSources, pollAutomationObservations } from './automation-sources.js';
 import { condition } from './automation-core.js';
 
-export function createAutomationRunner({ studio, clock = () => new Date().toISOString(), everyMs = 15000 } = {}) {
+export function createAutomationRunner({ studio, clock = () => new Date().toISOString(), everyMs = 15000, canRun = () => true } = {}) {
   const a = studio.automation, worker = randomUUID(); let timer = null, busy = false, stopped = false;
   function reconcile() {
     for (const r of a.running()) {
@@ -16,13 +16,13 @@ export function createAutomationRunner({ studio, clock = () => new Date().toISOS
     if (busy || stopped) return; busy = true;
     try {
       reconcile();
-      if (!a.status().owner || a.status().paused) return;
+      if (!canRun() || !a.status().owner || a.status().paused) return;
       pollAutomationObservations(studio, Date.parse(clock())); a.scheduleDue(); a.purge();
       const r = a.claim(worker); if (!r) return;
       const heartbeat = setInterval(() => a.renew(r.id, worker), 25000); heartbeat.unref?.();
       try {
         const d = a.rule(r.rule_id);
-        const valid = () => a.owns(r.id, worker) && a.allowed(r) && !stopped;
+        const valid = () => a.owns(r.id, worker) && a.allowed(r) && !stopped && canRun();
         for (const source of d.consent.collect ?? []) {
           if (!valid()) { if (a.owns(r.id, worker)) a.finish(r.id, 'cancelled', 'Suspension avant collecte'); return; }
           if (!a.allowed(r) || stopped) return a.finish(r.id, 'cancelled', 'Suspension avant collecte');

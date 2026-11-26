@@ -430,7 +430,7 @@ export function createStudio(filename = 'data/workeda.db', options = {}) {
   const secretsDir = options.secretsDir ?? (filename === ':memory:' ? null : join(dirname(filename), 'secrets'));
   const secrets = options.secrets ?? createSecretStore({ dir: secretsDir }); // sans dossier (base en mémoire) : stockage indisponible, jamais de repli en clair
   api.integrations = createIntegrationService({ db, secrets, shop: api.shop, env: options.env ?? process.env, fetchImpl: options.integrationsFetch, now: options.nowMs, redirectUri: options.redirectUri, sleep: options.integrationsSleep });
-  api.automation = createAutomationStore(db, { clock: options.clock, backup: memory.backup, identity: options.automationIdentity ?? automationIdentity(filename), validateAgent: (slug) => api.comm.available(api.comm.agentOfSlug(slug)), cancelTask: (id) => { const t = api.comm.task(id); if (t.state === 'running') return false; if (['queued','pending_approval','blocked'].includes(t.state)) api.comm.cancelTask(id, 'Automatisation désactivée ou suspendue'); return true; } });
+  api.automation = createAutomationStore(db, { clock: options.clock, backup: memory.backup, identity: options.automationIdentity ?? automationIdentity(filename), aiAvailable: options.aiAvailable, validateAgent: (slug) => api.comm.available(api.comm.agentOfSlug(slug)), cancelTask: (id) => { const t = api.comm.task(id); if (t.state === 'running') return false; if (['queued','pending_approval','blocked'].includes(t.state)) api.comm.cancelTask(id, 'Automatisation désactivée ou suspendue'); return true; } });
   api.comm.setAutomationGate((key, task = null) => {
     try {
       const r = api.automation.run(key), d = api.automation.rule(r.rule_id);

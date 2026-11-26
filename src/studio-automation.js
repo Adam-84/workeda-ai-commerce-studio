@@ -3,7 +3,7 @@ import { condition, error, hash, LIMITS, validateDefinition, EVENTS } from './au
 import { nextSlots } from './automation-schedule.js';
 
 const CLOSED = ['done', 'skipped', 'blocked', 'failed', 'expired', 'uncertain', 'cancelled'];
-export function createAutomationStore(db, { clock = () => new Date().toISOString(), identity = null, validateAgent = () => false, backup = () => null, cancelTask = () => true } = {}) {
+export function createAutomationStore(db, { clock = () => new Date().toISOString(), identity = null, validateAgent = () => false, backup = () => null, cancelTask = () => true, aiAvailable = () => true } = {}) {
   const get = (sql, ...args) => db.prepare(sql).get(...args);
   const all = (sql, ...args) => db.prepare(sql).all(...args);
   const sql = (query, ...args) => db.prepare(query).run(...args);
@@ -133,7 +133,7 @@ export function createAutomationStore(db, { clock = () => new Date().toISOString
     importDefinitions(defs) { if (!Array.isArray(defs) || defs.length > 100 || JSON.stringify(defs).length > 200000) throw error('Import borné à 100 définitions / 200 ko.'); return tx(() => defs.map((d) => { const r = save(d, { importing: true }); this.disable(r.id); return rule(r.id); })); },
     owns(id, worker) { const r = run(id); return r.worker === worker && r.lease_until > clock() && ['collecting','evaluating'].includes(r.state); },
     renew(id, worker) { const changed = sql("UPDATE automation_runs SET lease_until=? WHERE id=? AND worker=? AND state IN ('collecting','evaluating')", new Date(Date.parse(clock()) + LIMITS.leaseMs).toISOString(), id, worker); return Boolean(changed.changes); },
-    reserveAi(id) { return tx(() => { const r = run(id), d = rule(r.rule_id); if (!allowed(r) || !d.allowAi || (!d.consent.ai && !r.manual) || meta('aiPaused') === 'true') return false; if (r.ai_reserved) return false;
+    reserveAi(id) { return tx(() => { const r = run(id), d = rule(r.rule_id); if (!allowed(r) || !d.allowAi || (!d.consent.ai && !r.manual) || meta('aiPaused') === 'true' || !aiAvailable(d.agentSlug)) return false; if (r.ai_reserved) return false;
       const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(clock()));
       const global = get('SELECT count(*) AS n FROM automation_runs WHERE ai_day=? AND ai_reserved=1', day).n;
       const used = get('SELECT count(*) AS n FROM automation_runs WHERE ai_day=? AND ai_reserved=1 AND rule_id=?', day, d.id).n;

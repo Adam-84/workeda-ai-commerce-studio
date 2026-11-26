@@ -43,7 +43,7 @@ const MEMORY_PATH = /^\/api\/(?:memory(?:\/|$)|missions\/[^/]+\/(?:memory-propos
 // Tout est réservé à cette machine, lectures comprises (les fils contiennent le travail de l'entreprise).
 const COMM_PATH = /^\/api\/(?:comm|shop|shop-apps|integrations|automations)(?:\/|$)/; // le catalogue Shopify aussi : lectures et relevés réservés à cette machine
 // Lecture : la mémoire contient le savoir de l'entreprise — réservée à cette machine (même contrôle, sans l'origine).
-function assertLocalWrite(req, { checkOrigin = true } = {}) {
+function assertLocalRequest(req, { checkOrigin = true } = {}) {
   const deny = (why) => Object.assign(new Error(`${checkOrigin ? 'Modification' : 'Lecture'} refusée : ${why}.`), { status: 403 });
   if (!LOOPBACK.has(req.socket.remoteAddress)) throw deny('connexion non locale');
   let host;
@@ -58,7 +58,8 @@ function assertLocalWrite(req, { checkOrigin = true } = {}) {
   }
 }
 
-export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPresent, runClaude = realClaude, agentFiles: { profiles = [], warnings = [] } = {}, pumpEveryMs = 0 }) {
+export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPresent, runClaude = realClaude, agentFiles: { profiles = [], warnings = [] } = {}, pumpEveryMs = 0, authorizeRequest = assertLocalRequest, canRun = () => true, agentReady = () => true }) {
+  const assertLocalWrite = authorizeRequest;
   // La détection lance un processus synchrone : on garde le résultat quelques secondes.
   const seen = new Map();
   const detect = (command) => {
@@ -344,7 +345,7 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
       ['POST', /^\/api\/automations\/([a-zA-Z0-9-]+)\/run$/, (m,d) => a.manual(m[1],d)]
     );
   }
-  if (comm) orch = createOrchestrator({ studio, profiles: () => profiles, runner: runClaude, memoryFor, pumpEveryMs });
+  if (comm) orch = createOrchestrator({ studio, profiles: () => profiles, runner: runClaude, memoryFor, pumpEveryMs, canRun, agentReady });
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://localhost');
@@ -388,7 +389,7 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
     } catch (error) { req.resume(); send(res, error.status ?? 400, { error: error.message }); } // corps non lu (refus avant lecture) : vidé
   });
   server.orchestrator = orch; // server.js le démarre (reprise après arrêt, passage régulier) ; les tests le pilotent à la main
-  server.automationRunner = automations ? createAutomationRunner({ studio }) : null;
+  server.automationRunner = automations ? createAutomationRunner({ studio, canRun }) : null;
   server.on('close', () => { orch?.stop(); server.automationRunner?.stop(); });
   return server;
 }

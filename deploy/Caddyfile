@@ -1,0 +1,7 @@
+# OPTIONAL EXAMPLE ONLY. Not started by compose.yaml.
+# Run Caddy on the host, after explicitly configuring DNS/TLS/firewall.
+# ARCHIPEL_HOST is a bare hostname; ARCHIPEL_ORIGIN must be https://that-hostname.
+{$ARCHIPEL_HOST} {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:4319
+}

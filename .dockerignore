@@ -1,0 +1,31 @@
+# Allowlist: never send local databases, environment files, provider credentials or Git journals to the builder.
+**
+!Dockerfile
+!.dockerignore
+!package.json
+!package-lock.json
+!src/
+!src/**
+!public/
+!public/**
+!skills/
+!skills/catalog.json
+!skills/*/
+!skills/*/SKILL.md
+!.claude/
+!.claude/agents/
+!.claude/agents/*.md
+!tools/
+!tools/database-transfer.mjs
+!tools/workers.mjs
+!tools/worker.mjs
+# Defense in depth for sensitive files accidentally placed within allowed directories.
+**/.env*
+**/*.db
+**/*.sqlite*
+**/*-wal
+**/*-shm
+**/*.secret
+**/*.pem
+**/credentials*
+**/automation-executor.local.json

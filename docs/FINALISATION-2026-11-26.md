@@ -40,3 +40,9 @@ Phase 9 révisée : **528 tests réussis, zéro échec/skip**, 22 Skills et 11 a
 Recette navigateur en base mémoire : bureau des onze agents, Automation Center, deux règles fictives inactives, formulaire, dix modèles et commande de réexamen accessibles. La barre desktop déborde dans la vue étroite : traitement prévu Phase 11, donc aucune validation mobile globale annoncée. Aucun appel fournisseur réel. Les tests prouvent les contrats simulés, pas la disponibilité d'un abonnement.
 
 Limites Phase 9 : un seul exécuteur désigné par base ; pas de verrou entre bases indépendantes ; arrêt empêche les nouveaux lancements, pas l'annulation garantie d'une inférence déjà partie ; budget financier constaté après appel ; sources concurrentielles/analytics non connectées. Codex reporté. Aucun déploiement ni fusion.
+
+## Phase 10 : reprise et relecture
+
+Un second agent a repris le travail non commité de la Phase 10 le 26 novembre et l'a relu. Défauts reproduits par test avant correction : arrêt général perdu au redémarrage ; reprise annulant une suspension de calendriers voulue ; calendriers actifs pendant l'arrêt général ; mission bloquée au lieu d'attendre un worker offrant son modèle ; worker tenu par un résultat incertain considéré disponible ; attente en file comptée dans le délai d'exécution ; rapport long refusé ; travaux orphelins et missions interrompues rejoués au redémarrage ; sauvegarde repoussée par les redémarrages ; compteur de validations faux ; identité d'exécuteur perdue à la recréation du conteneur. Un lanceur explicite de worker a été ajouté.
+
+Suite complète après correction : **558 réussites, zéro échec ou ignoré**, 22 Skills et 11 fiches cohérents. Aucun conteneur construit (moteur Docker arrêté), aucun appel IA réel, aucun déploiement, aucune migration de données.
