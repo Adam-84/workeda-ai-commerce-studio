@@ -70,17 +70,21 @@ export async function createCloudRuntime({ dataDir, passwordHash, origin, port =
     if (!liveWorkers(options.model).length) throw error('Aucun worker autorisé disponible pour ce modèle ; aucune bascule fournisseur.');
     const timeoutMs = Math.min(options.timeoutMs ?? 180000, maxJobMs, 300000);
     const job = broker.enqueue({ key: randomUUID(), payload: { provider: 'claude', model: options.model, system: options.system ?? '', prompt: options.prompt ?? '', tools: [], timeoutMs } });
+    // Rejoue côté serveur ce que le worker a observé : modèles et comptes, en succès comme en échec.
+    const replay = (result) => {
+      for (const model of result?.models ?? []) options.onEvent?.({ type: 'assistant', message: { model, content: [] } });
+      options.onEvent?.({ type: 'result', total_cost_usd: result?.costUsd ?? undefined, usage: result?.usage ?? undefined });
+    };
     const work = (async () => {
       let deadline = Date.now() + timeoutMs; // attente en file ; une fois le travail pris, l'échéance du courtier prend le relais
       while (!stopped && !halted && !options.signal?.aborted) {
         const current = broker.job(job.id);
         if (current.status === 'running') deadline = current.deadlineAt + 1000;
         if (current.status === 'done') {
-          const result = current.result;
-          options.onEvent?.({ type: 'result', total_cost_usd: result.costUsd ?? undefined, usage: result.usage ?? undefined });
-          options.onText?.(result.output); return result.output;
+          replay(current.result);
+          options.onText?.(current.result.output); return current.result.output;
         }
-        if (current.status === 'failed') throw Object.assign(error(workerFailure(current.result?.error)), { noRetry: true });
+        if (current.status === 'failed') { replay(current.result); throw Object.assign(error(workerFailure(current.result?.error)), { noRetry: true }); }
         if (['uncertain', 'cancelled'].includes(current.status)) throw error(INTERRUPTED_JOB);
         if (Date.now() >= deadline) break;
         await delay(100);

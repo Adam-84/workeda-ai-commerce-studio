@@ -13,6 +13,10 @@ import { COMM_SCHEMA_VERSION } from '../src/studio-comm.js';
 import { checkModel } from '../src/engines.js';
 import { createOrchestrator } from '../src/comm-run.js';
 import { createApp } from '../src/app.js';
+import { createWorkerBroker } from '../src/worker-broker.js';
+import { runWorkerOnce } from '../src/worker-client.js';
+import { createCloudRuntime } from '../src/cloud-server.js';
+import { hashPassword } from '../src/cloud-auth.js';
 
 const { profiles } = loadAgentFiles(fileURLToPath(new URL('../.claude/agents', import.meta.url)));
 function setup(options = {}, file = ':memory:') {
@@ -161,3 +165,33 @@ test('une trace impossible à écrire n’empêche pas la réponse', () => withA
   await post(`/api/agents/${ids.lucas}/conversation`, { body: 'Bonjour' });
   assert.equal((await post(`/api/agents/${ids.lucas}/reply`)).lines.at(-1).type, 'done');
 }));
+
+test('courtier : modèles constatés bornés ; un ancien worker reste « inconnu »', () => {
+  const db = new DatabaseSync(':memory:'), broker = createWorkerBroker(db, { models: ['sonnet'] });
+  const w = broker.enroll({ name: 'w', models: ['sonnet'] });
+  let n = 0;
+  const complete = (result) => { broker.enqueue({ key: `k${n += 1}`, payload: { provider: 'claude', model: 'sonnet', system: '', prompt: 'q', tools: [], timeoutMs: 5000 } }); const j = broker.claim(w.id); return broker.complete(w.id, j.id, j.leaseToken, result); };
+  assert.deepEqual(complete({ status: 'done', output: 'x', models: ['claude-sonnet-5-5'] }).result.models, ['claude-sonnet-5-5']);
+  assert.equal(complete({ status: 'done', output: 'x' }).result.models, undefined);
+  assert.throws(() => complete({ status: 'done', output: 'x', models: ['<script>'] }), /observed models/);
+  db.close();
+});
+
+test('central : modèle constaté et coût remontent du worker, même en échec', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'archipel-lot1-c-'));
+  const runtime = await createCloudRuntime({ dataDir: dir, passwordHash: await hashPassword('test-only-password-long'), port: 0, env: {} });
+  try {
+    const w = runtime.broker.enroll({ name: 'sim', models: ['sonnet'] }); runtime.broker.heartbeat(w.id);
+    const lucas = runtime.studio.listAgentFiles().find((f) => f.slug === 'lucas').agentId;
+    const t = runtime.studio.comm.createTask({ assigneeId: lucas, instruction: 'Résumer' }).task;
+    runtime.app.orchestrator.pump();
+    await runWorkerOnce({ baseUrl: runtime.origin, token: w.token, models: ['sonnet'], runner: async (o) => {
+      o.onEvent({ type: 'assistant', message: { model: 'claude-sonnet-5-5', content: [] } });
+      o.onEvent({ type: 'result', total_cost_usd: 0.03, usage: { input_tokens: 4, output_tokens: 2 } });
+      throw new Error('panne simulée');
+    } });
+    await runtime.app.orchestrator.idle();
+    const [run] = runtime.studio.comm.runsOfTask(t.id);
+    assert.deepEqual(run.observedModels, ['claude-sonnet-5-5']); assert.equal(run.costUsd, 0.03);
+  } finally { await runtime.close(); rmSync(dir, { recursive: true, force: true }); }
+});

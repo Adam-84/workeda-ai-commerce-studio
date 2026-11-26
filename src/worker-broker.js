@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { isModelId } from './engines.js';
 
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const secret = () => randomBytes(32).toString('base64url');
@@ -36,7 +37,9 @@ function resultValue(result) {
   }
   const costUsd = result.costUsd ?? null;
   if (costUsd !== null && (!Number.isFinite(costUsd) || costUsd < 0)) throw fault('INVALID_RESULT', 'Invalid cost.');
-  return { status: result.status, output: result.status === 'done' ? result.output : null, error: result.status === 'failed' ? (result.error || 'Worker execution failed.') : null, usage, costUsd };
+  const models = result.models ?? null;
+  if (models !== null && (!Array.isArray(models) || models.length > 8 || !models.every((m) => isModelId(m)))) throw fault('INVALID_RESULT', 'Invalid observed models.');
+  return { status: result.status, output: result.status === 'done' ? result.output : null, error: result.status === 'failed' ? (result.error || 'Worker execution failed.') : null, usage, costUsd, ...(models?.length ? { models: [...new Set(models)] } : {}) };
 }
 
 export function createWorkerBroker(db, { now = Date.now, models = [], leaseMs = 30000 } = {}) {
