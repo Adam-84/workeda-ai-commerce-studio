@@ -218,3 +218,15 @@ test('central : sans worker pour le modèle choisi la tâche attend ; un worker 
     assert.equal(comm.task(t.id).state, 'done');
   } finally { await runtime.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+import { engineLabel, engineFromValue, engineOptions, affectedAutomations } from '../public/engine-view.js';
+
+test('écran : libellés, options et automatisations concernées', () => {
+  assert.equal(engineLabel(claude('opus')), 'Claude Opus');
+  assert.equal(engineLabel(null), 'Moteur inconnu');
+  assert.deepEqual(engineFromValue('claude:haiku'), claude('haiku')); assert.equal(engineFromValue(''), null);
+  const options = engineOptions([{ provider: 'claude', label: 'Claude', state: 'available', models: [{ model: 'opus', reason: 'x' }] }, { provider: 'codex', label: 'Codex', state: 'disabled', reason: 'Désactivé.', models: [] }], 'Fiche');
+  assert.deepEqual(options.map((o) => [o.value, o.disabled]), [['', false], ['claude:opus', false], ['codex:', true]]);
+  assert.match(options[1].label, /indisponible/);
+  assert.deepEqual(affectedAutomations([{ name: 'A', enabled: true, allowAi: true, agentSlug: 'lucas' }, { name: 'B', enabled: false, allowAi: true, agentSlug: 'lucas' }], 'lucas'), ['A']);
+});

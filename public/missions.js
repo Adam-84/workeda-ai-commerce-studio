@@ -2,6 +2,7 @@
 // Enregistrer une mission ne sollicite aucun agent et n'appelle aucune IA ; seul le fil d'équipe fait répondre les agents désignés.
 import { readReply } from './conversation.js';
 import { planBlock } from './plan.js';
+import { engineFromValue, optionNodes } from './engine-view.js';
 export const PRIORITY_LABELS = { low: 'Basse', normal: 'Normale', high: 'Haute', urgent: 'Urgente' };
 const STATE_LABELS = { draft: 'Brouillon' };
 const MEMORY_LABELS = { fact: 'Fait', decision: 'Décision', open: 'Point ouvert' };
@@ -35,6 +36,7 @@ export function missionsTab({ agent, agents, missions, save, get, send, announce
       block('Objectif', m.objective),
       block('Responsable', m.assigned_to ? nameOf(m.assigned_to) : ''),
       block('Collaborateurs', m.collaborators.map(nameOf).join(', ')),
+      engineBlock(m),
       block('Résultat attendu', m.expectedResult),
       block('Contexte', m.contextText),
       m.contextLinks.length > 0 && [h('h4', {}, 'Liens de référence'),
@@ -46,6 +48,20 @@ export function missionsTab({ agent, agents, missions, save, get, send, announce
       memory.el, teamBlock(m, memory),
       h('p', { class: 'note mission-dates' }, `Créée le ${date(m.created_at)}${m.updatedAt ? ` · modifiée le ${date(m.updatedAt)}` : ''}`),
       h('div', { class: 'row' }, h('button', { type: 'button', class: 'primary', onclick: () => edit(m) }, 'Modifier'), h('button', { type: 'button', onclick: list }, 'Retour à la liste')));
+  }
+
+  // Moteur de la mission : vaut pour ses prochaines tâches, son fil d'équipe, son plan et ses souvenirs.
+  function engineBlock(m) {
+    const box = h('section', { class: 'mission-engine', 'aria-label': 'Moteur IA de la mission' }, h('h4', {}, 'Moteur IA'), h('p', { class: 'note' }, 'Chargement…'));
+    const url = `/api/missions/${encodeURIComponent(m.id)}/engine`, err = h('p', { class: 'err', role: 'alert' });
+    const load = async () => {
+      const [data, mine] = await Promise.all([get('/api/engines'), get(url)]);
+      const select = h('select', { 'aria-label': 'Moteur IA de cette mission' }, optionNodes(h, data.catalog, mine.choice, 'Chaque agent garde le sien'));
+      select.addEventListener('change', async () => { err.textContent = ''; try { await send('PUT', url, { engine: engineFromValue(select.value) }); announce('Moteur de la mission enregistré'); await load(); } catch (x) { err.textContent = x.message; } });
+      box.replaceChildren(h('h4', {}, 'Moteur IA'), select, h('p', { class: 'note' }, 'Les tâches déjà créées gardent leur moteur.'), err);
+    };
+    load().catch((x) => box.replaceChildren(h('h4', {}, 'Moteur IA'), h('p', { class: 'err' }, x.message)));
+    return box;
   }
 
   // Mémoire : notes datées saisies à la main ; corriger ou archiver, jamais effacer.

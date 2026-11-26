@@ -5,6 +5,7 @@ import {
   groupThreads, filterThreads, threadTitle, threadKindLabel, messageKindLabel, deliveryLabel, taskStateLabel, taskActions, taskTree, isOpen,
   dateFr, dueLabel, attemptsLabel, sourceLine, verificationLine, costLine, engineLine, activeText, runLine, side, NOTIFICATION
 } from './comm-view.js';
+import { SOURCES, engineLabel, engineFromValue, optionNodes } from './engine-view.js';
 
 const enc = encodeURIComponent;
 const put = (el, ...nodes) => el.replaceChildren(...nodes.flat(Infinity).filter((n) => n != null && n !== false));
@@ -161,7 +162,7 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
       : a === 'verify' ? h('button', { type: 'button', onclick: () => detail(t, slot, true) }, label) : h('button', { type: 'button', onclick: () => act(a).catch(() => {}) }, label)));
     const detailBtn = h('button', { type: 'button', class: 'comm-detail-btn', onclick: () => detail(t, slot, false) }, 'Détails');
     return h('li', { class: 'skill-row comm-task', 'data-task': t.id, style: `margin-left:${Math.min(level, 3) * 16}px` }, h('div', {},
-      h('div', { class: 'skill-chips' }, h('strong', {}, short(t.instruction, 110)), stateChip(t), chip(nameOf(t.assigneeId)), t.kind === 'consolidation' && chip('Consolidation'), t.withCatalog && chip('Catalogue Shopify (lecture seule)'), (t.withIntegrations ?? []).map((i) => chip(({ dsers: 'DSers direct', track17: '17TRACK', manual_import: 'Import manuel', shopify_admin: 'Shopify Admin' }[i] ?? i) + ' (lecture seule)')), t.budgetUsd != null && chip(`Budget ${(t.spentUsd ?? 0).toFixed(2)} / ${t.budgetUsd.toFixed(2)} $${t.unreportedRuns ? ' (dont estimation)' : ''}`), t.allowWeb && chip('Web en lecture seule')),
+      h('div', { class: 'skill-chips' }, h('strong', {}, short(t.instruction, 110)), stateChip(t), chip(nameOf(t.assigneeId)), t.model && chip(engineLabel(t)), t.kind === 'consolidation' && chip('Consolidation'), t.withCatalog && chip('Catalogue Shopify (lecture seule)'), (t.withIntegrations ?? []).map((i) => chip(({ dsers: 'DSers direct', track17: '17TRACK', manual_import: 'Import manuel', shopify_admin: 'Shopify Admin' }[i] ?? i) + ' (lecture seule)')), t.budgetUsd != null && chip(`Budget ${(t.spentUsd ?? 0).toFixed(2)} / ${t.budgetUsd.toFixed(2)} $${t.unreportedRuns ? ' (dont estimation)' : ''}`), t.allowWeb && chip('Web en lecture seule')),
       h('p', { class: 'note' }, [`${t.requestedBy === 'user' ? 'Vous' : nameOf(t.requestedBy)} → ${nameOf(t.assigneeId)}`, `niveau ${t.depth}`, dueLabel(t), attemptsLabel(t), t.verified ? 'résultat vérifié' : ''].filter(Boolean).join(' · ')),
       t.stateNote && h('p', { class: 'note' }, t.stateNote), slot, err), h('div', { class: 'comm-actions' }, detailBtn, buttons));
   }
@@ -175,6 +176,7 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
       } }, h('label', {}, 'Ce que vous avez vérifié (facultatif)', h('input', { name: 'note', maxlength: 300 })), h('button', { type: 'submit', class: 'primary' }, 'J’ai relu ce résultat : le valider'), err);
       put(slot, h('div', { class: 'comm-detail' },
         h('h4', {}, 'Demande'), h('p', { class: 'memory-body' }, d.task.instruction),
+        engineForm(d.task),
         d.task.budgetUsd != null && budgetForm(d.task),
         d.dependsOn.length > 0 && [h('h4', {}, 'Attend'), h('ul', {}, d.dependsOn.map((x) => h('li', {}, `${nameOf(x.assigneeId)} — ${short(x.instruction, 80)} (${taskStateLabel(x.state)})`)))],
         h('h4', {}, 'Résultat'),
@@ -184,6 +186,15 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
           : h('p', { class: 'note' }, 'Aucun résultat pour le moment.'),
         verify, h('div', { class: 'row' }, h('button', { type: 'button', onclick: () => goThread(t.threadId) }, 'Ouvrir le fil'), ' ', h('button', { type: 'button', onclick: () => put(slot) }, 'Fermer'))));
     } catch (x) { put(slot, h('p', { class: 'err', role: 'alert' }, x.message)); }
+  }
+  const CHANGEABLE = ['pending_approval', 'queued', 'blocked', 'failed', 'expired', 'review'];
+  function engineForm(t) {
+    const line = h('p', { class: 'note' }, `Moteur : ${t.model ? engineLabel(t) : 'celui de la fiche'}${t.engineSource ? ` (${SOURCES[t.engineSource]})` : ''}`);
+    if (t.automationKey || !CHANGEABLE.includes(t.state)) return line;
+    const err = errBox(), select = h('select', { 'aria-label': 'Moteur de la tâche' }), apply = h('button', { type: 'submit', disabled: true }, 'Changer le moteur');
+    get('/api/engines').then((d) => { select.replaceChildren(...optionNodes(h, d.catalog, t.engineSource === 'task' ? t : null, 'Choix par défaut')); apply.disabled = false; }).catch((x) => fail(err, x));
+    return h('form', { class: 'memory-form', onsubmit: async (e) => { e.preventDefault(); err.textContent = ''; try { await send('POST', `/api/comm/tasks/${enc(t.id)}/engine`, { engine: engineFromValue(select.value) }); announce('Moteur de la tâche changé'); ui.pollComm?.(); await loadTasks(); } catch (x) { fail(err, x); } } },
+      line, h('label', {}, 'Nouveau moteur', select), apply, err);
   }
   function budgetForm(t) {
     const err = errBox(), input = h('input', { type: 'number', min: '0.1', max: '100', step: '0.1', value: String(t.budgetUsd), 'aria-label': 'Nouveau budget en dollars' });
@@ -198,11 +209,13 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
     const cat = h('input', { type: 'checkbox', name: 'withCatalog' }), budget = h('input', { name: 'budgetUsd', type: 'number', min: '0.1', max: '100', step: '0.1', value: '3', 'aria-label': 'Budget en dollars' });
     const ints = { manual_import: h('input', { type: 'checkbox', name: 'withManualImport' }), shopify_admin: h('input', { type: 'checkbox', name: 'withShopifyAdmin' }), shopify_apps: h('input', { type: 'checkbox', name: 'withShopifyApps' }), dsers: h('input', { type: 'checkbox', name: 'withDsers' }), track17: h('input', { type: 'checkbox', name: 'withTrack17' }) };
     const web = h('input', { type: 'checkbox', name: 'allowWeb' }), approval = h('input', { type: 'checkbox', name: 'requiresApproval', checked: true });
+    const engine = h('select', { name: 'engine', 'aria-label': 'Moteur IA' }, optionNodes(h, [], null, 'Chaque agent garde le sien'));
+    get('/api/engines').then((d) => engine.replaceChildren(...optionNodes(h, d.catalog, null, 'Chaque agent garde le sien'))).catch(() => {});
     const syncWeb = () => { web.disabled = !webOk(who.value); if (web.disabled) web.checked = false; };
     who.addEventListener('change', syncWeb);
     const f = h('form', { class: 'memory-form', onsubmit: async (e) => {
       e.preventDefault(); err.textContent = ''; out.textContent = '';
-      const body = { assigneeId: who.value, instruction: f.instruction.value, title: f.title.value || undefined, allowWeb: web.checked, requiresSources: web.checked, requiresApproval: approval.checked, withCatalog: cat.checked, withIntegrations: Object.entries(ints).filter(([, el]) => el.checked).map(([id]) => id), budgetUsd: Number(budget.value) };
+      const body = { assigneeId: who.value, instruction: f.instruction.value, title: f.title.value || undefined, allowWeb: web.checked, requiresSources: web.checked, requiresApproval: approval.checked, withCatalog: cat.checked, withIntegrations: Object.entries(ints).filter(([, el]) => el.checked).map(([id]) => id), budgetUsd: Number(budget.value), ...(engine.value ? { engine: engineFromValue(engine.value) } : {}) };
       try {
         const r = await send('POST', '/api/comm/delegations', body);
         announce(r.created ? 'Délégation enregistrée' : 'Demande déjà existante');
@@ -218,6 +231,7 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
       h('label', { class: 'check' }, ints.shopify_apps, ' Fournir l’inventaire des applications Shopify déclaré (statuts et coûts connus, sans données clients) — accès individuel requis, sans recherche web'),
       h('label', { class: 'check' }, ints.dsers, ' Fournir les données DSers (lecture seule, sans données clients) — seulement si l’agent a reçu l’accès dans l’Integration Center ; incompatible avec la recherche web'),
       h('label', { class: 'check' }, ints.track17, ' Fournir les suivis 17TRACK déjà enregistrés (lecture seule, numéros masqués) — même condition'),
+      h('label', {}, 'Moteur IA de la mission', engine, h('span', { class: 'note' }, 'Un choix ici vaut pour toute la demande, délégations comprises.')),
       h('label', {}, 'Budget de la mission (coût rapporté par Claude Code, en $)', budget, h('span', { class: 'note' }, 'Au-delà, plus aucune nouvelle exécution ne démarre ; vous pouvez l’augmenter.')),
       h('label', { class: 'check' }, approval, ' Je valide moi-même les délégations que les agents décideront (recommandé)'),
       h('button', { type: 'submit', class: 'primary' }, 'Déléguer'), out, err);
