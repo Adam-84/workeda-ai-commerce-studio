@@ -70,6 +70,12 @@ export const COMM_MIGRATIONS = [{
   // Seul Claude a jamais été branché : les exécutions antérieures lui sont rattachées.
   up: `ALTER TABLE comm_runs ADD COLUMN provider TEXT; ALTER TABLE comm_runs ADD COLUMN observed_models TEXT NOT NULL DEFAULT '[]'; UPDATE comm_runs SET provider = 'claude' WHERE provider IS NULL;`,
   down: `ALTER TABLE comm_runs DROP COLUMN observed_models; ALTER TABLE comm_runs DROP COLUMN provider;`
+}, {
+  version: 6,
+  name: 'choix du moteur par agent, mission et tâche',
+  up: `CREATE TABLE IF NOT EXISTS engine_choices (scope TEXT NOT NULL, ref TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (scope, ref));
+    ALTER TABLE comm_tasks ADD COLUMN provider TEXT; ALTER TABLE comm_tasks ADD COLUMN model TEXT; ALTER TABLE comm_tasks ADD COLUMN engine_source TEXT;`,
+  down: `ALTER TABLE comm_tasks DROP COLUMN engine_source; ALTER TABLE comm_tasks DROP COLUMN model; ALTER TABLE comm_tasks DROP COLUMN provider; DROP TABLE IF EXISTS engine_choices;`
 }];
 export const COMM_SCHEMA_VERSION = COMM_MIGRATIONS.at(-1).version;
 
