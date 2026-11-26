@@ -7,6 +7,7 @@ Quatre états distincts : **développé** (le code existe), **testé** (tests au
 | Phases 1 à 6 et 8 (agents, Skills, mémoire, communications, Shopify en lecture, intégrations, applications) | Oui, dans `main` | Suite automatique | Non | En local |
 | Phase 7, runner Codex | Reporté (branches `codex-runner`, `pal-hardening`) | Isolation non démontrée | Non | Non, désactivé |
 | Choix du moteur par agent ou mission, quotas et coûts séparés par fournisseur | **Non** | Non | Non | Non ; Claude seul, modèle fixé par la fiche de l'agent |
+| Comptes IA : toutes les exécutions, modèle constaté, coût inconnu distinct de zéro | Oui, branche `feat/engine-accounting` | Tests à runners **simulés** ; activité des communications vue à 375, 800 et 1366 px sur base temporaire | Non | Non : non fusionné, aucun appel réel |
 | Phase 9, automatisations | Oui | Suite automatique, recette partielle | Non | En local après fusion de la PR 13 |
 | Phase 10, serveur central, authentification, sauvegardes | Oui | Suite automatique ; contenu d'image simulé et démarré sans Docker | Non | Non |
 | Phase 10, workers Claude | Oui | Exécuteurs **simulés** seulement | Non | Non : aucun appel réel ; conditions fournisseur à confirmer |

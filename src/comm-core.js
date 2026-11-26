@@ -3,6 +3,7 @@
 import { scrubContacts, scrubProjectedPrompt } from './catalog-privacy.js';
 import { createHash } from 'node:crypto';
 import { findSecret } from './memory-core.js';
+import { modelOfEvent } from './engines.js';
 
 export const THREAD_KINDS = ['direct', 'department', 'mission', 'group'];
 export const MESSAGE_KINDS = ['message', 'delegation', 'result', 'help', 'blocker', 'proposal', 'decision', 'system'];
@@ -11,6 +12,8 @@ export const TASK_STATES = ['pending_approval', 'queued', 'running', 'review', '
 export const TASK_KINDS = ['work', 'consolidation'];
 export const REF_TYPES = ['memory', 'mission', 'result', 'message', 'thread', 'link'];
 export const WEB_TOOLS = ['WebSearch', 'WebFetch']; // les seuls outils qu'une tâche peut recevoir : lecture seule, jamais Shopify ni fichiers
+export const COUNTED_RUN_KINDS = ['task', 'reply'];              // limite interne quotidienne
+export const LOCAL_RUN_KINDS = ['chat', 'team', 'plan', 'memory']; // appels immédiats : comptés dans l'usage, jamais synchronisés
 
 // Plafonds fixes : un agent ne peut pas en réclamer davantage, quel que soit le texte qu'il produit.
 export const LIMITS = {
@@ -28,7 +31,7 @@ export const LIMITS = {
   reuseMs: 7 * 24 * 3_600_000,    // un résultat vérifié identique est réutilisé pendant 7 jours
   webTimeoutMs: 600_000, plainTimeoutMs: 180_000, // plainTimeoutMs : réponses dans un fil
   taskTimeoutMs: 600_000,        // tâche sans web : un audit complet dépasse 3 minutes (mesuré : 372 s)
-  unreportedRunUsd: 0.25         // une exécution en erreur SANS coût rapporté compte pour cette somme dans le budget (estimation prudente, affichée comme telle)
+  unreportedRunUsd: 0.25         // une exécution terminée SANS coût rapporté compte pour cette somme dans le budget (estimation, affichée comme telle)
 };
 
 export const TASK_TRANSITIONS = {
@@ -119,12 +122,13 @@ export function normUrl(u) {
 const URL_IN_TEXT = /https?:\/\/[^\s"'<>)\]]+/g;
 // Lit les événements stream-json de Claude Code : ce que l'agent a réellement consulté (et non ce qu'il dit avoir consulté).
 export function observeTools() {
-  const state = { fetched: [], searched: [], found: [], cost: null, usage: null, turns: 0 };
+  const state = { fetched: [], searched: [], found: [], models: [], cost: null, usage: null, turns: 0 };
   const pending = new Map(); // tool_use id → { name, url } : une consultation n'est confirmée que par un tool_result sans erreur
   const add = (list, v) => { if (v && !list.includes(v)) list.push(v); };
   return {
     state,
     feed(event) {
+      if (state.models.length < 8) add(state.models, modelOfEvent(event));
       if (event?.type === 'assistant') for (const b of event.message?.content ?? []) {
         if (b.type !== 'tool_use') continue;
         pending.set(b.id, { name: b.name, url: b.name === 'WebFetch' ? normUrl(b.input?.url) : null });
@@ -139,7 +143,7 @@ export function observeTools() {
           for (const u of text.match(URL_IN_TEXT) ?? []) add(state.found, normUrl(u.replace(/[\\,.;]+$/, '')));
         }
       }
-      if (event?.type === 'result') { state.cost = typeof event.total_cost_usd === 'number' ? event.total_cost_usd : null; state.usage = event.usage ? { input: event.usage.input_tokens ?? 0, output: event.usage.output_tokens ?? 0 } : null; state.turns = event.num_turns ?? 0; }
+      if (event?.type === 'result') { state.cost = typeof event.total_cost_usd === 'number' ? event.total_cost_usd : null; state.usage = event.usage ? { input: event.usage.input_tokens ?? null, output: event.usage.output_tokens ?? null } : null; state.turns = event.num_turns ?? 0; }
     }
   };
 }

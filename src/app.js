@@ -6,6 +6,8 @@ import { execFileSync } from 'node:child_process';
 import { connectorState, MAX_PRELOADED } from './agent-files.js';
 import { runClaude as realClaude, systemPrompt, conversationPrompt, missionsPrompt, teamPrompt, planRequestPrompt, parsePlan, memoryPrompt, memoryProposalPrompt, parseMemoryProposals } from './claude-reply.js';
 import { createOrchestrator } from './comm-run.js';
+import { observeTools } from './comm-core.js';
+import { checkModel, mismatchText } from './engines.js';
 import { INTEGRATION_IDS } from './integrations-core.js';
 import { AUTOMATION_TEMPLATES } from './automation-templates.js';
 import { EVENTS } from './automation-core.js';
@@ -255,15 +257,28 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
   const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
   const profileOf = (agentId) => { const { ids, list } = linked(); return list.find((p) => ids.get(p.slug) === agentId) ?? fail(403, 'Cet agent n’a pas de fiche dans .claude/agents : il ne peut pas répondre.'); };
   const namer = () => { const names = new Map(studio.listAgents().map((a) => [a.id, a.name])); return (id) => names.get(id) ?? 'Agent'; };
+  // Chaque appel immédiat laisse une exécution locale ; un échec d'écriture n'empêche jamais la réponse.
+  function openRun(agentId, kind, model) {
+    try { return comm?.startRun({ agentId, kind, model }) ?? null; } catch { return null; }
+  }
+  function closeRun(run, seen, error = null) {
+    if (!run) return;
+    try { comm.endRun(run.id, { state: error ? 'error' : 'done', error: error?.message ?? null, costUsd: seen.cost, usage: seen.usage, models: seen.models }); } catch { /* la trace manquera ; la réponse reste */ }
+  }
   // Lance Claude et diffuse sa réponse ; save(text) l'enregistre même si le panneau a été fermé. lock : une réponse à la fois par clé.
   // La consigne système = fiche + consignes de l'utilisateur pour cet agent ; les options de claude (aucun outil) ne changent jamais.
-  async function stream(res, lock, busy, profile, agentId, prompt, save) {
+  async function stream(res, lock, busy, profile, agentId, kind, prompt, save) {
     if (replying.has(lock)) fail(409, busy);
     replying.add(lock);
     res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store' });
     const line = (data) => { if (!res.writableEnded) res.write(JSON.stringify(data) + '\n'); };
-    try { line({ type: 'done', message: save(await runClaude({ model: profile.model, system: systemPrompt(profile, studio.getInstructions(agentId)), prompt, onText: (t) => line({ type: 'text', text: t }) })) }); }
-    catch (error) { line({ type: 'error', error: error.message }); }
+    const seen = observeTools(), run = openRun(agentId, kind, profile.model);
+    try {
+      const text = await runClaude({ model: profile.model, system: systemPrompt(profile, studio.getInstructions(agentId)), prompt, onText: (t) => line({ type: 'text', text: t }), onEvent: seen.feed });
+      closeRun(run, seen.state);
+      const check = checkModel(profile.model, seen.state.models);
+      line({ type: 'done', message: save(text), ...(check.status === 'mismatch' ? { warning: mismatchText(check) } : {}) });
+    } catch (error) { closeRun(run, seen.state, error); line({ type: 'error', error: error.message }); }
     finally { replying.delete(lock); res.end(); }
   }
   // Mémoire Archipel pour un agent : seulement du souvenir actif, autorisé et pertinent, dans un budget borné.
@@ -279,7 +294,7 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
     if (items.at(-1)?.senderType !== 'user') fail(400, 'Aucun message en attente de réponse.');
     const nameOf = namer(), context = missionsPrompt(studio.listMissions(), agentId, nameOf, (id) => studio.listMemory(id), (id) => studio.currentPlan(id));
     const recalled = memoryFor(agentId, { query: items.filter((m) => m.senderType === 'user').slice(-3).map((m) => m.body).join('\n') });
-    await stream(res, agentId, `${profile.displayName} répond déjà à un message.`, profile, agentId, `${recalled}${context}\n\n${conversationPrompt(items, nameOf, profile.displayName)}`, (text) => studio.saveAgentReply(agentId, text, 'claude'));
+    await stream(res, agentId, `${profile.displayName} répond déjà à un message.`, profile, agentId, 'chat', `${recalled}${context}\n\n${conversationPrompt(items, nameOf, profile.displayName)}`, (text) => studio.saveAgentReply(agentId, text, 'claude'));
   }
   // Fil d'équipe : seul un membre désigné (responsable ou collaborateur) parle, une réponse à la fois par mission.
   // Appel explicite : le responsable propose (ou révise) un plan, enregistré comme nouvelle version non validée.
@@ -293,7 +308,7 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
     const members = [mission.assignedTo, ...mission.collaborators], nameOf = namer();
     const context = missionsPrompt([mission], mission.assignedTo, nameOf, (id) => studio.listMemory(id), (id) => studio.currentPlan(id));
     const recalled = memoryFor(members, { missionId, query: `${mission.title} ${mission.objective ?? ''} ${revision}` }); // le plan est lu par toute l'équipe
-    await stream(res, `mission:${missionId}`, 'Un agent travaille déjà sur cette mission.', profile, mission.assignedTo,
+    await stream(res, `mission:${missionId}`, 'Un agent travaille déjà sur cette mission.', profile, mission.assignedTo, 'plan',
       `${recalled}${context}\n\n${planRequestPrompt(mission, studio.listDiscussion(missionId).slice(-50), nameOf, members, revision)}`,
       (text) => studio.savePlan(missionId, parsePlan(text, studio.listAgents()), { origin: 'ai', authorAgentId: mission.assignedTo, revisionNote: revision }));
   }
@@ -308,7 +323,7 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
     const nameOf = namer(), context = missionsPrompt([mission], agentId, nameOf, (id) => studio.listMemory(id), (id) => studio.currentPlan(id));
     // Le fil est lu par tous ses membres : seul le souvenir que TOUS peuvent lire entre dans la réponse (rien de privé ne fuite).
     const recalled = memoryFor(members, { missionId, query: `${mission.title} ${mission.objective ?? ''} ${items.slice(-3).map((m) => m.body).join(' ')}` });
-    await stream(res, `mission:${missionId}`, 'Un agent répond déjà dans ce fil.', profile, agentId, `${recalled}${context}\n\n${teamPrompt(mission, items, nameOf, profile.displayName, members)}`, (text) => studio.saveDiscussionReply(missionId, agentId, text, 'claude'));
+    await stream(res, `mission:${missionId}`, 'Un agent répond déjà dans ce fil.', profile, agentId, 'team', `${recalled}${context}\n\n${teamPrompt(mission, items, nameOf, profile.displayName, members)}`, (text) => studio.saveDiscussionReply(missionId, agentId, text, 'claude'));
   }
   // Fin de mission : l'agent (responsable ou collaborateur) PROPOSE des souvenirs, enregistrés « en attente » ; le propriétaire valide.
   async function proposeMemory(missionId, input, res) {
@@ -320,7 +335,7 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
     const profile = profileOf(agentId), nameOf = namer();
     const notes = studio.listMemory(missionId).filter((n) => !n.archivedAt).slice(0, 20);
     const recalled = memoryFor(agentId, { missionId, query: `${mission.title} ${mission.objective ?? ''}` });
-    await stream(res, `mission:${missionId}`, 'Un agent travaille déjà sur cette mission.', profile, agentId,
+    await stream(res, `mission:${missionId}`, 'Un agent travaille déjà sur cette mission.', profile, agentId, 'memory',
       `${recalled}${memoryProposalPrompt(mission, studio.listDiscussion(missionId).slice(-50), nameOf, notes, studio.currentPlan(missionId), profile.displayName)}`,
       (text) => memory.propose(agentId, parseMemoryProposals(text), { missionId }));
   }

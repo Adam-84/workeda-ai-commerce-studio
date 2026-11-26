@@ -6,6 +6,7 @@
 //   - un résultat n'est « vérifié » que si le Studio le constate (outils réellement appelés), jamais sur parole.
 import { runClaude as realClaude, fichePrompt, systemPrompt } from './claude-reply.js';
 import { scrubContacts } from './catalog-privacy.js';
+import { checkModel, mismatchText } from './engines.js';
 import { catalogPrompt } from './shop-readonly.js';
 import {
   LIMITS, WEB_TOOLS, bad, taskSystemPrompt, taskPrompt, replyPrompt, parseAgentOutput, observeTools, evaluateResult, resolveAgent
@@ -129,7 +130,7 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
       let text;
       try { text = await runner({ model: profile.model, system: built.system, prompt: built.prompt, tools: built.web, onEvent: seen.feed, timeoutMs: built.web.length ? LIMITS.webTimeoutMs : LIMITS.taskTimeoutMs }); }
       catch (e) { return fail(task, run, e, inbox, seen.state); }
-      const ended = comm.endRun(run.id, { state: 'done', costUsd: seen.state.cost, usage: seen.state.usage });
+      const ended = comm.endRun(run.id, { state: 'done', costUsd: seen.state.cost, usage: seen.state.usage, models: seen.state.models });
       succeed(task, ended, text, seen.state, inbox);
     } catch (e) {
       if (run) fail(task, run, e);
@@ -139,7 +140,7 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
 
   function fail(task, run, error, inbox = [], observed = null) {
     const message = String(error?.message ?? error);
-    comm.endRun(run.id, { state: 'error', error: message, costUsd: observed?.cost ?? null, usage: observed?.usage ?? null }); // un coût déjà rapporté avant l'erreur est conservé
+    comm.endRun(run.id, { state: 'error', error: message, costUsd: observed?.cost ?? null, usage: observed?.usage ?? null, models: observed?.models ?? [] }); // un coût déjà rapporté avant l'erreur est conservé
     for (const id of inbox) { try { comm.markDelivery(id, task.assigneeId, 'error', message); } catch { /* distribution déjà traitée */ } }
     if (task.automationKey) { studio.automation.pauseAi(true); const ar = studio.automation.forTask(task.id); if (ar) studio.automation.finish(ar.id, 'uncertain', 'Appel IA interrompu ou indisponible ; décision humaine requise dans Comms.'); }
     const transient = !error?.noRetry && TRANSIENT.test(message);
@@ -162,7 +163,10 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
       return;
     }
     const deps = task.dependsOn.map((id) => { const d = comm.task(id), r = comm.resultOf(id); return { agentName: comm.nameOf(d.assigneeId), title: d.title, verified: Boolean(r?.verified), resultId: r?.id ?? null }; });
-    const verdict = evaluateResult({ task, parsed, observed, deps });
+    const judged = evaluateResult({ task, parsed, observed, deps });
+    // Le propriétaire a approuvé un moteur précis : la réponse d'un autre modèle n'est jamais « vérifiée » d'office.
+    const check = checkModel(run.model, observed.models);
+    const verdict = check.status === 'mismatch' ? { ...judged, verified: false, level: 'none', verification: `${mismatchText(check)} ${judged.verification}` } : judged;
     if (!parsed.report.trim()) { comm.setTaskState(task.id, 'failed', 'Réponse sans résultat exploitable.'); setActivity(agentId, 'blocked', 'Réponse vide'); return; }
     const result = comm.recordResult(task.id, { agentId, runId: run.id, summary: parsed.summary, body: parsed.report, sources: verdict.sources, observed: { fetched: observed.fetched, searched: observed.searched, found: observed.found.slice(0, 40), provided: observed.provided ?? [] }, verified: verdict.verified, level: verdict.level, verification: verdict.verification });
     const delegations = applyDelegations(task, parsed, run);
@@ -229,12 +233,14 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
         const memoryText = scrubContacts(memoryFor(participants(t), { missionId: t.missionId, query: msgsSafe.slice(-3).map((m) => m.body).join(' ') }));
         const prompt = replyPrompt({ agentName: a.name, title: privateMission(t.missionId) ? 'Sous-mission issue des intégrations' : t.title, memoryText, thread: msgsSafe.map((m) => ({ sender: m.senderType === 'user' ? 'user' : 'agent', who: m.senderAgentId ? comm.nameOf(m.senderAgentId) : 'Propriétaire', at: m.createdAt, body: m.body })) });
         const text = await runner({ model: profile.model, system: systemPrompt(profile, studio.getInstructions(agentId)), prompt: scrubContacts(prompt), tools: [], onEvent: seen.feed, timeoutMs: LIMITS.plainTimeoutMs });
-        const ended = comm.endRun(run.id, { state: 'done', costUsd: seen.state.cost, usage: seen.state.usage });
+        const ended = comm.endRun(run.id, { state: 'done', costUsd: seen.state.cost, usage: seen.state.usage, models: seen.state.models });
         comm.postMessage(threadId, { kind: 'message', body: short(String(text).trim(), LIMITS.body), replyTo: msgs.at(-1)?.id ?? null }, { type: 'agent', agentId, runId: ended.id });
+        const check = checkModel(profile.model, seen.state.models);
+        if (check.status === 'mismatch') comm.postMessage(threadId, { kind: 'system', body: `${a.name} : ${mismatchText(check)}` }, { type: 'system' });
         for (const id of inbox) comm.markDelivery(id, agentId, 'processed');
         setActivity(agentId, 'idle', 'Réponse envoyée');
       } catch (e) {
-        comm.endRun(run.id, { state: 'error', error: e.message, costUsd: seen.state.cost, usage: seen.state.usage });
+        comm.endRun(run.id, { state: 'error', error: e.message, costUsd: seen.state.cost, usage: seen.state.usage, models: seen.state.models });
         for (const id of inbox) { try { comm.markDelivery(id, agentId, 'error', e.message); } catch { /* déjà traité */ } }
         try { comm.postMessage(threadId, { kind: 'system', body: `${a.name} n'a pas pu répondre : ${short(e.message, 300)}` }, { type: 'system' }); } catch { /* fil clos */ }
         setActivity(agentId, 'blocked', short(e.message, 120));

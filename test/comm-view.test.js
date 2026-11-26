@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  taskActions, taskTree, groupThreads, filterThreads, threadTitle, dueLabel, sourceLine, verificationLine, costLine, activeText, runLine, side,
+  taskActions, taskTree, groupThreads, filterThreads, threadTitle, dueLabel, sourceLine, verificationLine, costLine, costText, engineLine, activeText, runLine, side,
   deliveryLabel, taskStateLabel, messageKindLabel, isOpen
 } from '../public/comm-view.js';
 
@@ -52,9 +52,13 @@ test('preuves : sources confirmées ou non, vérification, coûts, exécutions',
   assert.doesNotMatch(sourceLine({ label: 'Résultat de Sophia', url: null, resultId: 'r1', checked: true }), /✔|✖/, 'une source dérivée n’est pas une consultation');
   assert.match(verificationLine({ verified: true, level: 'observed', verification: '2 source(s) confirmée(s)' }), /^Vérifié · Sources confirmées/);
   assert.match(verificationLine({ verified: false, level: 'none', verification: 'Aucune source' }), /^Non vérifié/);
-  const usage = { today: { runs: 3, costUsd: 0.42 }, quota: { remaining: 57, runsPerDay: 60 }, total: { runs: 9 } };
-  assert.match(costLine(usage), /3 exécutions aujourd’hui \(reste 57 sur 60\) · 0\.42 \$/);
-  assert.match(costLine({ ...usage, today: { runs: 1, costUsd: 0 } }), /coût non rapporté/);
+  const usage = { today: { runs: 3, runsWithCost: 3, costUsd: 0.42 }, quota: { remaining: 57, runsPerDay: 60 }, total: { runs: 9 } };
+  assert.match(costLine(usage), /3 exécutions aujourd’hui \(reste 57 sur 60 pour les tâches et réponses\) · 0,42 \$ rapportés/);
+  assert.match(costLine({ ...usage, today: { runs: 1, runsWithCost: 0, costUsd: null } }), /coût inconnu/);
+  assert.equal(costText({ runs: 3, runsWithCost: 2, costUsd: 0.5 }), '0,50 $ rapportés (2 sur 3 exécutions)');
+  assert.equal(costText({ runs: 0 }), 'aucune exécution');
+  assert.match(engineLine({ provider: 'claude', model: 'opus', today: { runs: 0 }, total: { runs: 2, runsWithCost: 0, costUsd: null } }), /claude · opus .*coût inconnu/);
+  assert.match(runLine({ agentId: 's', kind: 'chat', state: 'done', model: 'sonnet', modelStatus: 'mismatch', observedModels: ['claude-haiku-5-5'] }, nameOf), /discussion directe .*claude-haiku-5-5 constaté au lieu de sonnet/);
   assert.equal(activeText([], nameOf), 'Aucun agent au travail en ce moment');
   assert.equal(activeText([{ agentId: 's' }, { agentId: 'n' }], nameOf), 'Sophia, Noah travaillent en ce moment');
   assert.match(runLine({ agentId: 's', kind: 'task', taskTitle: 'Tendances', state: 'done', durationMs: 42_000, web: true }, nameOf), /Sophia · tâche « Tendances » · terminée · 42 s · web en lecture seule/);

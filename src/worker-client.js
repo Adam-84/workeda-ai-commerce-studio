@@ -1,6 +1,7 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { runClaude } from './claude-reply.js';
 import { validateWorkerPayload } from './worker-broker.js';
+import { modelOfEvent } from './engines.js';
 
 const BLOCKED = 'Worker identity is blocked by an uncertain job. Check the earlier process has stopped, then run on the server: node tools/workers.mjs release --id WORKER_ID --process-stopped';
 // A refusal is final; network failures, timeouts, 408, 429 and 5xx are worth another try.
@@ -27,6 +28,8 @@ export async function runWorkerOnce({ baseUrl, token, models, runner = runClaude
   if (typeof job.id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(job.id) || typeof job.leaseToken !== 'string') throw new Error('Invalid worker claim.');
   const interval = Math.max(10, Math.min(10000, Number(job.heartbeatIntervalMs) || 5000));
   let timer, pendingHeartbeat = null, refusal = null, accounting = { usage: null, costUsd: null }, result, deliverUntil = Date.now() + 30000;
+  const observed = new Set();
+  const report = () => ({ ...accounting, ...(observed.size ? { models: [...observed] } : {}) });
   try {
     try {
       if (job.type !== 'claude.text') throw new Error('Unsupported job type.');
@@ -38,10 +41,12 @@ export async function runWorkerOnce({ baseUrl, token, models, runner = runClaude
         pendingHeartbeat = post('/worker/heartbeat', { jobId: job.id, leaseToken: job.leaseToken }).catch(error => { if (refused(error)) refusal = error; }).finally(() => { pendingHeartbeat = null; });
       }, interval);
       const output = await runner({ model: payload.model, system: payload.system, prompt: payload.prompt, tools: [], timeoutMs: payload.timeoutMs, onEvent: event => {
+        const model = modelOfEvent(event);
+        if (model && observed.size < 8) observed.add(model);
         if (event?.type === 'result') accounting = { usage: event.usage ?? null, costUsd: event.total_cost_usd ?? null };
       } });
-      result = { status: 'done', output, ...accounting };
-    } catch (error) { result = { status: 'failed', error: String(error.message || error).slice(0, 2000), ...accounting }; }
+      result = { status: 'done', output, ...report() };
+    } catch (error) { result = { status: 'failed', error: String(error.message || error).slice(0, 2000), ...report() }; }
     if (pendingHeartbeat) await pendingHeartbeat;
     // The job never runs twice; only the delivery of its report is retried. The server owns fencing.
     for (;;) {
