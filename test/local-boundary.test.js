@@ -46,3 +46,23 @@ test('all local API routes reject foreign origins and rebinding hosts before dat
     assert.equal((await fetch(base + '/api/missions')).headers.get('cache-control'), 'no-store');
   } finally { await new Promise(r => server.close(r)); studio.close(); }
 });
+
+test('the DSers OAuth return is the only cross-site API navigation accepted', async () => {
+  const studio = createStudio(':memory:', { env: {}, shopConnector: null });
+  const server = createApp({ studio, publicDir: fileURLToPath(new URL('../public', import.meta.url)), detect: () => false });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const crossSite = (path, headers = {}, method = 'GET') => new Promise((resolve, reject) => {
+    const req = request(base + path, { method, headers: { 'sec-fetch-site': 'cross-site', ...headers } }, res => { let text = ''; res.on('data', c => { text += c; }); res.on('end', () => resolve({ status: res.statusCode, text })); });
+    req.on('error', reject); req.end();
+  });
+  try {
+    const callback = '/api/integrations/dsers/callback?code=factice&state=factice';
+    const back = await crossSite(callback);
+    assert.equal(back.status, 400, back.text);
+    assert.match(back.text, /Connexion non terminée/, 'la route de retour est atteinte et refuse elle-même un state inconnu');
+    assert.equal((await crossSite('/api/integrations')).status, 403);
+    assert.equal((await crossSite(callback, {}, 'POST')).status, 403);
+    assert.equal((await crossSite(callback, { host: 'rebind.invalid' })).status, 403);
+  } finally { await new Promise(r => server.close(r)); studio.close(); }
+});

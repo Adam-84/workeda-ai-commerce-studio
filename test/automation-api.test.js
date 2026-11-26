@@ -25,3 +25,19 @@ test('local Automation API creates disabled rules and rejects foreign origins be
     assert.equal((await call('/preview', { schedule: { kind: 'daily', time: '09:00' } })).body.slots.length, 5);
   } finally { await new Promise((r) => app.close(r)); studio.close(); }
 });
+test('history keeps the recorded cost of a run older than the last two hundred', async () => {
+  const studio = createStudio(':memory:', { automationIdentity: 'api-test', shopConnector: null, env: {} }); studio.syncAgentFiles(profiles);
+  const app = createApp({ studio, publicDir: fileURLToPath(new URL('../public', import.meta.url)), detect: () => false, agentFiles: { profiles }, runClaude: async () => { throw new Error('No real AI'); } });
+  await new Promise((r) => app.listen(0, '127.0.0.1', r));
+  try {
+    const a = studio.automation; a.designate({ confirm: true });
+    const d = a.save({ name: 'Suivi', objective: 'Résumer', agentSlug: 'olivia', sources: ['missions'], allowAi: true, trigger: { kind: 'time', schedule: { kind: 'daily', time: '09:00' } } });
+    a.activate(d.id, { confirm: true, ai: true }); a.manual(d.id, { confirm: true }); await app.automationRunner.tick();
+    const task = studio.comm.listTasks()[0], olivia = studio.comm.agentOfSlug('olivia');
+    const old = studio.comm.startRun({ agentId: olivia, kind: 'task', taskId: task.id });
+    studio.comm.endRun(old.id, { state: 'done', costUsd: 0.05, usage: { input: 100, output: 50 } });
+    for (let i = 0; i < 201; i += 1) studio.comm.endRun(studio.comm.startRun({ agentId: olivia, kind: 'reply' }).id, { state: 'done' });
+    const [row] = await (await fetch(`http://127.0.0.1:${app.address().port}/api/automations/history`)).json();
+    assert.equal(row.costUsd, 0.05); assert.equal(row.tokens, 150);
+  } finally { await new Promise((r) => app.close(r)); studio.close(); }
+});

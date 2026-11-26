@@ -12,6 +12,7 @@ import { createSkillManager } from './skills-manager.js';
 import { createCloudAuth } from './cloud-auth.js';
 import { createWorkerBroker } from './worker-broker.js';
 import { backupDatabase } from './database-transfer.js';
+import { findSecret } from './memory-core.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const error = (message, status = 503) => Object.assign(new Error(message), { status });
@@ -23,6 +24,13 @@ const readJson = async (req, limit = 300000) => {
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw error('JSON invalide.', 400); }
 };
 
+const INTERRUPTED_JOB = 'Mission worker interrompue ; résultat à vérifier, sans relance automatique.';
+// Le motif rapporté par le worker, borné ; jamais un texte qui ressemble à un secret.
+const workerFailure = (reported) => {
+  const text = String(reported ?? '').replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
+  return text && !findSecret(text) ? `Échec sur le worker, sans relance automatique : ${text.slice(0, 220)}` : INTERRUPTED_JOB;
+};
+
 export async function createCloudRuntime({ dataDir, passwordHash, origin, port = 0, host = '127.0.0.1', env = {}, backupEveryMs = 86400000, maxJobMs = 300000 } = {}) {
   if (!dataDir) throw new Error('Répertoire persistant explicite requis.');
   // Validate credentials and remote origin before opening a database or socket.
@@ -31,7 +39,9 @@ export async function createCloudRuntime({ dataDir, passwordHash, origin, port =
   const dbPath = join(dataDir, 'workeda.db'), controlPath = join(dataDir, 'control.db');
   const loaded = loadAgentFiles(join(root, '.claude', 'agents'));
   const models = [...new Set(loaded.profiles.map(p => p.model))];
-  const control = new DatabaseSync(controlPath); control.exec('PRAGMA busy_timeout=5000');
+  // WAL : la sauvegarde lit un instantané pendant que les écritures continuent.
+  const journalled = new DatabaseSync(dbPath); journalled.exec('PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL'); journalled.close();
+  const control = new DatabaseSync(controlPath); control.exec('PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL');
   const broker = createWorkerBroker(control, { models });
   broker.cancelQueued();
   control.exec('CREATE TABLE IF NOT EXISTS runtime_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
@@ -70,7 +80,8 @@ export async function createCloudRuntime({ dataDir, passwordHash, origin, port =
           options.onEvent?.({ type: 'result', total_cost_usd: result.costUsd ?? undefined, usage: result.usage ?? undefined });
           options.onText?.(result.output); return result.output;
         }
-        if (['failed', 'uncertain', 'cancelled'].includes(current.status)) throw error('Mission worker interrompue ; résultat à vérifier, sans relance automatique.');
+        if (current.status === 'failed') throw Object.assign(error(workerFailure(current.result?.error)), { noRetry: true });
+        if (['uncertain', 'cancelled'].includes(current.status)) throw error(INTERRUPTED_JOB);
         if (Date.now() >= deadline) break;
         await delay(100);
       }
@@ -117,7 +128,7 @@ export async function createCloudRuntime({ dataDir, passwordHash, origin, port =
         // Un rapport peut atteindre un million de caractères (borne du courtier), soit plusieurs octets chacun.
         const body = await readJson(req, path.endsWith('/complete') ? 6_000_000 : 300000);
         if (path === '/worker/heartbeat') return json(res, 200, broker.heartbeat(worker.id, body));
-        if (path === '/worker/claim') return json(res, 200, { job: halted ? null : broker.claim(worker.id) });
+        if (path === '/worker/claim') return json(res, 200, broker.isBlocked(worker.id) ? { job: null, blocked: true } : { job: halted ? null : broker.claim(worker.id) });
         const match = path.match(/^\/worker\/jobs\/([a-f0-9-]+)\/complete$/);
         if (match) return json(res, 200, broker.complete(worker.id, match[1], body.leaseToken, body.result));
         throw error('Introuvable.', 404);
@@ -130,7 +141,12 @@ export async function createCloudRuntime({ dataDir, passwordHash, origin, port =
         return res.end(await readFile(join(root, 'public', path.slice(1))));
       }
       try { auth.authorize(req); }
-      catch (e) { if (e.status === 401 && path === '/') { res.writeHead(303, { location: '/login.html' }); return res.end(); } throw e; }
+      catch (e) {
+        // Un lien suivi depuis un autre site mène à la connexion ; rien d'autre n'est ouvert à une requête intersite.
+        const followed = req.headers['sec-fetch-site'] === 'cross-site' && req.headers['sec-fetch-mode'] === 'navigate' && req.headers.host === new URL(auth.origin).host;
+        if (path === '/' && req.method === 'GET' && (e.status === 401 || followed)) { res.writeHead(303, { location: '/login.html' }); return res.end(); }
+        throw e;
+      }
       if (path === '/api/operations' && req.method === 'GET') return json(res, 200, status());
       if (path === '/api/operations/stop' && req.method === 'POST') {
         const input = await readJson(req); if (typeof input.halted !== 'boolean') throw error('État requis.', 400);
@@ -157,7 +173,7 @@ export async function createCloudRuntime({ dataDir, passwordHash, origin, port =
   const overdue = () => !lastBackup || Date.now() - Date.parse(lastBackup.at) >= backupEveryMs;
   if (overdue()) await snapshot();
   const backupTimer = setInterval(() => { if (overdue()) snapshot(); }, Math.min(backupEveryMs, 3600000)); backupTimer.unref();
-  const maintenance = setInterval(() => broker.expire(), 5000); maintenance.unref();
+  const maintenance = setInterval(() => { try { broker.expire(); } catch { /* base momentanément indisponible : prochain tour */ } }, 5000); maintenance.unref();
   return { server, app, studio, broker, origin: auth.origin, snapshot, status,
     async close() { stopped = true; clearInterval(backupTimer); clearInterval(maintenance); app.orchestrator.stop(); app.automationRunner.stop(); broker.cancelAll(); await Promise.allSettled([...pending]); await app.automationRunner.idle(); await app.orchestrator.idle(); await new Promise(r => server.close(r)); while (backupBusy) await delay(25); studio.close(); control.close(); } };
 }

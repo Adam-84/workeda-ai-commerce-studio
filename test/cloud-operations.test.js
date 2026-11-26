@@ -171,3 +171,69 @@ test('dashboard counts only real decisions as approvals and reports integrations
 test('the container keeps a stable hostname so the automation executor survives a recreate', () => {
   assert.match(readFileSync(new URL('../deploy/compose.yaml', import.meta.url), 'utf8'), /^ {4}hostname: \S+$/m);
 });
+
+test('a blocked worker is told so when it asks for work', async (t) => {
+  const s = await central(t);
+  const w = s.worker();
+  s.runtime.broker.enqueue({ key: 'stuck', payload: { provider: 'claude', model: 'sonnet', system: '', prompt: 'Fictif', tools: [], timeoutMs: 5000 } });
+  s.runtime.broker.claim(w.id);
+  s.runtime.broker.cancelAll();
+  const claim = await s.call('/worker/claim', {}, { authorization: `Bearer ${w.token}` });
+  assert.deepEqual(claim.body, { job: null, blocked: true });
+});
+
+async function failedMission(t, message) {
+  const s = await central(t);
+  const w = s.worker();
+  const task = await s.delegate('olivia', 'Contrôle fictif en échec');
+  const job = s.runtime.broker.claim(w.id);
+  s.runtime.broker.complete(w.id, job.id, job.leaseToken, { status: 'failed', error: message });
+  await delay(250);
+  await s.runtime.app.orchestrator.idle();
+  return task();
+}
+
+test('a failed mission says why, without being retried', async (t) => {
+  const task = await failedMission(t, 'Claude n’a pas pu répondre : session expirée, reconnectez-vous.');
+  assert.equal(task.state, 'blocked', task.stateNote);
+  assert.match(task.stateNote, /session expirée, reconnectez-vous/);
+  assert.equal(task.attempts, 1);
+});
+
+test('a secret in a worker error never reaches the mission', async (t) => {
+  const secret = `sk-ant-api03-${'A1b2'.repeat(20)}`;
+  const task = await failedMission(t, `Clé refusée : ${secret}`);
+  assert.equal(task.state, 'blocked');
+  assert.ok(!JSON.stringify(task).includes(secret));
+  assert.match(task.stateNote, /Mission worker interrompue/);
+});
+
+test('writes keep working while a backup runs, and the backup completes', async (t) => {
+  const s = await central(t);
+  const { studio } = s.runtime;
+  for (let i = 0; i < 1500; i += 1) studio.createMission({ title: `Volume ${i}`, objective: 'x'.repeat(1900) });
+  let done = false; const failures = []; let writes = 0;
+  const backup = s.runtime.snapshot().finally(() => { done = true; });
+  const limit = Date.now() + 8000;
+  while (!done && Date.now() < limit) {
+    try { studio.createMission({ title: 'Pendant la sauvegarde' }); writes += 1; } catch (e) { failures.push(e.message); }
+    await new Promise((r) => setImmediate(r));
+  }
+  assert.equal(done, true, 'la sauvegarde se termine malgré des écritures continues');
+  await backup;
+  assert.deepEqual([...new Set(failures)], []);
+  assert.ok(writes > 0);
+  assert.equal(s.runtime.status().backup.error, false);
+});
+
+test('arriving from a link on another site shows the login page, and the API stays closed', async (t) => {
+  const s = await central(t);
+  const { request } = await import('node:http');
+  const arrive = (path, headers = {}) => new Promise((resolve, reject) => {
+    const req = request(s.runtime.origin + path, { headers: { 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'navigate', ...headers } }, (res) => { res.resume(); res.on('end', () => resolve({ status: res.statusCode, location: res.headers.location })); });
+    req.on('error', reject); req.end();
+  });
+  assert.deepEqual(await arrive('/'), { status: 303, location: '/login.html' });
+  assert.equal((await arrive('/api/agents')).status, 403);
+  assert.equal((await arrive('/', { host: 'rebind.invalid' })).status, 403);
+});

@@ -359,3 +359,11 @@ test('anciens textes de catalogue dans Comms et mémoire : contacts filtrés ava
     }
   } finally { orch.stop(); studio.close(); }
 });
+
+test('une panne de base au passage suivant ne remonte pas en erreur non gérée', async () => {
+  let broken;
+  const s = setup({ Sophia: () => { s.comm.claimNext = () => { broken = true; throw new Error('database is locked'); }; return json({ status: 'done', summary: 'Ok.', report: 'Rapport.' }); } });
+  s.comm.createTask({ assigneeId: s.ids.sophia, instruction: 'Contrôle fictif' });
+  s.orch.pump(); await new Promise((r) => setTimeout(r, 200)); // sans idle() : en service, personne n’attend cette promesse
+  assert.equal(broken, true);
+});

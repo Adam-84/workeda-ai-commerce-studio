@@ -5,6 +5,8 @@ import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { createWorkerBroker } from '../src/worker-broker.js';
 import { runWorkerOnce, runWorkerLoop } from '../src/worker-client.js';
@@ -187,4 +189,80 @@ test('the worker loop serves jobs with its runner, retries transient failures an
   assert.equal(completed, 1);
   assert.equal(polls, 3);
   assert.ok(notes.some((m) => m.includes('503')));
+});
+
+// Serveur de substitution : un courtier réel, avec des pannes réseau injectées par `fail`.
+async function brokerServer(t, b, w, fail = () => null) {
+  const calls = { heartbeat: 0, complete: 0 };
+  const baseUrl = await server(t, async (req, res) => {
+    let body = ''; for await (const c of req) body += c;
+    const data = JSON.parse(body || '{}'); const route = req.url.endsWith('/complete') ? 'complete' : req.url.split('/')[2];
+    if (route === 'complete' || data.jobId) calls[route] += 1;
+    const status = fail(route, data, calls);
+    if (status) { res.writeHead(status); return res.end('{}'); }
+    let value;
+    if (route === 'heartbeat') value = b.heartbeat(w.id, data);
+    if (route === 'claim') value = b.claim(w.id);
+    if (route === 'complete') value = b.complete(w.id, req.url.split('/')[3], data.leaseToken, data.result);
+    res.end(JSON.stringify(value));
+  });
+  return { baseUrl, calls };
+}
+const slow = (ms) => async () => { await new Promise(resolve => setTimeout(resolve, ms)); return 'travail terminé'; };
+
+test('a missed heartbeat request does not discard finished work', async (t) => {
+  const { broker: b } = fixture(t, { now: Date.now, leaseMs: 600 }); const w = enroll(b);
+  b.enqueue({ key: 'blip', payload: payload({ timeoutMs: 5000 }) });
+  const s = await brokerServer(t, b, w, (route, data, calls) => route === 'heartbeat' && data.jobId && calls.heartbeat === 1 ? 503 : null);
+  const done = await runWorkerOnce({ baseUrl: s.baseUrl, token: w.token, models: ['sonnet'], runner: slow(1500) });
+  assert.equal(done.result.output, 'travail terminé'); assert.ok(s.calls.heartbeat >= 2, 'les battements reprennent');
+});
+
+test('delivery of a result is retried without running the job again', async (t) => {
+  const { broker: b } = fixture(t, { now: Date.now, leaseMs: 600 }); const w = enroll(b);
+  b.enqueue({ key: 'delivery', payload: payload({ timeoutMs: 5000 }) }); let runs = 0;
+  const s = await brokerServer(t, b, w, (route, data, calls) => route === 'complete' && calls.complete < 3 ? 503 : null);
+  const done = await runWorkerOnce({ baseUrl: s.baseUrl, token: w.token, models: ['sonnet'], runner: async () => { runs += 1; return 'une seule fois'; } });
+  assert.equal(done.status, 'done'); assert.equal(s.calls.complete, 3); assert.equal(runs, 1);
+});
+
+test('an explicit lease refusal ends the delivery', async (t) => {
+  const { broker: b } = fixture(t, { now: Date.now, leaseMs: 600 }); const w = enroll(b);
+  b.enqueue({ key: 'refused', payload: payload({ timeoutMs: 5000 }) });
+  const s = await brokerServer(t, b, w, (route) => route === 'complete' ? 409 : null);
+  await assert.rejects(runWorkerOnce({ baseUrl: s.baseUrl, token: w.token, models: ['sonnet'], runner: async () => 'x' }), /409/);
+  assert.equal(s.calls.complete, 1);
+});
+
+test('an operator releases a blocked identity without erasing the uncertain job', (t) => {
+  const { broker: b } = fixture(t); const w = enroll(b);
+  const first = b.enqueue({ key: 'first', payload: payload() }); const held = b.claim(w.id); b.cancelAll();
+  assert.equal(b.isBlocked(w.id), true); b.enqueue({ key: 'next', payload: payload() }); assert.equal(b.claim(w.id), null);
+  assert.equal(b.release(w.id).blocked, false);
+  assert.equal(b.status().workers[0].blocked, false); assert.equal(b.job(first.id).status, 'uncertain');
+  assert.throws(() => b.complete(w.id, held.id, held.leaseToken, { status: 'done', output: 'tardif' }), { code: 'STALE_LEASE' });
+  assert.ok(b.claim(w.id));
+});
+
+test('the operator tool releases an identity only once the process is declared stopped', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'worker-release-')); const file = join(dir, 'control.db');
+  let db = new DatabaseSync(file);
+  t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
+  let b = createWorkerBroker(db, { models: ['sonnet'] }); const w = enroll(b);
+  b.enqueue({ key: 'one', payload: payload() }); b.claim(w.id); b.cancelAll(); db.close();
+  const tool = (...args) => spawnSync(process.execPath, [fileURLToPath(new URL('../tools/workers.mjs', import.meta.url)), 'release', '--id', w.id, '--db', file, ...args], { encoding: 'utf8' });
+  const refused = tool(); assert.equal(refused.status, 1); assert.match(refused.stderr, /--process-stopped/);
+  const accepted = tool('--process-stopped'); assert.equal(accepted.status, 0, accepted.stderr);
+  db = new DatabaseSync(file); b = createWorkerBroker(db, { models: ['sonnet'] }); assert.equal(b.status().workers[0].blocked, false);
+});
+
+test('the worker loop announces a blocked identity once', async (t) => {
+  let polls = 0; const stop = new AbortController(); const notes = [];
+  const baseUrl = await server(t, (req, res) => {
+    req.resume();
+    if (req.url === '/worker/claim') { polls += 1; if (polls === 4) stop.abort(); return res.end(JSON.stringify({ job: null, blocked: true })); }
+    res.end('{}');
+  });
+  await runWorkerLoop({ baseUrl, token: 'token', models: ['sonnet'], runner: async () => 'jamais', idleMs: 2, signal: stop.signal, log: (m) => notes.push(m) });
+  assert.equal(polls, 4); assert.equal(notes.length, 1, notes.join(' | ')); assert.match(notes[0], /workers\.mjs release/);
 });

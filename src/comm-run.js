@@ -142,9 +142,10 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
     comm.endRun(run.id, { state: 'error', error: message, costUsd: observed?.cost ?? null, usage: observed?.usage ?? null }); // un coût déjà rapporté avant l'erreur est conservé
     for (const id of inbox) { try { comm.markDelivery(id, task.assigneeId, 'error', message); } catch { /* distribution déjà traitée */ } }
     if (task.automationKey) { studio.automation.pauseAi(true); const ar = studio.automation.forTask(task.id); if (ar) studio.automation.finish(ar.id, 'uncertain', 'Appel IA interrompu ou indisponible ; décision humaine requise dans Comms.'); }
-    const retry = !task.automationKey && TRANSIENT.test(message) && task.attempts < task.maxAttempts;
+    const transient = !error?.noRetry && TRANSIENT.test(message);
+    const retry = !task.automationKey && transient && task.attempts < task.maxAttempts;
     if (retry) comm.setTaskState(task.id, 'queued', `Nouvel essai après : ${short(message, 160)}`, { extra: { notBefore: new Date(Date.now() + LIMITS.backoffMs).toISOString() } });
-    else comm.setTaskState(task.id, TRANSIENT.test(message) ? 'failed' : 'blocked', short(message, 300));
+    else comm.setTaskState(task.id, transient ? 'failed' : 'blocked', short(message, 300));
     try { comm.postMessage(task.threadId, { kind: 'system', body: `${comm.nameOf(task.assigneeId)} n'a pas pu terminer : ${short(message, 300)}${retry ? ' Un nouvel essai est prévu.' : ''}`, taskId: task.id }, { type: 'system' }); } catch { /* fil clos */ }
     setActivity(task.assigneeId, retry ? 'idle' : 'blocked', short(message, 120));
   }
@@ -179,10 +180,12 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
     setActivity(agentId, 'idle', `Tâche ${verdict.verified ? 'terminée' : 'à vérifier'}`);
   }
 
+  // Après une exécution ou sur minuterie, personne n'attend le résultat : une base occupée ne doit pas arrêter le processus.
+  const pumpSafely = () => { try { pump(); } catch { /* le passage régulier reprendra */ } };
   function launch(task) {
     const key = `task:${task.id}`;
     active.set(key, { agentId: task.assigneeId, runId: null, taskId: task.id, threadId: task.threadId, kind: 'task', startedAt: new Date().toISOString() });
-    const p = execute(task, key).catch(() => {}).finally(() => { inflight.delete(p); pump(); });
+    const p = execute(task, key).catch(() => {}).finally(() => { inflight.delete(p); pumpSafely(); });
     inflight.add(p);
   }
   function pump() {
@@ -236,7 +239,7 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
         try { comm.postMessage(threadId, { kind: 'system', body: `${a.name} n'a pas pu répondre : ${short(e.message, 300)}` }, { type: 'system' }); } catch { /* fil clos */ }
         setActivity(agentId, 'blocked', short(e.message, 120));
       } finally { active.delete(key); }
-    })().finally(() => { inflight.delete(p); pump(); });
+    })().finally(() => { inflight.delete(p); pumpSafely(); });
     inflight.add(p);
     return { started: true, runId: run.id, agentId, threadId };
   }
@@ -246,7 +249,7 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
     // Résout quand plus rien ne tourne (tests, arrêt propre).
     async idle() { while (inflight.size) await Promise.allSettled([...inflight]); },
     activity: () => ({ active: [...active.values()].map((a) => ({ ...a })), maxActive, lastPump, runs: comm.activeRuns() }),
-    start() { comm.recover(); if (pumpEveryMs > 0 && !timer) { timer = setInterval(() => { try { pump(); } catch { /* prochain tour */ } }, pumpEveryMs); timer.unref?.(); } pump(); return this; },
+    start() { comm.recover(); if (pumpEveryMs > 0 && !timer) { timer = setInterval(pumpSafely, pumpEveryMs); timer.unref?.(); } pump(); return this; },
     stop() { if (timer) clearInterval(timer); timer = null; }
   };
 }

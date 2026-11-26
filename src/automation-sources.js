@@ -2,6 +2,10 @@ import { hash } from './automation-core.js';
 import { analyzeLogistics } from './integrations-core.js';
 import { analyzeApps } from './shop-apps.js';
 
+// Données internes qui bougent dès qu'un autre travail avance : elles distinguent deux analyses, sans périmer celle qui attend son tour.
+const LIVE_SOURCES = ['missions', 'recommendations'];
+const fingerprintOf = (entries) => hash(entries.map(({ source, revision, partial }) => ({ source, revision, partial })));
+
 export function readAutomationSources(studio, d, now = Date.now()) {
   const entries = [], missing = [];
   for (const source of d.sources) {
@@ -28,7 +32,7 @@ export function readAutomationSources(studio, d, now = Date.now()) {
     if (e.payload.packages) { const a = analyzeLogistics(e.payload.packages, { now }); return { source: e.source, total: a.total, delayed: a.delayed, exceptions: a.exceptions, stale: a.stale }; }
     return { source: e.source, rows: e.payload.rows?.length ?? e.payload.products?.length ?? null };
   });
-  return { entries, missing, hash: hash(entries.map(({ source, revision, partial }) => ({ source, revision, partial }))), summary: entries.map((e) => `${e.source} : ${e.fetchedAt}${e.partial ? ', partiel' : ''}`).join('\n') + '\nConstats déterministes (aperçu borné) : ' + JSON.stringify(details).slice(0, 10000) };
+  return { entries, missing, hash: fingerprintOf(entries), launchHash: fingerprintOf(entries.filter((e) => !LIVE_SOURCES.includes(e.source))), summary: entries.map((e) => `${e.source} : ${e.fetchedAt}${e.partial ? ', partiel' : ''}`).join('\n') + '\nConstats déterministes (aperçu borné) : ' + JSON.stringify(details).slice(0, 10000) };
 }
 
 export function pollAutomationObservations(studio, now = Date.now()) {
