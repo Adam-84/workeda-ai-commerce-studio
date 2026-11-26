@@ -335,7 +335,7 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
       'POST /api/automations/pause': (d) => { if (typeof d?.paused !== 'boolean') fail(400, 'État de suspension requis.'); return a.pause(d.paused); },
       'POST /api/automations/ai-resume': (d) => { if (d?.confirm !== true) fail(400, 'Confirmation requise.'); return a.pauseAi(false); },
       'POST /api/automations/preview': (d) => ({ slots: nextSlots(d?.schedule, new Date().toISOString()) }),
-      'GET /api/automations/history': (_, q) => a.history({ ruleId: q.get('ruleId'), offset: q.get('offset') }).map((r) => { const t = r.task_id ? studio.comm.task(r.task_id) : null; const runs = t ? studio.comm.recentRuns(500).filter((x) => x.taskId === t.id) : []; return { ...r, missionId: t?.missionId ?? r.mission_id, costUsd: runs.length && runs.every((x) => x.costUsd != null) ? runs.reduce((n,x) => n+x.costUsd,0) : null, tokens: runs.length && runs.every((x) => x.inputTokens != null && x.outputTokens != null) ? runs.reduce((n,x) => n+x.inputTokens+x.outputTokens,0) : null }; })
+      'GET /api/automations/history': (_, q) => a.history({ ruleId: q.get('ruleId'), offset: q.get('offset') }).map((r) => { const t = r.task_id ? studio.comm.task(r.task_id) : null; const runs = t ? studio.comm.runsOfTask(t.id) : []; return { ...r, missionId: t?.missionId ?? r.mission_id, costUsd: runs.length && runs.every((x) => x.costUsd != null) ? runs.reduce((n,x) => n+x.costUsd,0) : null, tokens: runs.length && runs.every((x) => x.inputTokens != null && x.outputTokens != null) ? runs.reduce((n,x) => n+x.inputTokens+x.outputTokens,0) : null }; })
     });
     paramRoutes.push(
       ['POST', /^\/api\/automations\/([a-zA-Z0-9-]+)$/, (m,d) => a.save({ ...d, id: m[1] })],
@@ -353,7 +353,9 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
         res.setHeader('cache-control', 'no-store');
         res.setHeader('x-content-type-options', 'nosniff');
         assertLocalWrite(req, { checkOrigin: req.method !== 'GET' && req.method !== 'HEAD' });
-        if (req.headers['sec-fetch-site'] === 'cross-site') throw Object.assign(new Error('Requête intersite refusée.'), { status: 403 });
+        // Seule exception : le retour OAuth DSers est une navigation venue du fournisseur, protégée par son propre « state ».
+        const oauthReturn = req.method === 'GET' && url.pathname === '/api/integrations/dsers/callback';
+        if (!oauthReturn && req.headers['sec-fetch-site'] === 'cross-site') throw Object.assign(new Error('Requête intersite refusée.'), { status: 403 });
       }
       const key = `${req.method} ${url.pathname}`;
       const replyMatch = req.method === 'POST' && url.pathname.match(/^\/api\/agents\/([^/]+)\/reply$/);

@@ -556,8 +556,9 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     for (const r of all("SELECT * FROM comm_tasks WHERE state = 'queued' AND device = ? ORDER BY depth, created_at, rowid", device)) {
       const t = mapTask(r);
       if (t.automationKey && !automationGate(t.automationKey, t)) { setTaskState(t.id, 'blocked', 'Autorisation Automation, source ou fraîcheur indisponible avant lancement.'); continue; }
-      if (get("SELECT count(*) AS n FROM comm_tasks WHERE state='running'").n >= LIMITS.maxActive) return { task: null };
-      if (get("SELECT id FROM comm_tasks WHERE state='running' AND assignee_id=?", t.assigneeId)) continue;
+      // Les tâches « en cours » importées d'un autre ordinateur ne comptent pas : leur fin ne dépend pas de celui-ci.
+      if (get("SELECT count(*) AS n FROM comm_tasks WHERE state='running' AND device=?", device).n >= LIMITS.maxActive) return { task: null };
+      if (get("SELECT id FROM comm_tasks WHERE state='running' AND assignee_id=? AND device=?", t.assigneeId, device)) continue;
       if (t.notBefore && t.notBefore > now()) continue;
       let waiting = false, failedDep = null;
       for (const d of t.dependsOn) { const dep = get('SELECT state FROM comm_tasks WHERE id = ?', d); if (!dep || ['failed', 'cancelled', 'expired', 'blocked'].includes(dep.state)) { failedDep = d; break; } if (dep.state !== 'done') waiting = true; }
@@ -598,6 +599,8 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     .map((t) => { const last = get('SELECT body, created_at, sender_type FROM comm_messages WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1', t.id); return { ...t, lastMessage: last ? { body: short(last.body, 140), createdAt: last.created_at, senderType: last.sender_type } : null, messageCount: get('SELECT COUNT(*) AS n FROM comm_messages WHERE thread_id = ?', t.id).n }; });
   const listTasks = ({ missionId = null, state = null, agentId = null, rootTaskId = null } = {}) => all('SELECT * FROM comm_tasks ORDER BY created_at DESC, rowid DESC').map(mapTask)
     .filter((t) => (!missionId || t.missionId === missionId) && (!state || t.state === state) && (!agentId || t.assigneeId === agentId || t.requestedBy === agentId) && (!rootTaskId || t.rootTaskId === rootTaskId));
+
+  const runsOfTask = (taskId) => all('SELECT id FROM comm_runs WHERE task_id = ? ORDER BY started_at, rowid', taskId).map((r) => getRun(r.id));
 
   // --- vues pour l'interface -------------------------------------------------------------------------------------------------------------------------
   const activeRuns = () => all("SELECT * FROM comm_runs WHERE state = 'running' ORDER BY started_at").map((r) => getRun(r.id));
@@ -766,7 +769,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     device, schemaVersion, lastMigration, rollback, journalError: () => journalError,
     status: () => ({ schemaVersion: schemaVersion(), device, journalDir: journalDir ? resolve(journalDir) : null, journalError, lastMigration, limits: LIMITS, webTools: WEB_TOOLS }),
     createThread, addMember, thread, threadForMission, listThreads, postMessage, getMessage, listMessages, markDelivery, pendingFor,
-    startRun, endRun, getRun, activeRuns, recentRuns, usage, available, agentInfo: (id) => agentRow(id), slugOf, agentOfSlug, realAgent, nameOf,
+    startRun, endRun, getRun, activeRuns, recentRuns, runsOfTask, usage, available, agentInfo: (id) => agentRow(id), slugOf, agentOfSlug, realAgent, nameOf,
     visibleMessages, quotaExceeded: () => runsToday() >= LIMITS.maxRunsPerDay,
     createTask, task, listTasks, setTaskState, approveTask, cancelTask, retryTask, adoptTask, setBudget, spentOf, budgetExceeded, verifyTask, expireDue, claimNext, recordResult, resultOf, results, recover,
     notifications, markSeen: () => { setMeta('seen_at', now()); return { seenAt: meta('seen_at') }; }, exchanges,

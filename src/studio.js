@@ -438,7 +438,7 @@ export function createStudio(filename = 'data/workeda.db', options = {}) {
       if (!task) return r.state === 'collecting' && d.allowAi;
       if (r.state !== 'dispatched' || r.task_id !== task.id || !d.allowAi || task.attempts > 1) return false;
       const data = readAutomationSources(api, d, Date.parse(options.clock?.() ?? new Date().toISOString()));
-      return !data.missing.length && data.hash === r.data_hash;
+      return !data.missing.length && data.launchHash === r.data_hash;
     } catch { return false; }
   }, () => api.automation.pauseAi(true));
   return api;
