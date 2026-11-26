@@ -229,6 +229,8 @@ test('dépendances, échéance, reprise et annulation', () => {
   const c = comm.createTask({ assigneeId: ids.alexander, kind: 'consolidation', instruction: 'Assembler', parentTaskId: root.id, dependsOn: [b.id] }, asAgent(comm, ids.alexander)).task;
   const first = comm.claimNext().task; assert.equal(first.id, a.id);
   const second = comm.claimNext({ busy: new Set([ids.sophia]) }).task; assert.equal(second.id, root.id);
+  assert.equal(comm.claimNext({ busy: new Set([ids.sophia, ids.alexander]) }).task, null, 'concurrence globale bornée à deux');
+  comm.setTaskState(root.id, 'failed', 'Fin simulée de la racine');
   const third = comm.claimNext({ busy: new Set([ids.sophia, ids.alexander]) }).task; assert.equal(third.id, b.id);
   assert.equal(comm.task(c.id).state, 'queued', 'attend B');
   // B échoue → la consolidation est bloquée explicitement
@@ -363,7 +365,7 @@ test('persistance : tout survit à la fermeture de la base', () => {
   const two = createStudio(file, { device: 'pc-a' });
   assert.equal(two.comm.task(task.id).instruction, 'Étudier');
   assert.equal(two.comm.listMessages(task.threadId).items.at(-1).body, 'Bonjour');
-  assert.equal(two.comm.schemaVersion(), 3);
+  assert.equal(two.comm.schemaVersion(), 4);
   assert.equal(two.comm.recover(), 0);
   two.close();
 });
@@ -378,6 +380,32 @@ test('migration réversible : le retour arrière ne retire que les tables de com
   assert.ok(r.backup && existsSync(r.backup), 'sauvegarde avant retour arrière');
   studio.close();
   const again = createStudio(file, { device: 'pc-a' }); // se recrée proprement au démarrage suivant
-  assert.equal(again.comm.schemaVersion(), 3);
+  assert.equal(again.comm.schemaVersion(), 4);
   again.close();
+});
+
+test('synchronisation : les tâches « en cours » de l’autre PC ne bloquent pas la file locale', () => {
+  const dir = tmp();
+  const A = setup({ commJournalDir: dir, device: 'pc-a' });
+  const B = setup({ commJournalDir: dir, device: 'pc-b' });
+  for (const agent of ['sophia', 'noah']) A.comm.createTask({ assigneeId: A.ids[agent], instruction: `Travail de ${agent} sur le portable` });
+  for (let i = 0; i < LIMITS.maxActive; i += 1) assert.equal(A.comm.claimNext().task.state, 'running');
+  B.comm.importJournal();
+  assert.equal(B.comm.listTasks({ state: 'running' }).length, LIMITS.maxActive, 'les deux tâches distantes sont visibles « en cours »');
+  const mine = B.comm.createTask({ assigneeId: B.ids.sophia, instruction: 'Travail lancé sur le fixe' }).task;
+  assert.equal(B.comm.claimNext().task?.id, mine.id, 'ni la limite globale ni l’agent occupé ailleurs ne retiennent ce PC');
+});
+
+test('journal : une demande annulée en cours de création n’est jamais publiée', async () => {
+  const dir = tmp(), file = join(dir, 'w.db');
+  const { comm, ids, studio } = setup({ commJournalDir: join(dir, 'journal'), device: 'pc-a' }, file);
+  const other = new (await import('node:sqlite')).DatabaseSync(file);
+  other.exec("CREATE TRIGGER refuse_message BEFORE INSERT ON comm_messages BEGIN SELECT RAISE(ABORT, 'panne simulée'); END");
+  other.close();
+  assert.throws(() => comm.createTask({ assigneeId: ids.sophia, instruction: 'Demande interrompue' }), /panne simulée/);
+  assert.equal(comm.listTasks().length, 0);
+  const journal = join(dir, 'journal', 'pc-a.jsonl');
+  const written = existsSync(journal) ? readFileSync(journal, 'utf8') : '';
+  assert.doesNotMatch(written, /Demande interrompue/);
+  studio.close();
 });

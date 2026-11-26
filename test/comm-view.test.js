@@ -1,6 +1,7 @@
 // Affichage de la communication (helpers purs) : libellés, actions permises, arbre de délégations, preuves affichées.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   taskActions, taskTree, groupThreads, filterThreads, threadTitle, dueLabel, sourceLine, verificationLine, costLine, activeText, runLine, side,
   deliveryLabel, taskStateLabel, messageKindLabel, isOpen
@@ -66,4 +67,18 @@ test('échéances lisibles', () => {
   assert.equal(dueLabel({ dueAt: '2026-11-21T15:00:00Z', state: 'queued' }, now), 'échéance dans 5 h');
   assert.equal(dueLabel({ dueAt: '2026-11-25T10:00:00Z', state: 'queued' }, now), 'échéance dans 4 j');
   assert.equal(dueLabel({ dueAt: '2026-11-21T09:00:00Z', state: 'done' }, now), '');
+});
+
+test('compteur et activité : chaque bouton qui ouvre les messages les affiche, mobile compris', async () => {
+  const { paintCommButtons } = await import('../public/comm-view.js');
+  const button = () => { const classes = new Set(); return { textContent: '', title: '', classes, classList: { toggle: (name, on) => (on ? classes.add(name) : classes.delete(name)) } }; };
+  const top = button(), bottom = button();
+  paintCommButtons([[top, 'Comms'], [bottom, 'Messages', '\n'], [null, 'Absent']], { notifications: 3, active: [{}] });
+  assert.equal(top.textContent, 'Comms · 3'); assert.equal(bottom.textContent, 'Messages\n3');
+  assert.ok(bottom.classes.has('busy')); assert.match(bottom.title, /1 agent au travail/);
+  paintCommButtons([[bottom, 'Messages']], { notifications: 0, active: [] });
+  assert.equal(bottom.textContent, 'Messages'); assert.equal(bottom.classes.size, 0);
+  const read = (path) => readFileSync(new URL(`../public/${path}`, import.meta.url), 'utf8');
+  assert.match(read('app.js'), /paintCommButtons\(\[\[\$\('#comm-btn'\), 'Comms'\], \[\$\('#mobile-nav \[data-nav=comm\]'\), 'Messages', '\\n'\]\], act\)/);
+  assert.match(read('style.css'), /#mobile-nav button\.busy::after/);
 });

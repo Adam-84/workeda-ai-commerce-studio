@@ -205,6 +205,10 @@ Les agents peuvent s'appuyer sur le catalogue réel de workeda.com, **sans jamai
 
 Bouton **Integrations** : connexions DSers (MCP, OAuth + PKCE) et 17TRACK (clé existante), états réels, permissions, quotas (100 appels DSers/jour, configurable), accès **agent par agent (aucun par défaut)**, révocation. Archipel ne modifie jamais DSers, 17TRACK ni Shopify, ne transmet aucune donnée personnelle de client aux agents et masque les numéros de suivi. Le réseau réel reste **verrouillé** tant que `ARCHIPEL_ALLOW_REAL_NETWORK=1` n'est pas défini avec votre accord. Détails, coûts, limites : `docs/INTEGRATIONS.md` (audit : `docs/INTEGRATIONS-AUDIT.md`).
 
+## Mobile et serveur central (préparés, non déployés)
+
+Sous 700 px, une barre en bas donne accès au tableau de bord, à l’équipe, aux missions, aux messages et aux autres panneaux ; l’application est installable (PWA) en local ou en HTTPS. Un serveur central avec authentification et workers est préparé. État exact, installation, dépannage et retour arrière : [rapport de livraison](docs/LIVRAISON.md). Lancer `npm ci` avant le premier démarrage.
+
 ## Prérequis Windows
 
 Node.js 24 ou plus récent. Vérifier dans PowerShell :

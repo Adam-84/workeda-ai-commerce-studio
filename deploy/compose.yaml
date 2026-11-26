@@ -1,0 +1,59 @@
+name: archipel
+services:
+  archipel:
+    image: ${ARCHIPEL_IMAGE:-workeda-archipel:cloud-foundation}
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    # Nom stable : l'identité de l'exécuteur des automatisations y est liée et doit survivre à une recréation.
+    hostname: archipel-central
+    user: "1000:1000"
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 1g
+    cpus: 1.0
+    stop_grace_period: 60s
+    environment:
+      NODE_ENV: production
+      ARCHIPEL_ORIGIN: ${ARCHIPEL_ORIGIN:-http://127.0.0.1:4319}
+      ARCHIPEL_PASSWORD_HASH_FILE: /run/secrets/owner_password_hash
+      ARCHIPEL_DATA_DIR: /var/lib/archipel
+      ARCHIPEL_BIND: 0.0.0.0
+      PORT: "4319"
+    ports:
+      - "127.0.0.1:4319:4319"
+    secrets:
+      - owner_password_hash
+    volumes:
+      - data:/var/lib/archipel
+      - skills:/app/skills
+      - agent_profiles:/app/.claude/agents
+      - claude_skills:/app/.claude/skills
+      - codex_skills:/app/.agents/skills
+    tmpfs:
+      - /tmp:size=64m,mode=1777,noexec,nosuid,nodev
+    healthcheck:
+      test: ["CMD", "node", "--input-type=module", "-e", "const r = await fetch('http://127.0.0.1:4319/healthz', {signal: AbortSignal.timeout(4000)}); if (!r.ok || (await r.json()).status !== 'ok') process.exit(1);"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+secrets:
+  owner_password_hash:
+    file: ${ARCHIPEL_PASSWORD_HASH_HOST_FILE:?Set an absolute path to the protected password hash file}
+volumes:
+  data:
+  skills:
+  agent_profiles:
+  claude_skills:
+  codex_skills:

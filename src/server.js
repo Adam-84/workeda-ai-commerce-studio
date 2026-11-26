@@ -42,8 +42,9 @@ server.on('error', (e) => {
   console.error(`Le port ${port} est déjà utilisé : le studio tourne peut-être déjà. Fermez l'autre fenêtre ou choisissez un autre port avec PORT.`);
   process.exit(1);
 });
-server.listen(port, () => {
+server.listen(port, '127.0.0.1', () => {
   console.log(`Workeda AI Commerce Studio : http://localhost:${server.address().port}`);
   // Reprise des tâches interrompues par un arrêt, puis passage régulier : une tâche approuvée démarre dès qu'un agent est libre.
   server.orchestrator?.start();
+  server.automationRunner?.start();
 });

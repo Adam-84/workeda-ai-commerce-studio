@@ -67,6 +67,17 @@ export function sourceLine(s) {
 export const verificationLine = (r) => (r ? `${r.verified ? 'Vérifié' : 'Non vérifié'} · ${levelLabel(r.level)} — ${r.verification}` : 'Aucun résultat.');
 
 export const costLine = (u) => `${u.today.runs} exécution${u.today.runs > 1 ? 's' : ''} aujourd’hui (reste ${u.quota.remaining} sur ${u.quota.runsPerDay}) · ${u.today.costUsd ? `${u.today.costUsd.toFixed(2)} $ rapportés par Claude Code` : 'coût non rapporté'} · ${u.total.runs} au total`;
+// Compteur et activité Comms, sur chaque bouton qui ouvre les messages (barre du haut et barre mobile).
+export function paintCommButtons(buttons, { notifications = 0, active = [] } = {}) {
+  const title = active.length ? `${active.length} agent${active.length > 1 ? 's' : ''} au travail en ce moment` : 'Communication entre agents';
+  for (const [button, label, separator = ' · '] of buttons) {
+    if (!button) continue;
+    button.textContent = notifications ? `${label}${separator}${notifications}` : label;
+    button.classList.toggle('busy', active.length > 0);
+    button.title = title;
+  }
+}
+
 export const activeText = (active, nameOf) => (active.length ? `${active.map((a) => nameOf(a.agentId)).join(', ')} ${active.length > 1 ? 'travaillent' : 'travaille'} en ce moment` : 'Aucun agent au travail en ce moment');
 
 // Une exécution réelle, en une ligne.

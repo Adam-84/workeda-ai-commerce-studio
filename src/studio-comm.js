@@ -58,6 +58,11 @@ export const COMM_MIGRATIONS = [{
   // est vérifié à l'exécution contre les accès accordés à l'agent (jamais par défaut), et les données viennent du cache local.
   up: `ALTER TABLE comm_tasks ADD COLUMN with_integrations TEXT NOT NULL DEFAULT '[]';`,
   down: `ALTER TABLE comm_tasks DROP COLUMN with_integrations;`
+}, {
+  version: 4,
+  name: 'origine locale Automation et idempotence de dispatch',
+  up: `ALTER TABLE comm_tasks ADD COLUMN automation_key TEXT; ALTER TABLE comm_tasks ADD COLUMN automation_lease TEXT; CREATE UNIQUE INDEX comm_tasks_automation_key ON comm_tasks(automation_key);`,
+  down: `DROP INDEX comm_tasks_automation_key; ALTER TABLE comm_tasks DROP COLUMN automation_key; ALTER TABLE comm_tasks DROP COLUMN automation_lease;`
 }];
 export const COMM_SCHEMA_VERSION = COMM_MIGRATIONS.at(-1).version;
 
@@ -72,9 +77,19 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
   const get = (sql, ...a) => db.prepare(sql).get(...a);
   const all = (sql, ...a) => db.prepare(sql).all(...a);
   const run = (sql, ...a) => db.prepare(sql).run(...a);
-  const tx = (fn) => { db.exec('BEGIN'); try { const r = fn(); db.exec('COMMIT'); return r; } catch (e) { if (db.isTransaction) db.exec('ROLLBACK'); throw e; } };
+  let held = null; // écritures du journal retenues jusqu'à la validation de la transaction ouverte ici
+  const tx = (fn) => {
+    if (db.isTransaction) return fn();
+    db.exec('BEGIN IMMEDIATE'); held = [];
+    let r;
+    try { r = fn(); db.exec('COMMIT'); } catch (e) { held = null; if (db.isTransaction) db.exec('ROLLBACK'); throw e; }
+    const ready = held; held = null; for (const [kind, key] of ready) publish(kind, key);
+    return r;
+  };
   const now = () => clock();
   let journalError = null;
+  let automationGate = () => false;
+  let automationInterrupted = () => {};
 
   // --- schéma (numéroté, réversible) -----------------------------------------------------------------------------------------------
   const hasTable = (name) => Boolean(get("SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = ?", name));
@@ -130,7 +145,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     task: (id) => {
       const t = get('SELECT * FROM comm_tasks WHERE id = ?', id); if (!t) return null;
       const m = get('SELECT * FROM missions WHERE id = ?', t.mission_id);
-      return { id: t.id, missionId: t.mission_id, rootTaskId: t.root_task_id, parentTaskId: t.parent_task_id, threadId: t.thread_id, kind: t.kind, title: redactAgentAsk(t.id, t.title), instruction: redactAgentAsk(t.id, t.instruction), requestedBy: t.requested_by === 'user' ? 'user' : slugOf(t.requested_by), assignee: slugOf(t.assignee_id), depth: t.depth, state: t.state, stateNote: t.state_note ? redactFor(t.id, t.state_note) : t.state_note, dependsOn: parseJsonList(t.depends_on), allowWeb: Boolean(t.allow_web), requiresSources: Boolean(t.requires_sources), withCatalog: Boolean(t.with_catalog), withIntegrations: parseJsonList(t.with_integrations), budgetUsd: t.budget_usd ?? null, dedupeKey: t.dedupe_key, dueAt: t.due_at, notBefore: t.not_before, attempts: t.attempts, maxAttempts: t.max_attempts, device: t.device, createdAt: t.created_at, updatedAt: t.updated_at, startedAt: t.started_at, finishedAt: t.finished_at,
+      return { id: t.id, automationKey: t.automation_key ?? null, missionId: t.mission_id, rootTaskId: t.root_task_id, parentTaskId: t.parent_task_id, threadId: t.thread_id, kind: t.kind, title: redactAgentAsk(t.id, t.title), instruction: redactAgentAsk(t.id, t.instruction), requestedBy: t.requested_by === 'user' ? 'user' : slugOf(t.requested_by), assignee: slugOf(t.assignee_id), depth: t.depth, state: t.state, stateNote: t.state_note ? redactFor(t.id, t.state_note) : t.state_note, dependsOn: parseJsonList(t.depends_on), allowWeb: Boolean(t.allow_web), requiresSources: Boolean(t.requires_sources), withCatalog: Boolean(t.with_catalog), withIntegrations: parseJsonList(t.with_integrations), budgetUsd: t.budget_usd ?? null, dedupeKey: t.dedupe_key, dueAt: t.due_at, notBefore: t.not_before, attempts: t.attempts, maxAttempts: t.max_attempts, device: t.device, createdAt: t.created_at, updatedAt: t.updated_at, startedAt: t.started_at, finishedAt: t.finished_at,
         mission: m && { id: m.id, title: redactAgentAsk(t.id, m.title), objective: redactAgentAsk(t.id, m.objective), expectedResult: redactAgentAsk(t.id, m.expected_result), contextText: redactAgentAsk(t.id, m.context_text), priority: m.priority, requiresApproval: Boolean(m.requires_approval), requestedBy: m.requested_by ? slugOf(m.requested_by) : null, assignedTo: m.assigned_to ? slugOf(m.assigned_to) : null, createdAt: m.created_at } };
     },
     result: (id) => { const r = get('SELECT * FROM comm_results WHERE id = ?', id); return r && { id: r.id, taskId: r.task_id, agent: slugOf(r.agent_id), runId: r.run_id, summary: redactFor(r.task_id, r.summary), body: redactFor(r.task_id, r.body), sources: redactFor(r.task_id, 'x') === LOCAL_ONLY ? [] : parseJsonList(r.sources), observed: redactFor(r.task_id, 'x') === LOCAL_ONLY ? {} : jsonObserved(r.observed), verified: Boolean(r.verified), level: r.level, verification: redactFor(r.task_id, r.verification), verifiedBy: r.verified_by, createdAt: r.created_at }; },
@@ -160,7 +175,13 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
   };
   // Appelé après chaque changement : la base reste la source locale, le journal est la copie qui voyage avec git.
   const journal = (kind, key) => {
+    // Automated work stays local; importing a journal cannot turn it into ordinary runnable work.
+    const linked = kind === 'task' ? key : kind === 'message' ? get('SELECT task_id FROM comm_messages WHERE id=?', key)?.task_id : kind === 'result' ? get('SELECT task_id FROM comm_results WHERE id=?', key)?.task_id : kind === 'run' ? get('SELECT task_id FROM comm_runs WHERE id=?', key)?.task_id : null;
+    if (linked && schemaVersion() >= 4 && get('SELECT automation_key FROM comm_tasks WHERE id=?', linked)?.automation_key) return;
     bump(kind, key);
+    if (held) held.push([kind, key]); else publish(kind, key);
+  };
+  const publish = (kind, key) => {
     if (!journalDir) return;
     const tag = `${kind}#${key}`;
     try { const e = eventFor(kind, key); if (e) append(e); journalError = null; const q = outbox(); if (q.includes(tag)) setOutbox(q.filter((x) => x !== tag)); }
@@ -381,7 +402,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
   const mapTask = (t) => {
     if (!t) return null;
     const res = get('SELECT * FROM comm_results WHERE task_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1', t.id);
-    return { id: t.id, missionId: t.mission_id, rootTaskId: t.root_task_id, parentTaskId: t.parent_task_id, threadId: t.thread_id, kind: t.kind, title: t.title, instruction: t.instruction, requestedBy: t.requested_by, assigneeId: t.assignee_id, depth: t.depth, state: t.state, stateNote: t.state_note, dependsOn: parseJsonList(t.depends_on), allowWeb: Boolean(t.allow_web), requiresSources: Boolean(t.requires_sources), withCatalog: Boolean(t.with_catalog), withIntegrations: parseJsonList(t.with_integrations), budgetUsd: t.budget_usd ?? null, spentUsd: t.budget_usd == null ? null : spentOf(t.root_task_id), unreportedRuns: t.budget_usd == null ? null : unreportedOf(t.root_task_id), dueAt: t.due_at, notBefore: t.not_before, attempts: t.attempts, maxAttempts: t.max_attempts, device: t.device, createdAt: t.created_at, updatedAt: t.updated_at, startedAt: t.started_at, finishedAt: t.finished_at, resultId: res?.id ?? null, verified: res ? Boolean(res.verified) : false };
+    return { id: t.id, automationKey: t.automation_key ?? null, missionId: t.mission_id, rootTaskId: t.root_task_id, parentTaskId: t.parent_task_id, threadId: t.thread_id, kind: t.kind, title: t.title, instruction: t.instruction, requestedBy: t.requested_by, assigneeId: t.assignee_id, depth: t.depth, state: t.state, stateNote: t.state_note, dependsOn: parseJsonList(t.depends_on), allowWeb: Boolean(t.allow_web), requiresSources: Boolean(t.requires_sources), withCatalog: Boolean(t.with_catalog), withIntegrations: parseJsonList(t.with_integrations), budgetUsd: t.budget_usd ?? null, spentUsd: t.budget_usd == null ? null : spentOf(t.root_task_id), unreportedRuns: t.budget_usd == null ? null : unreportedOf(t.root_task_id), dueAt: t.due_at, notBefore: t.not_before, attempts: t.attempts, maxAttempts: t.max_attempts, device: t.device, createdAt: t.created_at, updatedAt: t.updated_at, startedAt: t.started_at, finishedAt: t.finished_at, resultId: res?.id ?? null, verified: res ? Boolean(res.verified) : false };
   };
   const task = (id) => { const t = get('SELECT * FROM comm_tasks WHERE id = ?', id); if (!t) throw notFound('Tâche'); return mapTask(t); };
   const mapResult = (r) => !r ? null : { id: r.id, taskId: r.task_id, agentId: r.agent_id, runId: r.run_id, summary: r.summary, body: r.body, sources: parseJsonList(r.sources), observed: (() => { try { return JSON.parse(r.observed); } catch { return {}; } })(), verified: Boolean(r.verified), level: r.level, verification: r.verification, verifiedBy: r.verified_by, createdAt: r.created_at };
@@ -389,7 +410,14 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
   const setMissionState = (missionId, state) => { try { missions.setState(missionId, MISSION_STATE[state] ?? state); } catch { /* mission absente : sans conséquence pour la tâche */ } };
   const ancestors = (t) => { const out = []; let cur = t; while (cur?.parentTaskId) { cur = task(cur.parentTaskId); out.push(cur); } return out; };
 
-  const createTask = (input = {}, by = { type: 'user' }) => {
+  const createTaskRaw = (input = {}, by = { type: 'user' }) => {
+    const automated = by.type === 'automation';
+    if (automated) {
+      if (!automationGate(by.runId)) throw bad('Autorisation Automation invalide.', 403);
+      const existing = get('SELECT * FROM comm_tasks WHERE automation_key=?', by.runId);
+      if (existing) return { task: mapTask(existing), created: false, reused: 'origin' };
+      if (input.parentTaskId || input.allowWeb || !input.cacheKey) throw bad('Origine Automation non conforme.', 403);
+    }
     const instruction = clean(input.instruction, 'La demande', LIMITS.instruction, { required: true });
     assertNoSecret('La demande', instruction);
     const assignee = realAgent(input.assigneeId, 'Agent destinataire');
@@ -411,17 +439,17 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     }
     if (rootId && get('SELECT COUNT(*) AS n FROM comm_tasks WHERE root_task_id = ?', rootId).n >= LIMITS.maxPerRoot) throw bad(`Limite de ${LIMITS.maxPerRoot} tâches pour une même demande atteinte.`, 409, { limit: 'root' });
     const allowWeb = Boolean(input.allowWeb) && (by.type === 'user' || Boolean(parent?.allowWeb)); // un agent ne peut jamais élargir l'accès web
-    const withCatalog = Boolean(input.withCatalog) && (by.type === 'user' || Boolean(parent?.withCatalog));
+    const withCatalog = Boolean(input.withCatalog) && (by.type === 'user' || automated || Boolean(parent?.withCatalog));
     // Intégrations : un agent ne peut jamais élargir ce que le propriétaire a demandé ; seules les intégrations connues sont retenues.
     const wantedInts = [...new Set(Array.isArray(input.withIntegrations) ? input.withIntegrations.filter((x) => INTEGRATION_IDS.includes(x)) : [])];
-    const withIntegrations = by.type === 'user' ? wantedInts : wantedInts.filter((x) => (parent?.withIntegrations ?? []).includes(x));
-    const key = fingerprint(assignee.slug, instruction, allowWeb, withCatalog, withIntegrations);
+    const withIntegrations = by.type === 'user' || automated ? wantedInts : wantedInts.filter((x) => (parent?.withIntegrations ?? []).includes(x));
+    const key = automated ? `automation:${assignee.slug}:${input.cacheKey}` : fingerprint(assignee.slug, instruction, allowWeb, withCatalog, withIntegrations);
     if (!input.forceFresh) {
       const open = get(`SELECT * FROM comm_tasks WHERE dedupe_key = ? AND state IN (${OPEN_STATES.map(() => '?').join(',')}) ${rootId ? 'AND root_task_id = ?' : ''} ORDER BY created_at LIMIT 1`, key, ...OPEN_STATES, ...(rootId ? [rootId] : []));
       if (open) return { task: mapTask(open), created: false, reused: 'open' };
       const since = new Date(Date.parse(now()) - LIMITS.reuseMs).toISOString();
       const done = get("SELECT t.* FROM comm_tasks t JOIN comm_results r ON r.task_id = t.id WHERE t.dedupe_key = ? AND t.state = 'done' AND r.verified = 1 AND t.finished_at >= ? ORDER BY t.finished_at DESC LIMIT 1", key, since);
-      if (done) return { task: mapTask(done), created: false, reused: 'result' };
+      if (done && !automated) return { task: mapTask(done), created: false, reused: 'result' };
     }
     const deps = [...new Set(Array.isArray(input.dependsOn) ? input.dependsOn : [])].map((d) => task(d));
     if (rootId && deps.some((d) => d.rootTaskId !== rootId && !(d.state === 'done' && d.verified))) throw bad('Une dépendance appartient à une autre demande.', 409);
@@ -433,7 +461,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     const rootMission = parent ? get('SELECT * FROM missions WHERE id = ?', get('SELECT mission_id AS m FROM comm_tasks WHERE id = ?', rootId)?.m) : mission;
     // Le propriétaire qui crée une tâche l'approuve. Une consolidation prolonge une tâche déjà approuvée. Une délégation d'un agent
     // attend la validation du propriétaire, sauf si la mission ne demande pas de validation humaine.
-    const autoApprove = by.type === 'user' || kind === 'consolidation' || Boolean(rootMission && !rootMission.requires_approval);
+    const autoApprove = by.type === 'user' || automated || kind === 'consolidation' || Boolean(rootMission && !rootMission.requires_approval);
     const stateNow = autoApprove ? 'queued' : 'pending_approval';
     if (!mission) {
       mission = missions.create({ title: clean(input.title, 'Le titre', LIMITS.title) || short(instruction.replace(/\s+/g, ' '), 100), assignedTo: assignee.id, requestedBy: requesterId, objective: short(instruction, 2000), expectedResult: '', priority: input.priority ?? 'normal', requiresApproval: rootMission ? Boolean(rootMission.requires_approval) : input.requiresApproval !== false });
@@ -448,6 +476,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
       for (const a of [assignee.id, requesterId].filter(Boolean)) { const th = thread(threadId); if (!th.members.includes(a)) run('INSERT INTO comm_thread_members (thread_id, agent_id) VALUES (?, ?)', threadId, a); }
       run('UPDATE comm_tasks SET with_catalog = ?, budget_usd = ?, with_integrations = ? WHERE id = ?', Number(withCatalog), budget, JSON.stringify(withIntegrations), id); // même transaction : jamais de tâche sans ses champs v2
     });
+    if (automated) run('UPDATE comm_tasks SET automation_key=?,max_attempts=1 WHERE id=?', by.runId, id);
     setMissionState(missionId, stateNow);
     assertFitsOrUndoTask(id);
     journal('thread', threadId); journal('task', id);
@@ -455,6 +484,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     const msg = postMessage(threadId, { kind: 'delegation', to: [assignee.id], body: `${requester ? requester.name : 'Propriétaire'} → ${assignee.name} : ${instruction}${stateNow === 'pending_approval' ? '\n\n(en attente de validation du propriétaire)' : ''}`, refs: [{ type: 'mission', id: missionId, label: mission.title }], taskId: id }, by.type === 'agent' ? by : { type: 'user' });
     return { task: task(id), created: true, message: msg };
   };
+  const createTask = (input, by) => tx(() => createTaskRaw(input, by));
   const TERMINAL_CLOSED = ['cancelled'];
   const assertFitsOrUndoTask = (id) => { try { assertFits('task', id); } catch (e) { tx(() => { run('DELETE FROM comm_tasks WHERE id = ?', id); }); throw e; } };
 
@@ -525,11 +555,21 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     return n;
   };
   const runsToday = () => get('SELECT COUNT(*) AS n FROM comm_runs WHERE device = ? AND started_at >= ?', device, `${now().slice(0, 10)}T00:00:00.000Z`).n;
+  const interruptAutomation = (id, note) => {
+    for (const r of all("SELECT id FROM comm_runs WHERE task_id=? AND state='running'", id)) endRun(r.id, { state: 'error', error: note });
+    setTaskState(id, 'blocked', note);
+    automationInterrupted();
+  };
   // Choisit la prochaine tâche exécutable : prête (dépendances terminées), agent libre et disponible, quota respecté.
-  const claimNext = ({ busy = new Set() } = {}) => {
+  const claimNextRaw = ({ busy = new Set() } = {}) => {
     expireDue();
+    for (const stale of all("SELECT id FROM comm_tasks WHERE state='running' AND automation_key IS NOT NULL AND automation_lease<=?", now())) interruptAutomation(stale.id, 'Résultat incertain : bail expiré, décision humaine requise.');
     for (const r of all("SELECT * FROM comm_tasks WHERE state = 'queued' AND device = ? ORDER BY depth, created_at, rowid", device)) {
       const t = mapTask(r);
+      if (t.automationKey && !automationGate(t.automationKey, t)) { setTaskState(t.id, 'blocked', 'Autorisation Automation, source ou fraîcheur indisponible avant lancement.'); continue; }
+      // Les tâches « en cours » importées d'un autre ordinateur ne comptent pas : leur fin ne dépend pas de celui-ci.
+      if (get("SELECT count(*) AS n FROM comm_tasks WHERE state='running' AND device=?", device).n >= LIMITS.maxActive) return { task: null };
+      if (get("SELECT id FROM comm_tasks WHERE state='running' AND assignee_id=? AND device=?", t.assigneeId, device)) continue;
       if (t.notBefore && t.notBefore > now()) continue;
       let waiting = false, failedDep = null;
       for (const d of t.dependsOn) { const dep = get('SELECT state FROM comm_tasks WHERE id = ?', d); if (!dep || ['failed', 'cancelled', 'expired', 'blocked'].includes(dep.state)) { failedDep = d; break; } if (dep.state !== 'done') waiting = true; }
@@ -545,10 +585,12 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
       }
       if (busy.has(t.assigneeId)) continue;
       if (runsToday() >= LIMITS.maxRunsPerDay) return { quota: true };
+      if (t.automationKey) run('UPDATE comm_tasks SET automation_lease=? WHERE id=?', new Date(Date.parse(now()) + 90000).toISOString(), t.id);
       return { task: setTaskState(t.id, 'running', '', { extra: { startedAt: now(), attempts: t.attempts + 1 } }) };
     }
     return { task: null };
   };
+  const claimNext = (options) => tx(() => claimNextRaw(options));
   // Résultat d'une exécution. Le Studio évalue lui-même (verified) ; jamais la parole de l'agent seule.
   const recordResult = (taskId, { agentId, runId, summary = '', body, sources = [], observed = {}, verified, level, verification }) => {
     const t = task(taskId), text = clean(body, 'Le résultat', LIMITS.result, { required: true });
@@ -569,15 +611,17 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
   const listTasks = ({ missionId = null, state = null, agentId = null, rootTaskId = null } = {}) => all('SELECT * FROM comm_tasks ORDER BY created_at DESC, rowid DESC').map(mapTask)
     .filter((t) => (!missionId || t.missionId === missionId) && (!state || t.state === state) && (!agentId || t.assigneeId === agentId || t.requestedBy === agentId) && (!rootTaskId || t.rootTaskId === rootTaskId));
 
+  const runsOfTask = (taskId) => all('SELECT id FROM comm_runs WHERE task_id = ? ORDER BY started_at, rowid', taskId).map((r) => getRun(r.id));
+
   // --- vues pour l'interface -------------------------------------------------------------------------------------------------------------------------
   const activeRuns = () => all("SELECT * FROM comm_runs WHERE state = 'running' ORDER BY started_at").map((r) => getRun(r.id));
   // Historique des exécutions réelles (la preuve que chaque message d'agent vient d'un vrai travail), de la plus récente à la plus ancienne.
   const recentRuns = (limit = 50) => all('SELECT r.id, t.title AS task_title FROM comm_runs r LEFT JOIN comm_tasks t ON t.id = r.task_id ORDER BY r.started_at DESC, r.rowid DESC LIMIT ?', Math.min(Math.max(Number(limit) || 50, 1), 200)).map((r) => ({ ...getRun(r.id), taskTitle: r.task_title ?? null }));
   const usage = () => {
     const today = `${now().slice(0, 10)}T00:00:00.000Z`;
-    const sum = (where, ...a) => get(`SELECT COUNT(*) AS runs, COALESCE(SUM(cost_usd), 0) AS cost, COALESCE(SUM(input_tokens), 0) AS inT, COALESCE(SUM(output_tokens), 0) AS outT FROM comm_runs WHERE ${where}`, ...a);
+    const sum = (where, ...a) => get(`SELECT COUNT(*) AS runs, COUNT(cost_usd) AS costed, COALESCE(SUM(cost_usd), 0) AS cost, COALESCE(SUM(input_tokens), 0) AS inT, COALESCE(SUM(output_tokens), 0) AS outT FROM comm_runs WHERE ${where}`, ...a);
     const t = sum('started_at >= ?', today), a = sum('1 = 1');
-    return { today: { runs: t.runs, costUsd: t.cost, inputTokens: t.inT, outputTokens: t.outT }, total: { runs: a.runs, costUsd: a.cost }, quota: { runsPerDay: LIMITS.maxRunsPerDay, remaining: Math.max(0, LIMITS.maxRunsPerDay - runsToday()) }, note: 'Coût et jetons tels que rapportés par Claude Code ; abonnement existant, aucune API payante.',
+    return { today: { runs: t.runs, runsWithCost: t.costed, costUsd: t.cost, inputTokens: t.inT, outputTokens: t.outT }, total: { runs: a.runs, costUsd: a.cost }, quota: { runsPerDay: LIMITS.maxRunsPerDay, remaining: Math.max(0, LIMITS.maxRunsPerDay - runsToday()) }, note: 'Coût et jetons tels que rapportés par Claude Code ; abonnement existant, aucune API payante.',
       byAgent: all("SELECT agent_id, COUNT(*) AS runs, COALESCE(SUM(cost_usd), 0) AS cost FROM comm_runs GROUP BY agent_id ORDER BY runs DESC").map((r) => ({ agentId: r.agent_id, runs: r.runs, costUsd: r.cost })) };
   };
   const notifications = () => {
@@ -719,8 +763,10 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
   // Au démarrage : ce qui tournait quand le processus s'est arrêté n'a pas fini ; on le dit et on le reprend ou on l'échoue.
   const recover = () => {
     let n = 0;
-    for (const r of all("SELECT * FROM comm_runs WHERE state = 'running' AND device = ?", device)) { endRun(r.id, { state: 'error', error: 'Interrompue par un arrêt du Studio.' }); n += 1; }
-    for (const t of all("SELECT id, attempts, max_attempts FROM comm_tasks WHERE state = 'running' AND device = ?", device)) {
+    for (const r of all("SELECT * FROM comm_runs WHERE state = 'running' AND device = ?", device)) { const taskLease = r.task_id ? get('SELECT automation_key,automation_lease FROM comm_tasks WHERE id=?', r.task_id) : null; if (taskLease?.automation_key && taskLease.automation_lease > now()) continue; endRun(r.id, { state: 'error', error: 'Interrompue par un arrêt du Studio.' }); n += 1; }
+    for (const t of all("SELECT id, attempts, max_attempts, automation_key, automation_lease FROM comm_tasks WHERE state = 'running' AND device = ?", device)) {
+      if (t.automation_key && t.automation_lease > now()) continue;
+      if (t.automation_key) { interruptAutomation(t.id, 'Résultat incertain après interruption : décision humaine requise.'); continue; }
       if (t.attempts < t.max_attempts) setTaskState(t.id, 'queued', 'Reprise après un arrêt du Studio.', { extra: { notBefore: now() } });
       else setTaskState(t.id, 'failed', 'Interrompue par un arrêt du Studio (plus d’essai disponible).');
     }
@@ -728,10 +774,13 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
   };
 
   return {
+    reusableAutomation: (slug, cacheKey, freshnessMs) => { const row = get("SELECT t.* FROM comm_tasks t JOIN comm_results r ON r.task_id=t.id WHERE t.dedupe_key=? AND t.state='done' AND r.verified=1 AND t.finished_at>=? ORDER BY t.finished_at DESC LIMIT 1", `automation:${slug}:${cacheKey}`, new Date(Date.parse(now()) - Math.min(LIMITS.reuseMs, freshnessMs)).toISOString()); return row ? mapTask(row) : null; },
+    renewAutomation: (id) => run("UPDATE comm_tasks SET automation_lease=? WHERE id=? AND state='running' AND automation_key IS NOT NULL", new Date(Date.parse(now()) + 90000).toISOString(), id),
+    setAutomationGate: (gate, onInterrupted = () => {}) => { automationGate = gate; automationInterrupted = onInterrupted; }, automationAllowed: (t) => !t.automationKey || automationGate(t.automationKey, t),
     device, schemaVersion, lastMigration, rollback, journalError: () => journalError,
     status: () => ({ schemaVersion: schemaVersion(), device, journalDir: journalDir ? resolve(journalDir) : null, journalError, lastMigration, limits: LIMITS, webTools: WEB_TOOLS }),
     createThread, addMember, thread, threadForMission, listThreads, postMessage, getMessage, listMessages, markDelivery, pendingFor,
-    startRun, endRun, getRun, activeRuns, recentRuns, usage, available, agentInfo: (id) => agentRow(id), slugOf, agentOfSlug, realAgent, nameOf,
+    startRun, endRun, getRun, activeRuns, recentRuns, runsOfTask, usage, available, agentInfo: (id) => agentRow(id), slugOf, agentOfSlug, realAgent, nameOf,
     visibleMessages, quotaExceeded: () => runsToday() >= LIMITS.maxRunsPerDay,
     createTask, task, listTasks, setTaskState, approveTask, cancelTask, retryTask, adoptTask, setBudget, spentOf, budgetExceeded, verifyTask, expireDue, claimNext, recordResult, resultOf, results, recover,
     notifications, markSeen: () => { setMeta('seen_at', now()); return { seenAt: meta('seen_at') }; }, exchanges,

@@ -14,12 +14,17 @@ import { agentSkillsTab, skillsCenter } from './skills-ui.js';
 import { agentMemoryTab, memoryCenter } from './memory-ui.js';
 import { agentCommTab, commCenter } from './comm-ui.js';
 import { integrationsCenter } from './integrations-ui.js';
+import { automationCenter } from './automation-ui.js';
+import { homeView, teamView, missionsView, moreView, alertsView, startAlerts } from './hq-ui.js';
 import { missionsTab } from './missions.js';
+import { paintCommButtons } from './comm-view.js';
 import { instructionsBlock } from './instructions.js';
 
 const $ = (s) => document.querySelector(s);
-const get = (p) => fetch(p).then(async (r) => { const d = await r.json(); if (!r.ok) throw new Error(d.error); return d; });
-const send = (method, p, data) => fetch(p, { method, headers: { 'content-type': 'application/json' }, body: data && JSON.stringify(data) }).then(async (r) => { const d = await r.json(); if (!r.ok) throw new Error(d.error); return d; });
+// Session du serveur central expirée ou révoquée : retour à la page de connexion (jamais émis en mode local).
+const answer = async (r) => { const d = await r.json(); if (!r.ok) { if (r.status === 401 && d.error === 'Connexion requise.') location.replace('/login.html'); throw Object.assign(new Error(d.error), { status: r.status }); } return d; };
+const get = (p) => fetch(p).then(answer);
+const send = (method, p, data) => fetch(p, { method, headers: { 'content-type': 'application/json' }, body: data && JSON.stringify(data) }).then(answer);
 const h = (tag, props = {}, ...kids) => { const el = document.createElement(tag); for (const [k, v] of Object.entries(props)) { if (k.startsWith('on')) el.addEventListener(k.slice(2), v); else if (v !== false && v != null) el.setAttribute(k, v === true ? '' : v); } el.append(...kids.flat().filter((k) => k != null && k !== false)); return el; };
 const announce = (t) => { $('#live').textContent = t; };
 const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -225,9 +230,16 @@ function stepCamera(now) {
   if (k >= 1) cam = null;
   afterView();
 }
-canvas.addEventListener('pointerdown', (e) => { if (cam?.from.zoom !== cam?.to.zoom) stepCamera(Infinity); cam = null; drag = { x: e.clientX, y: e.clientY }; canvas.classList.add('dragging'); canvas.setPointerCapture(e.pointerId); });
-canvas.addEventListener('pointermove', (e) => { if (!drag) return; panBy(vp, e.clientX - drag.x, e.clientY - drag.y); drag = { x: e.clientX, y: e.clientY }; afterView(); });
-canvas.addEventListener('pointerup', () => { drag = null; canvas.classList.remove('dragging'); });
+const fingers = new Map(); let spread = null; // pincement à deux doigts : un cran de zoom à chaque écart franchi
+const pinch = () => { const [a, b] = [...fingers.values()]; return { d: Math.hypot(a.x - b.x, a.y - b.y), x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; };
+canvas.addEventListener('pointerdown', (e) => { if (cam?.from.zoom !== cam?.to.zoom) stepCamera(Infinity); cam = null; fingers.set(e.pointerId, { x: e.clientX, y: e.clientY }); spread = fingers.size === 2 ? pinch().d : null; drag = fingers.size === 1 ? { x: e.clientX, y: e.clientY } : null; canvas.classList.add('dragging'); canvas.setPointerCapture(e.pointerId); });
+canvas.addEventListener('pointermove', (e) => {
+  if (fingers.has(e.pointerId)) fingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (spread && fingers.size === 2) { const now = pinch(), step = now.d > spread * 1.3 ? 1 : now.d < spread / 1.3 ? -1 : 0; if (step) { spread = now.d; moveView((v) => zoomAt(v, nextZoom(v.zoom, step), now.x, now.y)); } return; }
+  if (!drag) return; panBy(vp, e.clientX - drag.x, e.clientY - drag.y); drag = { x: e.clientX, y: e.clientY }; afterView();
+});
+const release = (e) => { fingers.delete(e.pointerId); spread = null; drag = null; if (!fingers.size) canvas.classList.remove('dragging'); };
+canvas.addEventListener('pointerup', release); canvas.addEventListener('pointercancel', release);
 canvas.addEventListener('wheel', (e) => { e.preventDefault(); moveView((v) => zoomAt(v, nextZoom(v.zoom, e.deltaY < 0 ? 1 : -1), e.clientX, e.clientY)); }, { passive: false });
 canvas.addEventListener('keydown', (e) => { const s = 60, m = { ArrowLeft: [s, 0], ArrowRight: [-s, 0], ArrowUp: [0, s], ArrowDown: [0, -s] }[e.key]; if (m) { e.preventDefault(); moveView((v) => panBy(v, ...m)); } });
 $('#zoom-in').addEventListener('click', () => moveView((v) => zoomAt(v, nextZoom(v.zoom, 1), innerWidth / 2, innerHeight / 2)));
@@ -283,9 +295,11 @@ loadUserSprites();
 
 // ---------- fenêtres contextuelles ----------
 const pop = $('#pop'); let current = null;
+const PANELS = ['agent', 'skills', 'memory', 'comm', 'integrations', 'automations', 'home', 'team', 'missions', 'more', 'alerts']; // espaces de travail ancrés à droite (plein écran sur mobile)
+const markNav = () => document.querySelectorAll('#mobile-nav button').forEach((b) => b.setAttribute('aria-current', String(!pop.hidden && current?.kind === b.dataset.nav)));
 const anchorEl = () => current && overlay.querySelector(`[data-key="${current.key}"]`);
 function positionPop() {
-  if (current?.kind === 'agent' || current?.kind === 'skills' || current?.kind === 'memory' || current?.kind === 'integrations') { pop.style.left = pop.style.top = ''; return; }
+  if (PANELS.includes(current?.kind)) { pop.style.left = pop.style.top = ''; return; }
   if (matchMedia('(max-width: 700px)').matches) { pop.style.left = pop.style.top = ''; return; }
   const a = anchorEl(); if (!a) return;
   const r = a.getBoundingClientRect(), w = pop.offsetWidth, hh = pop.offsetHeight;
@@ -296,17 +310,17 @@ function positionPop() {
 let closeHook = null; // l'éditeur d'île y met l'annulation de son aperçu non enregistré
 let liveDraft = null; // { id, get } tant que le formulaire de personnalisation est ouvert
 const runCloseHook = () => { const f = closeHook; closeHook = null; liveDraft = null; f?.(); };
-export function close(restore = true) { runCloseHook(); if (pop.hidden) return; const key = current?.key; pop.hidden = true; current = null; announce('Fenêtre fermée'); if (restore && key) (key.startsWith('skills:') ? $('#skills-btn') : key.startsWith('memory:') ? $('#memory-btn') : key.startsWith('comm:') ? $('#comm-btn') : key.startsWith('integrations:') ? $('#integrations-btn') : overlay.querySelector(`[data-key="${key}"]`))?.focus(); }
+export function close(restore = true) { runCloseHook(); if (pop.hidden) return; const key = current?.key; pop.hidden = true; current = null; markNav(); announce('Fenêtre fermée'); if (restore && key) (key.startsWith('skills:') ? $('#skills-btn') : key.startsWith('memory:') ? $('#memory-btn') : key.startsWith('comm:') ? $('#comm-btn') : key.startsWith('integrations:') ? $('#integrations-btn') : key.startsWith('automations:') ? $('#automations-btn') : /^(home|team|missions|more|alerts):/.test(key) ? $(matchMedia('(max-width: 700px)').matches ? `#mobile-nav [data-nav="${key.split(':')[0]}"]` : '#home-btn') : overlay.querySelector(`[data-key="${key}"]`))?.focus(); }
 export function show(kind, id, opts = {}) {
   runCloseHook();
   const key = opts.recruit ? `plot:${id}` : `${kind}:${id}`; current = { kind, id, key };
-  pop.classList.toggle('agent-panel', kind === 'agent' || kind === 'skills' || kind === 'memory' || kind === 'comm' || kind === 'integrations');
-  const view = { island: islandView, agent: agentView, hub: hubView, skills: skillsView, memory: memoryView, comm: commView, integrations: integrationsView }[kind](id, opts);
+  pop.classList.toggle('agent-panel', PANELS.includes(kind));
+  const view = { island: islandView, agent: agentView, hub: hubView, skills: skillsView, memory: memoryView, comm: commView, integrations: integrationsView, automations: automationsView, ...HQ }[kind](id, opts);
   pop.replaceChildren(h('button', { class: 'x', type: 'button', 'aria-label': 'Fermer', onclick: () => close() }, '×'), view);
-  pop.scrollTop = 0; pop.hidden = false; positionPop(); pop.focus(); announce(`${pop.querySelector('h2')?.textContent ?? ''} ouvert`);
+  pop.scrollTop = 0; pop.hidden = false; positionPop(); pop.focus(); markNav(); announce(`${pop.querySelector('h2')?.textContent ?? ''} ouvert`);
 }
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { close(); $('#settings').hidden = true; $('#search-results').hidden = true; } });
-document.addEventListener('pointerdown', (e) => { if (!pop.hidden && !pop.contains(e.target) && !e.target.closest('.hit')) close(false); if (!$('#settings').hidden && !e.target.closest('#settings, #settings-btn, #phase-pill')) $('#settings').hidden = true; });
+document.addEventListener('pointerdown', (e) => { if (!pop.hidden && !pop.contains(e.target) && !e.target.closest('.hit, #mobile-nav, .net-banner')) close(false); if (!$('#settings').hidden && !e.target.closest('#settings, #settings-btn, #phase-pill')) $('#settings').hidden = true; });
 
 const field = (label, control) => h('label', {}, label, control);
 function form(fields, submitLabel, onSubmit) {
@@ -475,22 +489,42 @@ const agentRef = (a) => state.profiles.get(a.id)?.slug ?? `id:${a.id}`;
 function memoryView(_id, opts = {}) {
   return memoryCenter({ ui: UI, agents: state.agents, departments: state.departments.map((d) => d.name), missions: state.missions, refOf: agentRef, initial: opts.item ?? null });
 }
+function automationsView() { return automationCenter({ ui: UI, setLeave: (fn) => { closeHook = fn; }, openMission: async (id) => { const t = await send('POST', '/api/comm/threads', { kind: 'mission', missionId: id }); show('comm', 'center', { thread: t.id }); } }); }
 function integrationsView() { return integrationsCenter({ ui: UI, setLeave: (fn) => { closeHook = fn; } }); }
 function commView(_id, opts = {}) {
   return commCenter({ ui: UI, agents: state.agents, departments: state.departments.map((d) => d.name), missions: state.missions, profiles: state.profiles, openMemory: (item) => show('memory', 'center', { item }), setLeave: (fn) => { closeHook = fn; }, initial: opts });
 }
+// ---------- tableau de bord et navigation mobile ----------
+const openCenter = (kind, opts = {}) => show(kind, ['home', 'team', 'missions', 'more', 'alerts', 'comm', 'memory', 'automations', 'integrations'].includes(kind) ? 'center' : 'library', opts);
+const HQ = {
+  home: () => homeView({ ui: UI, open: openCenter }),
+  team: () => teamView({ ui: UI, agents: state.agents, departmentName: (id) => deptOf(id)?.name ?? '', openAgent: (id) => show('agent', id) }),
+  missions: () => missionsView({ ui: UI, agents: state.agents, missions: state.missions, openMission: (m) => show('agent', m.assigned_to, { tab: 'Missions' }), create: async (data) => { await send('POST', '/api/missions', data); await refresh(); show('missions', 'center'); } }),
+  alerts: () => alertsView({ ui: UI }),
+  more: () => moreView({ ui: UI, entries: [
+    ['Bureau des agents', 'La carte de l’archipel, départements et recrutement.', () => close(false)],
+    ['Memory', 'Connaissances et souvenirs à valider.', () => openCenter('memory')],
+    ['Automations', 'Calendriers, déclencheurs et historique.', () => openCenter('automations')],
+    ['Intégrations et applications Shopify', 'Sources en lecture seule et inventaire des applications.', () => openCenter('integrations')],
+    ['Skills', 'Compétences des agents.', () => openCenter('skills')],
+    ['Notifications', 'Choisir les alertes de cet appareil.', () => openCenter('alerts')],
+    ['Réglages d’affichage', 'Ciel, zoom et légende.', () => { close(false); $('#settings').hidden = false; $('#sky').focus(); }]
+  ] })
+};
+$('#home-btn').addEventListener('click', () => (current?.kind === 'home' ? close() : openCenter('home')));
+for (const b of document.querySelectorAll('#mobile-nav button')) b.addEventListener('click', () => (current?.kind === b.dataset.nav ? close(false) : openCenter(b.dataset.nav)));
+
 // ---------- communication : état réel des exécutions ----------
 // Le bouton et la carte ne montrent que ce que le serveur constate : exécutions en cours, notifications, échanges enregistrés.
 let commSig = null;
 export async function pollComm() {
   try {
-    const act = await get('/api/comm/activity'), b = $('#comm-btn');
-    b.textContent = act.notifications ? `Comms · ${act.notifications}` : 'Comms';
-    b.classList.toggle('busy', act.active.length > 0);
-    b.title = act.active.length ? `${act.active.length} agent${act.active.length > 1 ? 's' : ''} au travail en ce moment` : 'Communication entre agents';
+    const act = await get('/api/comm/activity');
+    dispatchEvent(new CustomEvent('archipel:link', { detail: true }));
+    paintCommButtons([[$('#comm-btn'), 'Comms'], [$('#mobile-nav [data-nav=comm]'), 'Messages', '\n']], act); // étroit : le compteur passe sous le libellé
     const sig = `${act.active.map((a) => a.runId ?? a.taskId).join(',')}|${act.notifications}`;
     if (sig !== commSig) { const first = commSig === null; commSig = sig; if (!first) { dispatchEvent(new Event('comm:changed')); await refresh(); } }
-  } catch { /* serveur injoignable : l'affichage reste tel quel */ }
+  } catch (e) { if (e instanceof TypeError) dispatchEvent(new CustomEvent('archipel:link', { detail: false })); /* l'affichage reste tel quel, signalé comme ancien */ }
 }
 function hubView() {
   const d = (x) => (x ? 'détecté' : 'non détecté'), c = state.health?.connectors;
@@ -514,6 +548,7 @@ const toggleSettings = () => { const s = $('#settings'); s.hidden = !s.hidden; i
 $('#skills-btn').addEventListener('click', () => (current?.kind === 'skills' ? close() : show('skills', 'library')));
 $('#memory-btn').addEventListener('click', () => (current?.kind === 'memory' ? close() : show('memory', 'center')));
 $('#comm-btn').addEventListener('click', () => (current?.kind === 'comm' ? close() : show('comm', 'center')));
+$('#automations-btn').addEventListener('click', () => (current?.kind === 'automations' ? close() : show('automations', 'center')));
 $('#integrations-btn').addEventListener('click', () => (current?.kind === 'integrations' ? close() : show('integrations', 'center')));
 setInterval(() => { if (!document.hidden) pollComm(); }, 4000); pollComm();
 $('#settings-btn').addEventListener('click', toggleSettings); $('#phase-pill').addEventListener('click', toggleSettings);
@@ -527,6 +562,7 @@ $('#missionbar').addEventListener('submit', async (e) => {
 
 // ---------- démarrage ----------
 applyPhase();
+startAlerts({ get, announce });
 refresh().catch((e) => { $('#connections').title = $('#connections').textContent = e.message; });
 addEventListener('focus', () => { if (pop.hidden) refresh().catch(() => {}); });
 if (!reduce) requestAnimationFrame(frame);

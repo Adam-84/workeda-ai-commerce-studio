@@ -12,6 +12,9 @@ import { findSecret } from './memory-core.js';
 import { createIntegrationService } from './integrations.js';
 import { createSecretStore } from './secret-store.js';
 import { dirname, join } from 'node:path';
+import { createAutomationStore } from './studio-automation.js';
+import { automationIdentity } from './automation-identity.js';
+import { readAutomationSources } from './automation-sources.js';
 
 const DEPARTMENTS = [
   ['Direction', 'Pilotage et validations'], ['Catalogue', 'Produits et collections'],
@@ -64,6 +67,7 @@ const mapMessage = (row) => ({ ...row, fromAgentId: row.from_agent_id, toAgentId
 export function createStudio(filename = 'data/workeda.db', options = {}) {
   const db = new DatabaseSync(filename);
   db.exec(`PRAGMA foreign_keys = ON;
+    PRAGMA busy_timeout = 5000;
     CREATE TABLE IF NOT EXISTS departments (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL, department_id TEXT NOT NULL REFERENCES departments(id), enabled INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'idle', status_source TEXT NOT NULL DEFAULT 'manual', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS missions (id TEXT PRIMARY KEY, title TEXT NOT NULL, requested_by TEXT REFERENCES agents(id), assigned_to TEXT REFERENCES agents(id), state TEXT NOT NULL DEFAULT 'draft', requires_approval INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
@@ -86,7 +90,7 @@ export function createStudio(filename = 'data/workeda.db', options = {}) {
     CREATE TABLE IF NOT EXISTS plan_decisions (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES mission_plans(id), decision TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS agent_instructions (agent_id TEXT PRIMARY KEY REFERENCES agents(id), objective TEXT NOT NULL DEFAULT '', priorities TEXT NOT NULL DEFAULT '', preferences TEXT NOT NULL DEFAULT '', limits TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL);
   `);
-  const tx = (fn) => { db.exec('BEGIN'); try { const result = fn(); db.exec('COMMIT'); return result; } catch (e) { if (db.isTransaction) db.exec('ROLLBACK'); throw e; } };
+  const tx = (fn) => { if (db.isTransaction) return fn(); db.exec('BEGIN IMMEDIATE'); try { const result = fn(); db.exec('COMMIT'); return result; } catch (e) { if (db.isTransaction) db.exec('ROLLBACK'); throw e; } };
   const have = new Set(db.prepare('PRAGMA table_info(missions)').all().map((c) => c.name));
   const missing = MISSION_COLUMNS.filter(([name]) => !have.has(name));
   if (missing.length) tx(() => { for (const [name, type] of missing) db.exec(`ALTER TABLE missions ADD COLUMN ${name} ${type}`); });
@@ -221,8 +225,11 @@ export function createStudio(filename = 'data/workeda.db', options = {}) {
     // État d'une mission déléguée : simple reflet de l'état réel de sa tâche (aucune autre écriture sur la mission).
     setMissionState(id, state) {
       if (typeof state !== 'string' || !/^[a-z_]{1,20}$/.test(state)) throw bad('État de mission invalide.');
+      const previous = getMission(id);
       requireMission(id);
+      if (previous.state === state) return previous;
       db.prepare('UPDATE missions SET state = ?, updated_at = ? WHERE id = ?').run(state, now(), id);
+      if (previous.state !== state && ['done', 'failed'].includes(state) && api.automation && !api.automation.isAutomationMission(id)) api.automation.recordEvent({ source: 'missions', subject: id, event: `mission.${state}`, at: getMission(id).updatedAt });
       return getMission(id);
     },
     // Mémoire : notes saisies à la main, corrigées ou archivées, jamais effacées. Aucun agent ne la lit pour l'instant.
@@ -424,5 +431,16 @@ export function createStudio(filename = 'data/workeda.db', options = {}) {
   const secretsDir = options.secretsDir ?? (filename === ':memory:' ? null : join(dirname(filename), 'secrets'));
   const secrets = options.secrets ?? createSecretStore({ dir: secretsDir }); // sans dossier (base en mémoire) : stockage indisponible, jamais de repli en clair
   api.integrations = createIntegrationService({ db, secrets, shop: api.shop, env: options.env ?? process.env, fetchImpl: options.integrationsFetch, now: options.nowMs, redirectUri: options.redirectUri, sleep: options.integrationsSleep });
+  api.automation = createAutomationStore(db, { clock: options.clock, backup: memory.backup, identity: options.automationIdentity ?? automationIdentity(filename), aiAvailable: options.aiAvailable, validateAgent: (slug) => api.comm.available(api.comm.agentOfSlug(slug)), cancelTask: (id) => { const t = api.comm.task(id); if (t.state === 'running') return false; if (['queued','pending_approval','blocked'].includes(t.state)) api.comm.cancelTask(id, 'Automatisation désactivée ou suspendue'); return true; } });
+  api.comm.setAutomationGate((key, task = null) => {
+    try {
+      const r = api.automation.run(key), d = api.automation.rule(r.rule_id);
+      if (!api.automation.allowed(r) || !r.ai_reserved || api.automation.status().aiPaused) return false;
+      if (!task) return r.state === 'collecting' && d.allowAi;
+      if (r.state !== 'dispatched' || r.task_id !== task.id || !d.allowAi || task.attempts > 1) return false;
+      const data = readAutomationSources(api, d, Date.parse(options.clock?.() ?? new Date().toISOString()));
+      return !data.missing.length && data.launchHash === r.data_hash;
+    } catch { return false; }
+  }, () => api.automation.pauseAi(true));
   return api;
 }

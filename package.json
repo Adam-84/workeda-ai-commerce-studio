@@ -15,9 +15,13 @@
     "comm:sync": "node src/comm-cli.js sync",
     "comm:inbox": "node src/comm-cli.js inbox",
     "comm:tasks": "node src/comm-cli.js tasks",
-    "codex:watch": "node tools/codex-watch/check.mjs"
+    "codex:watch": "node tools/codex-watch/check.mjs",
+    "icons": "node tools/make-icons.mjs"
   },
   "engines": {
     "node": ">=24"
+  },
+  "dependencies": {
+    "@js-temporal/polyfill": "0.5.1"
   }
 }
