@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { isModelId } from './engines.js';
+import { cleanSignal, isModelId } from './engines.js';
 
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const secret = () => randomBytes(32).toString('base64url');
@@ -39,7 +39,9 @@ function resultValue(result) {
   if (costUsd !== null && (!Number.isFinite(costUsd) || costUsd < 0)) throw fault('INVALID_RESULT', 'Invalid cost.');
   const models = result.models ?? null;
   if (models !== null && (!Array.isArray(models) || models.length > 8 || !models.every((m) => isModelId(m)))) throw fault('INVALID_RESULT', 'Invalid observed models.');
-  return { status: result.status, output: result.status === 'done' ? result.output : null, error: result.status === 'failed' ? (result.error || 'Worker execution failed.') : null, usage, costUsd, ...(models?.length ? { models: [...new Set(models)] } : {}) };
+  const quota = result.quota ?? null;
+  if (quota !== null && (!Array.isArray(quota) || quota.length > 8 || !quota.every((q) => cleanSignal(q)))) throw fault('INVALID_RESULT', 'Invalid quota signal.');
+  return { status: result.status, output: result.status === 'done' ? result.output : null, error: result.status === 'failed' ? (result.error || 'Worker execution failed.') : null, usage, costUsd, ...(models?.length ? { models: [...new Set(models)] } : {}), ...(quota?.length ? { quota: quota.map((q) => cleanSignal(q)) } : {}) };
 }
 
 export function createWorkerBroker(db, { now = Date.now, models = [], leaseMs = 30000 } = {}) {
@@ -124,14 +126,14 @@ export function createWorkerBroker(db, { now = Date.now, models = [], leaseMs = 
         return workerValue(readWorker(id));
       });
     },
-    claim(id) {
+    claim(id, { allow = () => true } = {}) {
       expire();
       return tx(() => {
         const w = requireWorker(id);
         // An uncertain run may still be executing: this identity cannot start more work.
         if (db.prepare("SELECT id FROM worker_jobs WHERE worker_id=? AND (status='running' OR (status='uncertain' AND released_at IS NULL)) LIMIT 1").get(id)) return null;
         const allowed = JSON.parse(w.models).filter(m => models.includes(m));
-        const j = db.prepare("SELECT * FROM worker_jobs WHERE status='queued' ORDER BY created_at,id").all().find(r => allowed.includes(JSON.parse(r.payload).model));
+        const j = db.prepare("SELECT * FROM worker_jobs WHERE status='queued' ORDER BY created_at,id").all().find(r => { const model = JSON.parse(r.payload).model; return allowed.includes(model) && allow(model); });
         if (!j) return null;
         validateWorkerPayload(JSON.parse(j.payload), allowed);
         const token = secret(), deadline = now() + JSON.parse(j.payload).timeoutMs;

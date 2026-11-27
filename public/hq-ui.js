@@ -16,10 +16,10 @@ export function homeView({ ui, open }) {
   const button = (label, run, cls) => h('button', { type: 'button', class: cls, onclick: run }, label);
 
   async function load() {
-    const [agents, missions, notifications, memoryPending, automations, usage, integrations, localHealth, operations] = await Promise.all([
-      '/api/agents', '/api/missions', '/api/comm/notifications', '/api/memory?state=pending', '/api/automations', '/api/comm/usage', '/api/integrations', '/api/health'
+    const [agents, missions, notifications, memoryPending, automations, usage, integrations, localHealth, engines, operations] = await Promise.all([
+      '/api/agents', '/api/missions', '/api/comm/notifications', '/api/memory?state=pending', '/api/automations', '/api/comm/usage', '/api/integrations', '/api/health', '/api/engines'
     ].map((path) => optional(get(path))).concat(readOperations(get)));
-    cards.replaceChildren(...buildDashboard({ agents, missions, notifications, memoryPending, automations, usage, integrations, operations, localHealth }).map((c) => {
+    cards.replaceChildren(...buildDashboard({ agents, missions, notifications, memoryPending, automations, usage, integrations, engines, operations, localHealth }).map((c) => {
       const body = [h('span', { class: 'hq-label' }, c.label), h('strong', {}, c.value), c.detail ? h('span', { class: 'note' }, c.detail) : null];
       return c.open ? h('button', { type: 'button', class: `hq-card tone-${c.tone}`, onclick: () => open(c.open) }, body) : h('div', { class: `hq-card tone-${c.tone}` }, body);
     }));

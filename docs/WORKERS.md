@@ -8,8 +8,12 @@ chosen model the mission waits; no other model or provider replaces it.
 The
 operator CLI reads `ARCHIPEL_WORKER_MODELS` to limit which models an identity may
 be enrolled with; an empty value disables enrollment. A model name is
-configuration, not a claim that the account has access to it. Quota is reported as
-unknown. No Codex runner exists.
+configuration, not a claim that the account has access to it. Quota is unknown until Claude Code sends a `rate_limit_event`. A report may carry
+`quota`, up to eight bounded signals; the server stores them per worker. A refused
+model is no longer assigned to that worker until the announced reset, and a
+reported overage waits for the owner's confirmation. An overage is only known after
+the call that reports it.
+No Codex runner exists.
 
 ## Enrollment and revocation
 

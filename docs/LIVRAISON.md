@@ -8,7 +8,7 @@ Quatre états distincts : **développé** (le code existe), **testé** (tests au
 | Phase 7, runner Codex | Reporté (branches `codex-runner`, `pal-hardening`) | Isolation non démontrée | Non | Non, désactivé |
 | Choix du moteur par agent ou mission (Claude : opus, sonnet, haiku) | Oui, dans `main` (PR 18) | Tests à runners **simulés** ; choix de Haiku vérifié sur un appel réel le 27/11/2026 ; sélecteurs essayés à 375 et 800 px sur base temporaire | Non | En local ; mode central non essayé en réel ; Codex désactivé |
 | Contrôles visibles : bordures contrastées, information distincte des boutons, moteur IA en haut du profil | Oui, branche `feat/visible-controls` | Test de contraste sur les quatre thèmes ; écrans vus à 375 et 1100 px sur base temporaire | Non | Non : non fusionné ; lecteur d’écran et appareil réel non essayés |
-| Quota observé chez le fournisseur (lot 3) | **Non** | Non | Non | Non |
+| Quota observé chez Claude, attente après refus, confirmation après dépense supplémentaire | Oui, branche `feat/engine-quota` | Événements **simulés** ; écrans vus à 375 et 1100 px sur base temporaire | Non | Non : non fusionné ; événement réel jamais observé |
 | Comptes IA : toutes les exécutions, modèle constaté, coût inconnu distinct de zéro | Oui, dans `main` (PR 16) | Tests à runners **simulés** ; un appel réel de discussion vérifié le 27/11/2026 ; activité des communications vue à 375, 800 et 1366 px sur base temporaire | Non | En local ; tâches et mode central non essayés en réel |
 | Phase 9, automatisations | Oui | Suite automatique, recette partielle | Non | En local après fusion de la PR 13 |
 | Phase 10, serveur central, authentification, sauvegardes | Oui | Suite automatique ; contenu d'image simulé et démarré sans Docker | Non | Non |
