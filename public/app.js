@@ -448,7 +448,7 @@ function engineBlock(p) {
       } catch (x) { err.textContent = x.message; }
     });
     box.replaceChildren(...[h('span', { class: 'chip accent' }, `Moteur ${engineLabel(me.effective)} · ${SOURCES[me.effective.source]}`),
-      h('label', {}, 'Moteur IA', select), me.unavailable ? h('p', { class: 'err' }, me.unavailable) : null,
+      h('label', {}, 'Changer de moteur', select), me.unavailable ? h('p', { class: 'err' }, me.unavailable) : null,
       h('p', { class: 'note' }, 'Vaut pour les prochaines demandes. Les tâches déjà créées gardent leur moteur. Un choix de mission passe avant celui-ci.'), err].filter(Boolean));
   }
   load().catch((x) => { err.textContent = x.message; box.append(err); });
@@ -458,7 +458,6 @@ function profileBlock(p) {
   const team = colleagues(p, state.agents);
   return h('div', { class: 'profile' },
     h('p', { class: 'metier' }, p.sections.metier),
-    engineBlock(p),
     p.connectors.length > 0 && [h('h3', {}, 'Outils externes'), h('ul', {}, p.connectors.map((c) => h('li', {}, connectorText(c))))],
     team.length > 0 && [h('h3', {}, 'Collabore avec'), h('div', { class: 'colleagues' }, team.map((c) => (c.agentId ? h('button', { type: 'button', 'aria-label': `Voir ${c.label}`, onclick: () => focusAgent(c.agentId) }, c.label) : h('span', { class: 'chip soft' }, c.label))))],
     h('h3', {}, 'Livrable attendu'), h('p', { class: 'pre' }, p.sections.livrable),
@@ -492,6 +491,7 @@ const TABS = {
   Profil: (a) => h('div', {},
     h('div', { class: 'status' }, `${STATUS_LABELS[a.status] || a.status} · source : ${a.statusSource}`),
     a.statusSource === 'manual' && h('p', { style: 'margin-top:6px' }, 'Statut déclaré manuellement : aucun connecteur n’a vérifié d’activité.'),
+    state.profiles.has(a.id) && [h('h3', {}, 'Moteur IA'), engineBlock(state.profiles.get(a.id))],
     instructionsBlock({ agent: a, replies: state.profiles.has(a.id), get, send, announce, h }),
     state.profiles.has(a.id) && profileBlock(state.profiles.get(a.id)),
     ),
