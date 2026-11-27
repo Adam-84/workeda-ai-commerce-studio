@@ -201,21 +201,35 @@ async function brokerServer(t, b, w, fail = () => null) {
     const status = fail(route, data, calls);
     if (status) { res.writeHead(status); return res.end('{}'); }
     let value;
-    if (route === 'heartbeat') value = b.heartbeat(w.id, data);
-    if (route === 'claim') value = b.claim(w.id);
-    if (route === 'complete') value = b.complete(w.id, req.url.split('/')[3], data.leaseToken, data.result);
+    try {
+      if (route === 'heartbeat') value = b.heartbeat(w.id, data);
+      if (route === 'claim') value = b.claim(w.id);
+      if (route === 'complete') value = b.complete(w.id, req.url.split('/')[3], data.leaseToken, data.result);
+    } catch (error) {
+      // Comme le serveur central : un refus du courtier devient un statut HTTP, par exemple pour un battement arrivé après la remise.
+      if (!error.status) throw error;
+      res.writeHead(error.status); return res.end('{}');
+    }
     res.end(JSON.stringify(value));
   });
   return { baseUrl, calls };
 }
-const slow = (ms) => async () => { await new Promise(resolve => setTimeout(resolve, ms)); return 'travail terminé'; };
 
 test('a missed heartbeat request does not discard finished work', async (t) => {
-  const { broker: b } = fixture(t, { now: Date.now, leaseMs: 600 }); const w = enroll(b);
+  // L'horloge du courtier suit les battements reçus, pas la charge de la machine. Le bail initial finit à 1600 :
+  // le battement 1 (1250) est perdu, le 2 (1500) renouvelle, le 3 (1750) tombe après le bail initial.
+  const { broker: b, at } = fixture(t, { leaseMs: 600 }); const w = enroll(b);
   b.enqueue({ key: 'blip', payload: payload({ timeoutMs: 5000 }) });
-  const s = await brokerServer(t, b, w, (route, data, calls) => route === 'heartbeat' && data.jobId && calls.heartbeat === 1 ? 503 : null);
-  const done = await runWorkerOnce({ baseUrl: s.baseUrl, token: w.token, models: ['sonnet'], runner: slow(1500) });
-  assert.equal(done.result.output, 'travail terminé'); assert.ok(s.calls.heartbeat >= 2, 'les battements reprennent');
+  const s = await brokerServer(t, b, w, (route, data, calls) => {
+    if (route !== 'heartbeat' || !data.jobId) return null;
+    at(1000 + 250 * Math.min(calls.heartbeat, 3));
+    return calls.heartbeat === 1 ? 503 : null;
+  });
+  const done = await runWorkerOnce({ baseUrl: s.baseUrl, token: w.token, models: ['sonnet'], runner: async () => {
+    for (const giveUp = Date.now() + 10000; s.calls.heartbeat < 3 && Date.now() < giveUp;) await new Promise(resolve => setTimeout(resolve, 10));
+    return 'travail terminé';
+  } });
+  assert.equal(done.result.output, 'travail terminé'); assert.ok(s.calls.heartbeat >= 3, 'les battements reprennent');
 });
 
 test('delivery of a result is retried without running the job again', async (t) => {
