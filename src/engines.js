@@ -42,3 +42,38 @@ export function resolveEngine({ mission = null, agent = null, fiche = null } = {
   for (const [source, e] of [['mission', mission], ['agent', agent], ['fiche', fiche]]) if (e) return { provider: e.provider, model: e.model, source };
   return null;
 }
+export const QUOTA_WINDOWS = ['five_hour', 'seven_day', 'seven_day_opus', 'seven_day_sonnet', 'overage'];
+const QUOTA_STATES = ['allowed', 'allowed_warning', 'rejected'];
+const SOURCE_ID = /^[a-zA-Z0-9_-]{1,64}$/;
+// Signal de quota borné : tout champ absent ou illisible reste inconnu (null).
+export function cleanSignal(raw) {
+  if (!raw || !QUOTA_STATES.includes(raw.status)) return null;
+  const at = typeof raw.resetsAt === 'string' ? Date.parse(raw.resetsAt) : NaN;
+  return {
+    status: raw.status, window: QUOTA_WINDOWS.includes(raw.window) ? raw.window : 'unknown',
+    utilization: Number.isFinite(raw.utilization) && raw.utilization >= 0 && raw.utilization <= 100 ? raw.utilization : null,
+    resetsAt: Number.isFinite(at) ? new Date(at).toISOString() : null, overage: raw.overage === true
+  };
+}
+// Événement « rate_limit_event » de Claude Code. « archipel_source » n'est posé que par le serveur central.
+export function quotaOfEvent(event) {
+  const info = event?.type === 'rate_limit_event' ? event.rate_limit_info : null;
+  if (!info) return null;
+  const seconds = info.resetsAt;
+  const signal = cleanSignal({ status: info.status, window: info.rateLimitType, utilization: info.utilization, resetsAt: Number.isFinite(seconds) && seconds > 0 && seconds < 1e11 ? new Date(seconds * 1000).toISOString() : null, overage: info.isUsingOverage === true });
+  return signal && { ...signal, source: SOURCE_ID.test(event.archipel_source ?? '') ? event.archipel_source : 'local' };
+}
+export const signalStale = (s, now = Date.now()) => Boolean(s.resetsAt && Date.parse(s.resetsAt) <= now);
+const when = (iso) => new Date(iso).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short', timeZone: 'Europe/Paris' });
+// Pourquoi ce signal fait attendre ce moteur ; chaîne vide s'il ne bloque pas.
+export function signalReason(s, engine, now = Date.now()) {
+  if (s.window === 'seven_day_opus' && engine?.model !== 'opus') return '';
+  if (s.window === 'seven_day_sonnet' && engine?.model !== 'sonnet') return '';
+  if (signalStale(s, now)) return '';
+  const confirmed = Boolean(s.confirmedUntil && Date.parse(s.confirmedUntil) > now);
+  if (s.status === 'rejected') {
+    if (s.resetsAt) return `Limite Claude atteinte : reprise après le ${when(s.resetsAt)}.`;
+    return confirmed ? '' : 'Limite Claude atteinte sans date de remise à zéro : confirmez la reprise.';
+  }
+  return s.overage && !confirmed ? 'Dépense supplémentaire signalée par Claude : confirmez avant de relancer.' : '';
+}

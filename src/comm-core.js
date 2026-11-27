@@ -3,7 +3,7 @@
 import { scrubContacts, scrubProjectedPrompt } from './catalog-privacy.js';
 import { createHash } from 'node:crypto';
 import { findSecret } from './memory-core.js';
-import { modelOfEvent } from './engines.js';
+import { modelOfEvent, quotaOfEvent } from './engines.js';
 
 export const THREAD_KINDS = ['direct', 'department', 'mission', 'group'];
 export const MESSAGE_KINDS = ['message', 'delegation', 'result', 'help', 'blocker', 'proposal', 'decision', 'system'];
@@ -122,12 +122,14 @@ export function normUrl(u) {
 const URL_IN_TEXT = /https?:\/\/[^\s"'<>)\]]+/g;
 // Lit les événements stream-json de Claude Code : ce que l'agent a réellement consulté (et non ce qu'il dit avoir consulté).
 export function observeTools() {
-  const state = { fetched: [], searched: [], found: [], models: [], cost: null, usage: null, turns: 0 };
+  const state = { fetched: [], searched: [], found: [], models: [], quota: [], cost: null, usage: null, turns: 0 };
   const pending = new Map(); // tool_use id → { name, url } : une consultation n'est confirmée que par un tool_result sans erreur
   const add = (list, v) => { if (v && !list.includes(v)) list.push(v); };
   return {
     state,
     feed(event) {
+      const signal = quotaOfEvent(event); // dernier signal par fenêtre et par source
+      if (signal) state.quota = [...state.quota.filter((q) => q.window !== signal.window || q.source !== signal.source), signal].slice(-8);
       if (state.models.length < 8) add(state.models, modelOfEvent(event));
       if (event?.type === 'assistant') for (const b of event.message?.content ?? []) {
         if (b.type !== 'tool_use') continue;
