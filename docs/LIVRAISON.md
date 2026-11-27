@@ -6,7 +6,8 @@ Quatre états distincts : **développé** (le code existe), **testé** (tests au
 | --- | --- | --- | --- | --- |
 | Phases 1 à 6 et 8 (agents, Skills, mémoire, communications, Shopify en lecture, intégrations, applications) | Oui, dans `main` | Suite automatique | Non | En local |
 | Phase 7, runner Codex | Reporté (branches `codex-runner`, `pal-hardening`) | Isolation non démontrée | Non | Non, désactivé |
-| Choix du moteur par agent ou mission (Claude : opus, sonnet, haiku) | Oui, branche `feat/engine-choice` | Tests à runners **simulés** ; sélecteurs essayés à 375 et 800 px sur base temporaire | Non | Non : non fusionné ; accès du compte à chaque modèle non vérifié ; Codex désactivé |
+| Choix du moteur par agent ou mission (Claude : opus, sonnet, haiku) | Oui, dans `main` (PR 18) | Tests à runners **simulés** ; choix de Haiku vérifié sur un appel réel le 27/11/2026 ; sélecteurs essayés à 375 et 800 px sur base temporaire | Non | En local ; mode central non essayé en réel ; Codex désactivé |
+| Contrôles visibles : bordures contrastées, information distincte des boutons, moteur IA en haut du profil | Oui, branche `feat/visible-controls` | Test de contraste sur les quatre thèmes ; écrans vus à 375 et 1100 px sur base temporaire | Non | Non : non fusionné ; lecteur d’écran et appareil réel non essayés |
 | Quota observé chez le fournisseur (lot 3) | **Non** | Non | Non | Non |
 | Comptes IA : toutes les exécutions, modèle constaté, coût inconnu distinct de zéro | Oui, dans `main` (PR 16) | Tests à runners **simulés** ; un appel réel de discussion vérifié le 27/11/2026 ; activité des communications vue à 375, 800 et 1366 px sur base temporaire | Non | En local ; tâches et mode central non essayés en réel |
 | Phase 9, automatisations | Oui | Suite automatique, recette partielle | Non | En local après fusion de la PR 13 |

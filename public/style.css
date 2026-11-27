@@ -1,4 +1,4 @@
-:root{--font:system-ui,"Segoe UI",sans-serif;--radius:16px;--t:1.5s}
+:root{--font:system-ui,"Segoe UI",sans-serif;--radius:16px;--t:1.5s;--control-border:color-mix(in srgb,var(--text) 55%,transparent);--control-shadow:color-mix(in srgb,var(--text) 22%,transparent)}
 html[data-phase=morning]{--sky:linear-gradient(180deg,#ffd7b5,#cfe6f5 55%,#fff1e2);--panel:rgba(255,249,242,.86);--panel-solid:#fff9f2;--border:rgba(255,255,255,.95);--text:#3a2f2a;--soft:#7a6456;--accent:#c2410c;--on-accent:#fff;--err:#b3261e;--shadow:0 8px 24px rgba(160,100,60,.16)}
 html[data-phase=noon]{--sky:linear-gradient(180deg,#4aa8f0,#a9dcff 55%,#eaf7ff);--panel:rgba(255,255,255,.86);--panel-solid:#ffffff;--border:rgba(255,255,255,.95);--text:#1f2433;--soft:#4f566a;--accent:#6c5ce7;--on-accent:#fff;--err:#b3261e;--shadow:0 8px 24px rgba(40,50,90,.16)}
 html[data-phase=evening]{--sky:linear-gradient(180deg,#3f2f80,#b0508e 50%,#ff9a5c);--panel:rgba(62,36,64,.82);--panel-solid:#3e2440;--border:rgba(255,190,140,.45);--text:#fff3e8;--soft:#f0d0b8;--accent:#ffb15c;--on-accent:#3a1f12;--err:#ffb4a8;--shadow:0 8px 28px rgba(40,10,30,.35)}
@@ -10,15 +10,25 @@ body{background:var(--sky);transition:background var(--t)}
 #overlay{position:absolute;inset:0;pointer-events:none}#overlay>*{pointer-events:auto}
 .panel{background:var(--panel-solid);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);color:var(--text);transition:background var(--t),color var(--t),border-color var(--t),opacity .2s ease,transform .22s cubic-bezier(.2,.8,.2,1),display .22s allow-discrete}
 @supports (backdrop-filter:blur(1px)){.panel{background:var(--panel);backdrop-filter:blur(14px)}}
-button,input,select,textarea{font:inherit;color:inherit;background:transparent;border:1px solid var(--border);border-radius:10px;padding:6px 10px}
+button,input,select,textarea{font:inherit;color:inherit;background:transparent;border:2px solid var(--control-border);border-radius:8px;padding:6px 10px}
 button{cursor:pointer}button.primary{background:var(--accent);color:var(--on-accent);border-color:transparent;font-weight:700}
 :focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+/* Tout ce qui se clique se voit : bordure contrastée, ombre décalée façon Pixel Art, survol et enfoncement.
+   « :where » garde ces effets discrets en priorité ; « translate » n’écrase pas le placement des repères de la carte. */
+select{cursor:pointer;background:var(--panel-solid)}
+:where(button:not(.link):not(:disabled),select:not(:disabled)){box-shadow:2px 2px 0 var(--control-shadow)}
+:where(button:not(.link):not(.primary):not([aria-selected=true]):not([aria-current=true]):not(:disabled),select:not(:disabled)):hover{background:color-mix(in srgb,var(--accent) 16%,var(--panel-solid))}
+:where(button:not(.link):not(:disabled)):active{translate:2px 2px;box-shadow:none}
+button:disabled,select:disabled{cursor:default;opacity:.55}
+summary{width:fit-content;padding:6px 10px;border:2px solid var(--control-border);border-radius:8px;cursor:pointer}
+/* Une simple information n’a ni bordure ni couleur de bouton. */
+span.chip,span.chip.accent{border-color:transparent;border-radius:4px;background:color-mix(in srgb,var(--text) 9%,transparent);color:var(--text)}
 option{background:var(--panel-solid);color:var(--text)}::placeholder{color:var(--soft);opacity:1}
 #topbar{position:absolute;left:16px;right:16px;top:12px;height:56px;display:flex;align-items:center;gap:12px;padding:0 14px}
 #logo{width:88px;height:14px;image-rendering:pixelated}.sub{color:var(--soft);font-size:13px}
 .search-wrap{margin-left:auto;position:relative}#search{width:260px}
 #search-results{position:absolute;top:44px;left:0;width:300px;list-style:none;margin:0;padding:6px;max-height:300px;overflow:auto}
-#search-results button{width:100%;text-align:left;border:0}
+#search-results button{width:100%;text-align:left;border:0;box-shadow:none}
 .chip{padding:6px 12px;border-radius:999px;border:1px solid var(--border);font-weight:600;font-size:13px;white-space:nowrap}.chip.accent{background:var(--accent);color:var(--on-accent);border-color:transparent}.chip.soft{color:var(--soft)}#connections{min-width:0;flex-shrink:1;overflow:hidden;text-overflow:ellipsis}
 .icon{width:36px;height:36px;padding:0}
 #settings{position:absolute;right:16px;top:76px;width:300px;padding:14px;display:grid;gap:10px;z-index:6}
@@ -28,12 +38,14 @@ option{background:var(--panel-solid);color:var(--text)}::placeholder{color:var(-
 #missionbar{position:absolute;left:50%;transform:translateX(-50%);bottom:16px;width:min(680px,calc(100vw - 32px));display:flex;gap:8px;padding:10px}
 #missionbar input{flex:1;min-width:0}
 #minimap{position:absolute;right:16px;bottom:16px;width:220px;padding:10px 12px}.mm-head{display:flex;justify-content:space-between;align-items:center;font-size:12px;font-weight:700;color:var(--soft);text-transform:uppercase;letter-spacing:.4px}
-.mm-head button{border:0;padding:0 4px}#minimap-grid{position:relative;height:150px;margin-top:8px}#minimap.collapsed #minimap-grid{display:none}
-.mm-dot{position:absolute;width:22px;height:22px;border-radius:8px;border:2px solid var(--border);transform:translate(-50%,-50%);padding:0}
+.mm-head button{padding:0 6px;box-shadow:none}#minimap-grid{position:relative;height:150px;margin-top:8px}#minimap.collapsed #minimap-grid{display:none}
+.mm-dot{position:absolute;width:22px;height:22px;border-radius:8px;border:2px solid var(--control-border);transform:translate(-50%,-50%);padding:0}
 #minimap-view{position:absolute;border:2px solid var(--accent);border-radius:6px;pointer-events:none}
 .hit{position:absolute;padding:0;margin:0;border:0;background:transparent;cursor:pointer;border-radius:8px}
+/* Zones cliquables transparentes posées sur le dessin (bureaux, place, parcelles) : aucun cadre ni enfoncement. */
+.hit:not(.pill){box-shadow:none;translate:none}
 .hit.agent.match{outline:3px solid var(--accent);outline-offset:2px}.hit.plot:hover{background:rgba(255,255,255,.2)}
-.pill{position:absolute;transform:translate(-50%,-100%);display:flex;gap:8px;align-items:center;padding:6px 10px;width:230px;text-align:left}
+.pill{border:2px solid var(--control-border);position:absolute;transform:translate(-50%,-100%);display:flex;gap:8px;align-items:center;padding:6px 10px;width:230px;text-align:left}
 .pill .sw{width:20px;height:20px;border-radius:7px;flex:none}.pill b{display:block;font-size:14px}.pill small{color:var(--soft);font-size:11px;white-space:nowrap}
 .pill .ini{display:flex;margin-left:auto}.pill .ini span{width:20px;height:20px;margin-left:-6px;border-radius:10px;border:2px solid #fff;background:#ffd58a;color:#2a2a3a;font:700 10px var(--font);display:grid;place-items:center}
 .status-icon{position:absolute;width:30px;height:30px;transform:translate(-50%,-100%);pointer-events:none}
@@ -48,7 +60,7 @@ option{background:var(--panel-solid);color:var(--text)}::placeholder{color:var(-
 .tab:not([aria-selected=true]):hover,#search-results button:hover{background:color-mix(in srgb,var(--text) 8%,transparent)}
 #pop h2{margin:0 28px 4px 0;font-size:18px}#pop h3{margin:14px 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--soft)}
 #pop p,#pop li{margin:0;font-size:13px}#pop ul{margin:0;padding:0;list-style:none;display:grid;gap:4px}
-#pop .x{position:absolute;right:10px;top:10px;border:0}#pop form{display:grid;gap:8px;margin-top:8px}#pop label{display:grid;gap:3px;font-size:12px;color:var(--soft)}
+#pop .x{position:absolute;right:10px;top:10px}#pop form{display:grid;gap:8px;margin-top:8px}#pop label{display:grid;gap:3px;font-size:12px;color:var(--soft)}
 #pop::before{content:"";position:absolute;width:14px;height:14px;background:inherit;border-left:1px solid var(--border);border-bottom:1px solid var(--border);top:28px;left:-8px;transform:rotate(45deg)}
 #pop.right::before{left:auto;right:-8px;transform:rotate(-135deg)}
 .tabs{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}.tab{border-radius:999px;font-size:12px;font-weight:600}.tab[aria-selected=true]{background:var(--accent);color:var(--on-accent);border-color:transparent}
@@ -70,9 +82,11 @@ option{background:var(--panel-solid);color:var(--text)}::placeholder{color:var(-
 .hq{display:grid;gap:10px;align-content:start;overflow:auto;min-height:0;padding-right:2px}
 .hq h2{margin-right:44px}
 .hq-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
-.hq-card{display:grid;gap:4px;align-content:start;text-align:left;padding:10px 12px;border:2px solid color-mix(in srgb,var(--text) 22%,transparent);border-radius:4px;box-shadow:3px 3px 0 color-mix(in srgb,var(--text) 14%,transparent);overflow-wrap:anywhere}
+.hq-card{display:grid;gap:4px;align-content:start;text-align:left;padding:10px 12px;border:2px solid var(--control-border);border-radius:4px;box-shadow:3px 3px 0 color-mix(in srgb,var(--text) 14%,transparent);overflow-wrap:anywhere}
 .hq-card strong{font-size:17px}
 .hq-label{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--soft);font-weight:700}
+/* Seules les cartes qui s’ouvrent (des boutons) ont la bordure et l’ombre d’un bouton. */
+div.hq-card{border-color:color-mix(in srgb,var(--text) 18%,transparent);box-shadow:none}
 .hq-card.tone-warn{border-color:#d9822b}
 .hq-card.tone-unknown{border-style:dashed;box-shadow:none}
 #pop .hq-list{display:grid;gap:8px}
@@ -108,7 +122,7 @@ select,fieldset{color:var(--text)}
 #pop .agent-state{margin:14px 0 8px;font-size:12px;color:var(--soft);flex:none}
 .agent-detail>div:last-child{display:flex;flex-direction:column;min-height:0;flex:1}
 .agent-panel .tabs{flex:none;flex-wrap:nowrap;overflow-x:auto;gap:3px;padding:4px 0 10px;margin:0;border-bottom:1px solid color-mix(in srgb,var(--text) 15%,transparent)}
-.agent-panel .tab{padding:8px 10px;border:0;white-space:nowrap;flex:none;font-size:12px}
+.agent-panel .tab{padding:8px 10px;white-space:nowrap;flex:none;font-size:12px}
 .agent-panel [role=tabpanel]{min-height:0;flex:1;overflow:auto;padding:16px 2px 2px}
 .agent-panel [role=tabpanel]:has(.conversation){display:flex;overflow:hidden;padding:0}
 .conversation{display:flex;flex-direction:column;min-height:0;width:100%;flex:1}
@@ -129,7 +143,7 @@ select,fieldset{color:var(--text)}
 .chat-older{display:block;margin:0 auto 12px;font-size:12px;border-color:color-mix(in srgb,var(--text) 25%,transparent)}
 .chat-older[hidden]{display:none}
 #pop form.chat-composer{display:flex;flex-direction:column;flex:none;gap:8px;margin:0;padding-top:12px;border-top:1px solid color-mix(in srgb,var(--text) 15%,transparent)}
-.chat-composer textarea{width:100%;min-height:78px;max-height:22vh;resize:vertical;background:var(--panel-solid);border-color:color-mix(in srgb,var(--text) 30%,transparent);padding:12px;font-size:14px;line-height:1.5;caret-color:var(--accent)}
+.chat-composer textarea{width:100%;min-height:78px;max-height:22vh;resize:vertical;background:var(--panel-solid);border-color:var(--control-border);padding:12px;font-size:14px;line-height:1.5;caret-color:var(--accent)}
 .chat-composer-actions{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .chat-composer-actions button{padding:10px 18px;min-height:42px;flex:none}
 .chat-key-hint{font-size:10px;color:var(--soft);max-width:25ch}
@@ -322,7 +336,7 @@ button.link{border:0;padding:0;background:none;color:var(--accent);font-weight:7
   #topbar>button:not(#settings-btn):not(#phase-pill){display:none}
   #missionbar,#minimap{display:none}
   #mobile-nav{display:grid;grid-template-columns:repeat(5,1fr);position:fixed;left:0;right:0;bottom:0;z-index:12;padding:4px 4px max(4px,env(safe-area-inset-bottom));border-radius:0;border-width:2px 0 0;background:var(--panel-solid)}
-  #mobile-nav button{white-space:pre-line;min-height:52px;padding:4px 2px;border:2px solid transparent;border-radius:4px;font-size:12px;font-weight:700}
+  #mobile-nav button{white-space:pre-line;min-height:52px;padding:4px 2px;border:2px solid var(--control-border);border-radius:4px;font-size:12px;font-weight:700}
   #mobile-nav button[aria-current=true]{background:var(--accent);color:var(--on-accent);box-shadow:3px 3px 0 rgba(0,0,0,.25)}
   #pop,#pop.agent-panel{bottom:calc(64px + env(safe-area-inset-bottom))}
   #pop.agent-panel,#pop.agent-panel:has(.skills-center),#pop.agent-panel:has(.memory-center){width:100%!important;max-width:100%}
