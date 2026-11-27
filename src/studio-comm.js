@@ -586,7 +586,7 @@ export function createCommStore(db, { engines = null, journalDir = null, device 
     const r = resultOf(id); if (!r) throw bad('Aucun résultat à valider.', 409);
     // Valider rend le résultat réutilisable pour le moteur affiché : ce doit être celui qui l'a produit.
     const made = getRun(r.runId);
-    if (t.provider && made && (made.provider !== t.provider || made.model !== t.model)) throw bad('Ce résultat vient d’un autre moteur : relancez la tâche, ou revenez à son moteur d’origine avant de le valider.', 409);
+    if (t.provider && made?.model && (made.provider !== t.provider || made.model !== t.model)) throw bad('Ce résultat vient d’un autre moteur : relancez la tâche, ou revenez à son moteur d’origine avant de le valider.', 409);
     run("UPDATE comm_results SET verified = 1, level = 'manual', verified_by = 'proprietaire', verification = ? WHERE id = ?", short(`Validé par le propriétaire${note ? ` : ${note}` : ''}`, 400), r.id);
     journal('result', r.id);
     return setTaskState(id, 'done', 'Résultat validé par le propriétaire');
