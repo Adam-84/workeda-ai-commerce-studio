@@ -75,3 +75,48 @@ test('dépassement : confirmation conservée jusqu’à la remise à zéro ; un 
   engines.recordSignals('claude', [{ ...signal({ window: 'seven_day', resetsAt: null }), source: 'local' }]);
   assert.equal(engines.reason(opus), '');
 });
+
+import { createOrchestrator } from '../src/comm-run.js';
+import { createApp } from '../src/app.js';
+
+// Les tests du lanceur utilisent l'horloge réelle : la remise à zéro est dans une heure.
+const soon = () => Math.floor(Date.now() / 1000) + 3600;
+
+test('refus : la tâche retourne en file, essai rendu, et rien ne repart avant la remise à zéro', async () => {
+  const { studio, comm, ids } = setup(); let calls = 0;
+  const orch = createOrchestrator({ studio, profiles: () => profiles, runner: async (o) => { calls += 1; o.onEvent(event({ status: 'rejected', rateLimitType: 'five_hour', resetsAt: soon() })); throw new Error('Limite d’utilisation de Claude atteinte. Réessayez plus tard.'); } });
+  const t = comm.createTask({ assigneeId: ids.lucas, instruction: 'Audit' }).task;
+  orch.pump(); await orch.idle(); orch.pump(); await orch.idle();
+  const after = comm.task(t.id);
+  assert.deepEqual([after.state, after.attempts, calls], ['queued', 0, 1]);
+  assert.match(after.stateNote, /Limite Claude/);
+});
+
+test('dépassement : la tâche en cours se termine, la suivante attend la confirmation', async () => {
+  const { studio, comm, engines, ids } = setup(); let calls = 0;
+  const orch = createOrchestrator({ studio, profiles: () => profiles, runner: async (o) => { calls += 1; o.onEvent(event({ status: 'allowed', rateLimitType: 'overage', resetsAt: soon(), isUsingOverage: true })); return JSON.stringify({ report: 'ok' }); } });
+  const a = comm.createTask({ assigneeId: ids.lucas, instruction: 'Un' }).task;
+  orch.pump(); await orch.idle();
+  const b = comm.createTask({ assigneeId: ids.noah, instruction: 'Deux' }).task;
+  orch.pump(); await orch.idle();
+  assert.deepEqual([comm.task(a.id).state, comm.task(b.id).state, calls], ['done', 'queued', 1]);
+  engines.resume('claude', 'local'); orch.pump(); await orch.idle();
+  assert.equal(comm.task(b.id).state, 'done');
+});
+
+test('API : discussion refusée pendant le blocage, reprise seulement confirmée', async () => {
+  const { studio, ids } = setup();
+  const server = createApp({ studio, publicDir: fileURLToPath(new URL('../public', import.meta.url)), detect: () => true, runClaude: async () => 'ok', agentFiles: { profiles } });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const call = async (method, path, data) => { const r = await fetch(base + path, { method, headers: { 'content-type': 'application/json' }, body: data === undefined ? undefined : JSON.stringify(data) }); return { status: r.status, body: JSON.parse((await r.text()).trim().split('\n').at(-1)) }; };
+  try {
+    studio.engines.recordSignals('claude', [{ status: 'rejected', window: 'five_hour', resetsAt: null, overage: false, source: 'local' }]);
+    await call('POST', `/api/agents/${ids.lucas}/conversation`, { body: 'Bonjour' });
+    assert.equal((await call('POST', `/api/agents/${ids.lucas}/reply`, {})).status, 409);
+    assert.equal((await call('GET', '/api/engines')).body.signals[0].resumable, true);
+    assert.equal((await call('POST', '/api/engines/claude/resume', { source: 'local' })).status, 400);
+    assert.equal((await call('POST', '/api/engines/claude/resume', { source: 'local', confirm: true })).status, 200);
+    assert.equal((await call('POST', `/api/agents/${ids.lucas}/reply`, {})).body.type, 'done');
+  } finally { server.closeAllConnections(); await new Promise((r) => server.close(r)); studio.close(); }
+});

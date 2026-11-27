@@ -220,7 +220,8 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
       return {
         catalog: engines.catalog(engineReason),
         agents: list.map((p) => { const agentId = ids.get(p.slug), effective = engines.resolve(agentId); return { agentId, slug: p.slug, name: p.displayName, fiche: { provider: 'claude', model: p.model }, choice: engines.choice('agent', agentId), effective, unavailable: engineReason(effective) }; }),
-        missions: engines.missionChoices()
+        missions: engines.missionChoices(),
+        signals: engines.signals()
       };
     };
     const required = (d) => { if (!(d && 'engine' in d)) fail(400, 'Moteur requis (null pour revenir au choix par défaut).'); return d.engine; };
@@ -228,7 +229,8 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
     paramRoutes.push(
       ['PUT', /^\/api\/agents\/([^/]+)\/engine$/, (m, d) => { engines.setAgentChoice(decodeURIComponent(m[1]), required(d)); orch?.pump(); return describe(); }],
       ['GET', /^\/api\/missions\/([^/]+)\/engine$/, (m) => engines.missionEngine(decodeURIComponent(m[1]))],
-      ['PUT', /^\/api\/missions\/([^/]+)\/engine$/, (m, d) => engines.setMissionChoice(decodeURIComponent(m[1]), required(d))]
+      ['PUT', /^\/api\/missions\/([^/]+)\/engine$/, (m, d) => engines.setMissionChoice(decodeURIComponent(m[1]), required(d))],
+      ['POST', /^\/api\/engines\/(claude)\/resume$/, (m, d) => { if (d?.confirm !== true) fail(400, 'Confirmation explicite requise.'); engines.resume(m[1], String(d.source ?? 'local')); orch?.pump(); return describe(); }]
     );
   }
   // Integration Center (DSers, 17TRACK) : LECTURE SEULE. Aucune route n'écrit chez DSers, 17TRACK ou Shopify ; aucun secret n'est jamais renvoyé.
@@ -283,7 +285,7 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
   }
   function closeRun(run, seen, error = null) {
     if (!run) return;
-    try { comm.endRun(run.id, { state: error ? 'error' : 'done', error: error?.message ?? null, costUsd: seen.cost, usage: seen.usage, models: seen.models }); } catch { /* la trace manquera ; la réponse reste */ }
+    try { comm.endRun(run.id, { state: error ? 'error' : 'done', error: error?.message ?? null, costUsd: seen.cost, usage: seen.usage, models: seen.models, quota: seen.quota }); } catch { /* la trace manquera ; la réponse reste */ }
   }
   // Lance Claude et diffuse sa réponse ; save(text) l'enregistre même si le panneau a été fermé. lock : une réponse à la fois par clé.
   // La consigne système = fiche + consignes de l'utilisateur pour cet agent ; les options de claude (aucun outil) ne changent jamais.
