@@ -1,38 +1,32 @@
-# Archipel — rapport de livraison (26 novembre 2026)
+# Archipel — rapport de livraison (27 novembre 2026)
 
-Quatre états distincts : **développé** (le code existe), **testé** (tests automatiques ou recette sur données fictives), **déployé** (installé sur un serveur), **opérationnel** (utilisable aujourd'hui avec vos vraies données). Rien n'est déployé : aucun serveur, DNS, compte ou dépense, aucune donnée réelle migrée, aucune fusion dans `main`.
+Quatre états distincts : **développé** (le code existe), **testé** (tests automatiques ou recette sur données fictives), **déployé** (installé sur un serveur), **opérationnel** (utilisable aujourd'hui avec vos vraies données). Rien n'est déployé : aucun serveur, DNS, compte ni dépense. Le code décrit ici est dans `main` (demandes de fusion 13 à 20) ; la base réelle de l'ordinateur principal a été migrée, chaque fois après sauvegarde. Suite automatique sur `main` (`d023e0a`) : 636 tests réussis le 27/11/2026.
 
 | Domaine | Développé | Testé | Déployé | Opérationnel |
 | --- | --- | --- | --- | --- |
 | Phases 1 à 6 et 8 (agents, Skills, mémoire, communications, Shopify en lecture, intégrations, applications) | Oui, dans `main` | Suite automatique | Non | En local |
 | Phase 7, runner Codex | Reporté (branches `codex-runner`, `pal-hardening`) | Isolation non démontrée | Non | Non, désactivé |
-| Choix du moteur par agent ou mission (Claude : opus, sonnet, haiku) | Oui, dans `main` (PR 18) | Tests à runners **simulés** ; choix de Haiku vérifié sur un appel réel le 27/11/2026 ; sélecteurs essayés à 375 et 800 px sur base temporaire | Non | En local ; mode central non essayé en réel ; Codex désactivé |
-| Contrôles visibles : bordures contrastées, information distincte des boutons, moteur IA en haut du profil | Oui, branche `feat/visible-controls` | Test de contraste sur les quatre thèmes ; écrans vus à 375 et 1100 px sur base temporaire | Non | Non : non fusionné ; lecteur d’écran et appareil réel non essayés |
-| Quota observé chez Claude, attente après refus, confirmation après dépense supplémentaire | Oui, branche `feat/engine-quota` | Événements **simulés** ; écrans vus à 375 et 1100 px sur base temporaire | Non | Non : non fusionné ; événement réel jamais observé |
-| Comptes IA : toutes les exécutions, modèle constaté, coût inconnu distinct de zéro | Oui, dans `main` (PR 16) | Tests à runners **simulés** ; un appel réel de discussion vérifié le 27/11/2026 ; activité des communications vue à 375, 800 et 1366 px sur base temporaire | Non | En local ; tâches et mode central non essayés en réel |
-| Phase 9, automatisations | Oui | Suite automatique, recette partielle | Non | En local après fusion de la PR 13 |
+| Choix du moteur par agent ou mission (Claude : opus, sonnet, haiku) | Oui, dans `main` (PR 18) | Tests à runners **simulés** ; Opus et Haiku observés sur des appels réels de discussion ; sélecteurs essayés à 375 et 800 px sur base temporaire | Non | En local ; Sonnet choisi explicitement et mode central non essayés en réel ; Codex désactivé |
+| Contrôles visibles : bordures contrastées, information distincte des boutons, moteur IA en haut du profil | Oui, dans `main` (PR 19) | Test de contraste sur les quatre thèmes ; écrans vus à 375 et 1100 px sur base temporaire ; affichage confirmé par le propriétaire | Non | En local ; lecteur d’écran et appareil réel non essayés |
+| Quota observé chez Claude, attente après refus, confirmation après dépense supplémentaire | Oui, dans `main` (PR 20) | Événements **simulés** ; un relevé **réel** observé le 27/11/2026 avec Claude Code 2.1.101 (fenêtre de 5 h, autorisé, remise à zéro, sans taux) ; écrans vus à 375 et 1100 px | Non | En local ; taux d’utilisation, refus, dépense supplémentaire et mode central jamais observés en réel |
+| Comptes IA : toutes les exécutions, modèle constaté, coût inconnu distinct de zéro | Oui, dans `main` (PR 16) | Tests à runners **simulés** ; appels réels de discussion vérifiés le 27/11/2026 ; activité des communications vue à 375, 800 et 1366 px sur base temporaire | Non | En local ; tâches et mode central non essayés en réel ; jetons de cache non additionnés |
+| Phase 9, automatisations | Oui, dans `main` | Suite automatique, recette partielle | Non | En local |
 | Phase 10, serveur central, authentification, sauvegardes | Oui | Suite automatique ; contenu d'image simulé et démarré sans Docker | Non | Non |
 | Phase 10, workers Claude | Oui | Exécuteurs **simulés** seulement | Non | Non : aucun appel réel ; conditions fournisseur à confirmer |
 | Phase 10, conteneur Docker | Configuration écrite | **Jamais construit** (moteur Docker arrêté) | Non | Non |
-| Migration des bases des deux PC | Aperçu, comparaison, sauvegarde, restauration ; pas de fusion | Bases temporaires | Non | Non, votre accord requis |
+| Regroupement des bases des deux PC | Aperçu, comparaison, sauvegarde, restauration ; pas de fusion | Bases temporaires | Non | Non, votre accord requis |
 | Phase 11, interface mobile et PWA | Oui | Tests Node ; largeurs 375, 800 et 1366 px dans le navigateur intégré | Non | En local ; installation mobile après HTTPS |
 | Notifications | Alertes locales quand l'application est ouverte | Fonctions pures ; affichage système non vérifié | Non | Partiel : pas de Web Push |
 
 Non vérifiés : appareil Android ou iOS réel, lecteur d'écran, charge, Caddy, TLS.
 
-## Branches et ordre de fusion
+## Branches
 
-Chaque branche contient la précédente. Relire et fusionner dans cet ordre, après votre accord :
-
-1. `feat/automation-system` → `main` ([PR 13](https://github.com/Adam-84/workeda-ai-commerce-studio/pull/13), brouillon) ;
-2. `feat/cloud-foundation` → `main` ([ouvrir la PR](https://github.com/Adam-84/workeda-ai-commerce-studio/compare/feat/automation-system...feat/cloud-foundation?expand=1), base `feat/automation-system` tant que la PR 13 n'est pas fusionnée) ;
-3. `feat/mobile-pwa` → `main` ([ouvrir la PR](https://github.com/Adam-84/workeda-ai-commerce-studio/compare/feat/cloud-foundation...feat/mobile-pwa?expand=1), base `feat/cloud-foundation`).
-
-Descriptions prêtes à coller : [PR-PHASES-10-11.md](PR-PHASES-10-11.md).
+Les branches des phases 9 à 11 et du moteur IA sont fusionnées dans `main`. Toute nouvelle branche attend votre accord avant fusion. Descriptions des demandes des phases 10 et 11, pour mémoire : [PR-PHASES-10-11.md](PR-PHASES-10-11.md).
 
 ## Installation et utilisation quotidienne
 
-**Local.** Après récupération de ces branches, lancer une fois `npm ci` (la Phase 9 ajoute une dépendance), puis `start.bat` ou `npm start`, et ouvrir `http://localhost:4318`. Au quotidien : « Tableau de bord » pour les validations et l'état ; Comms pour les résultats à vérifier ; Automations pour les calendriers. Les agents ne travaillent que sur demande ou règle activée, et seulement tant que l'ordinateur est allumé.
+**Local.** Après récupération de `main`, lancer `npm ci` si les dépendances ont changé, puis `start.bat` ou `npm start`, et ouvrir `http://localhost:4318`. Au quotidien : « Tableau de bord » pour les validations, l'état et le quota observé ; Comms pour les résultats à vérifier ; Automations pour les calendriers. Les agents ne travaillent que sur demande ou règle activée, et seulement tant que l'ordinateur est allumé. Le moteur IA d'un agent se choisit en haut de son onglet Profil.
 
 **Central.** Suivre [CLOUD.md](CLOUD.md) (installation, configuration, arrêt général, sauvegardes, mise à jour, retour arrière), [HOSTING.md](HOSTING.md) (coûts), [WORKERS.md](WORKERS.md) (moteurs et conditions) et [DATABASE-TRANSFER.md](DATABASE-TRANSFER.md) (bases).
 
@@ -60,5 +54,5 @@ Local : sauvegarder le dossier `data/`, revenir au commit précédent, relancer 
 1. Relire et autoriser les fusions.
 2. Confirmer auprès d'Anthropic l'usage d'un abonnement personnel par un worker, ou approuver un coût d'API.
 3. Choisir un hébergeur et autoriser la dépense, le DNS et l'exposition.
-4. Autoriser la migration des données réelles, après aperçu.
+4. Autoriser le regroupement des bases des deux PC ou leur transfert vers un serveur, après aperçu.
 5. Décider si le dépôt GitHub doit rester public.
