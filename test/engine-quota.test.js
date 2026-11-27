@@ -180,3 +180,16 @@ test('écran : inconnu sans relevé ou relevé périmé, jamais zéro', () => {
   assert.equal(quotas({ signals: [{ ...base, blocking: 'x' }] }).value, 'Claude en attente');
   assert.equal(quotas({ signals: [{ ...base, status: 'allowed_warning' }] }).tone, 'warn');
 });
+
+test('écran : carte courte, relevé le plus important d’abord, dépassement et reprise dits simplement', () => {
+  const base = { provider: 'claude', source: 'local', window: 'five_hour', status: 'allowed', utilization: 0.4, resetsAt: later, overage: false, observedAt: past, stale: false, blocking: '' };
+  const over = { ...base, window: 'overage', utilization: null, overage: true };
+  assert.match(signalLine(over), /dépense supplémentaire : en cours/);
+  assert.doesNotMatch(signalLine(over), /autorisé/);
+  assert.match(signalLine({ ...over, confirmedUntil: later }), /reprise confirmée jusqu’au/);
+  assert.doesNotMatch(signalLine({ ...over, confirmedUntil: later, blocking: 'x' }), /reprise confirmée/);
+  const card = buildDashboard({ engines: { signals: [base, { ...over, blocking: 'x' }] }, usage: { quota: { remaining: 59, runsPerDay: 60 } } }).find((c) => c.id === 'quotas');
+  assert.match(card.detail, /^dépense supplémentaire : en cours/);
+  assert.match(card.detail, /1 autre relevé dans Comms/);
+  assert.ok(card.detail.length < 300, `carte trop longue : ${card.detail.length} caractères`);
+});

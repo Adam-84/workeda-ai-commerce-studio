@@ -1,6 +1,6 @@
 // public/dashboard-view.js — modèle du tableau de bord (fonction pure, testée dans Node).
 // Règle : une donnée absente est dite « Indisponible » ou « Inconnu », jamais remplacée par zéro.
-import { signalLine } from './engine-view.js';
+import { signalShort } from './engine-view.js';
 
 const plural = (n, one, many = `${one}s`) => `${n} ${n > 1 ? many : one}`;
 const card = (id, label, value, detail = '', tone = 'ok', open = null) => ({ id, label, value, detail, tone, open });
@@ -49,7 +49,9 @@ export function buildDashboard({ agents, missions, notifications, memoryPending,
   if (!current.length) cards.push(card('quotas', 'Quotas fournisseurs', 'Inconnu', `Les abonnements ne communiquent pas leur solde à Archipel.${limit}`, 'unknown'));
   else {
     const held = current.some((s) => s.blocking), near = current.some((s) => s.status === 'allowed_warning');
-    cards.push(card('quotas', 'Quotas fournisseurs', held ? 'Claude en attente' : near ? 'Claude proche de la limite' : 'Claude autorisé', `${current.map(signalLine).join(' ; ')}.${limit}`, held || near ? 'warn' : 'ok', 'comm'));
+    const first = current.find((s) => s.blocking) ?? current.find((s) => s.status === 'allowed_warning') ?? current[0];
+    const others = current.length > 1 ? ` ${plural(current.length - 1, 'autre relevé', 'autres relevés')} dans Comms, onglet Activité.` : '';
+    cards.push(card('quotas', 'Quotas fournisseurs', held ? 'Claude en attente' : near ? 'Claude proche de la limite' : 'Claude autorisé', `${signalShort(first)}.${others}${limit}`, held || near ? 'warn' : 'ok', 'comm'));
   }
 
   if (integrations) {
