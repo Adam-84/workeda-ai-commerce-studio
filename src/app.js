@@ -60,7 +60,7 @@ function assertLocalRequest(req, { checkOrigin = true } = {}) {
   }
 }
 
-export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPresent, runClaude = realClaude, agentFiles: { profiles = [], warnings = [] } = {}, pumpEveryMs = 0, authorizeRequest = assertLocalRequest, canRun = () => true, agentReady = () => true }) {
+export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPresent, runClaude = realClaude, agentFiles: { profiles = [], warnings = [] } = {}, pumpEveryMs = 0, authorizeRequest = assertLocalRequest, canRun = () => true, engineReason = (engine) => studio.engines?.reason(engine) ?? '' }) {
   const assertLocalWrite = authorizeRequest;
   // La détection lance un processus synchrone : on garde le résultat quelques secondes.
   const seen = new Map();
@@ -177,7 +177,7 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
   let orch = null;
   if (comm) {
     const id = (m, i = 1) => decodeURIComponent(m[i]);
-    const delegationInput = (d = {}) => Object.fromEntries(['assigneeId', 'instruction', 'title', 'missionId', 'parentTaskId', 'dependsOn', 'dueAt', 'allowWeb', 'requiresSources', 'requiresApproval', 'priority', 'forceFresh', 'withCatalog', 'withIntegrations', 'budgetUsd'].filter((k) => d[k] !== undefined).map((k) => [k, d[k]]));
+    const delegationInput = (d = {}) => Object.fromEntries(['assigneeId', 'instruction', 'title', 'missionId', 'parentTaskId', 'dependsOn', 'dueAt', 'allowWeb', 'requiresSources', 'requiresApproval', 'priority', 'forceFresh', 'withCatalog', 'withIntegrations', 'budgetUsd', 'engine'].filter((k) => d[k] !== undefined).map((k) => [k, d[k]]));
     Object.assign(routes, {
       'GET /api/comm/status': () => ({ ...comm.status(), maxActive: orch.activity().maxActive, engines: { claudeCode: detect('claude'), codexCli: detect('codex') } }),
       'GET /api/comm/check': () => comm.check(),
@@ -203,12 +203,32 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
       ['POST', /^\/api\/comm\/threads\/([^/]+)\/messages$/, (m, d) => comm.postMessage(id(m), { kind: ['message', 'decision'].includes(d?.kind) ? d.kind : 'message', body: d?.body, refs: d?.refs }, { type: 'user' })],
       ['POST', /^\/api\/comm\/threads\/([^/]+)\/reply$/, (m, d) => orch.replyInThread(id(m), d?.agentId)],
       ['GET', /^\/api\/comm\/tasks\/([^/]+)$/, (m) => { const task = comm.task(id(m)); return { task, results: comm.results(task.id), dependsOn: task.dependsOn.map((t) => comm.task(t)), children: comm.listTasks({ rootTaskId: task.rootTaskId }).filter((t) => t.parentTaskId === task.id) }; }],
-      ['POST', /^\/api\/comm\/tasks\/([^/]+)\/(approve|cancel|retry|verify|adopt|budget)$/, (m, d) => {
+      ['POST', /^\/api\/comm\/tasks\/([^/]+)\/(approve|cancel|retry|verify|adopt|budget|engine)$/, (m, d) => {
         const action = m[2], tid = id(m);
-        const out = action === 'approve' ? comm.approveTask(tid) : action === 'cancel' ? comm.cancelTask(tid, typeof d?.reason === 'string' && d.reason.trim() ? d.reason.trim().slice(0, 200) : undefined) : action === 'retry' ? comm.retryTask(tid) : action === 'adopt' ? comm.adoptTask(tid) : action === 'budget' ? comm.setBudget(tid, d?.usd) : comm.verifyTask(tid, typeof d?.note === 'string' ? d.note.slice(0, 300) : '');
+        if (action === 'engine' && !(d && 'engine' in d)) fail(400, 'Moteur requis (null pour revenir au choix par défaut).');
+        const out = action === 'approve' ? comm.approveTask(tid) : action === 'cancel' ? comm.cancelTask(tid, typeof d?.reason === 'string' && d.reason.trim() ? d.reason.trim().slice(0, 200) : undefined) : action === 'retry' ? comm.retryTask(tid) : action === 'adopt' ? comm.adoptTask(tid) : action === 'budget' ? comm.setBudget(tid, d?.usd) : action === 'engine' ? comm.setTaskEngine(tid, d.engine) : comm.verifyTask(tid, typeof d?.note === 'string' ? d.note.slice(0, 300) : '');
         orch.pump();
         return out;
       }]
+    );
+  }
+  // Moteur IA : choix du propriétaire seulement. Un agent n'a aucune route ni aucun champ pour en changer.
+  if (studio.engines) {
+    const engines = studio.engines;
+    const describe = () => {
+      const { ids, list } = linked();
+      return {
+        catalog: engines.catalog(engineReason),
+        agents: list.map((p) => { const agentId = ids.get(p.slug), effective = engines.resolve(agentId); return { agentId, slug: p.slug, name: p.displayName, fiche: { provider: 'claude', model: p.model }, choice: engines.choice('agent', agentId), effective, unavailable: engineReason(effective) }; }),
+        missions: engines.missionChoices()
+      };
+    };
+    const required = (d) => { if (!(d && 'engine' in d)) fail(400, 'Moteur requis (null pour revenir au choix par défaut).'); return d.engine; };
+    routes['GET /api/engines'] = describe;
+    paramRoutes.push(
+      ['PUT', /^\/api\/agents\/([^/]+)\/engine$/, (m, d) => { engines.setAgentChoice(decodeURIComponent(m[1]), required(d)); orch?.pump(); return describe(); }],
+      ['GET', /^\/api\/missions\/([^/]+)\/engine$/, (m) => engines.missionEngine(decodeURIComponent(m[1]))],
+      ['PUT', /^\/api\/missions\/([^/]+)\/engine$/, (m, d) => engines.setMissionChoice(decodeURIComponent(m[1]), required(d))]
     );
   }
   // Integration Center (DSers, 17TRACK) : LECTURE SEULE. Aucune route n'écrit chez DSers, 17TRACK ou Shopify ; aucun secret n'est jamais renvoyé.
@@ -258,8 +278,8 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
   const profileOf = (agentId) => { const { ids, list } = linked(); return list.find((p) => ids.get(p.slug) === agentId) ?? fail(403, 'Cet agent n’a pas de fiche dans .claude/agents : il ne peut pas répondre.'); };
   const namer = () => { const names = new Map(studio.listAgents().map((a) => [a.id, a.name])); return (id) => names.get(id) ?? 'Agent'; };
   // Chaque appel immédiat laisse une exécution locale ; un échec d'écriture n'empêche jamais la réponse.
-  function openRun(agentId, kind, model) {
-    try { return comm?.startRun({ agentId, kind, model }) ?? null; } catch { return null; }
+  function openRun(agentId, kind, engine) {
+    try { return comm?.startRun({ agentId, kind, model: engine.model, provider: engine.provider }) ?? null; } catch { return null; }
   }
   function closeRun(run, seen, error = null) {
     if (!run) return;
@@ -267,16 +287,18 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
   }
   // Lance Claude et diffuse sa réponse ; save(text) l'enregistre même si le panneau a été fermé. lock : une réponse à la fois par clé.
   // La consigne système = fiche + consignes de l'utilisateur pour cet agent ; les options de claude (aucun outil) ne changent jamais.
-  async function stream(res, lock, busy, profile, agentId, kind, prompt, save) {
+  async function stream(res, lock, busy, profile, agentId, kind, missionId, prompt, save) {
     if (replying.has(lock)) fail(409, busy);
+    const engine = studio.engines?.resolve(agentId, missionId) ?? { provider: 'claude', model: profile.model };
+    const unavailable = engineReason(engine); if (unavailable) fail(409, unavailable);
     replying.add(lock);
     res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store' });
     const line = (data) => { if (!res.writableEnded) res.write(JSON.stringify(data) + '\n'); };
-    const seen = observeTools(), run = openRun(agentId, kind, profile.model);
+    const seen = observeTools(), run = openRun(agentId, kind, engine);
     try {
-      const text = await runClaude({ model: profile.model, system: systemPrompt(profile, studio.getInstructions(agentId)), prompt, onText: (t) => line({ type: 'text', text: t }), onEvent: seen.feed });
+      const text = await runClaude({ model: engine.model, system: systemPrompt(profile, studio.getInstructions(agentId)), prompt, onText: (t) => line({ type: 'text', text: t }), onEvent: seen.feed });
       closeRun(run, seen.state);
-      const check = checkModel(profile.model, seen.state.models);
+      const check = checkModel(engine.model, seen.state.models);
       line({ type: 'done', message: save(text), ...(check.status === 'mismatch' ? { warning: mismatchText(check) } : {}) });
     } catch (error) { closeRun(run, seen.state, error); line({ type: 'error', error: error.message }); }
     finally { replying.delete(lock); res.end(); }
@@ -294,7 +316,7 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
     if (items.at(-1)?.senderType !== 'user') fail(400, 'Aucun message en attente de réponse.');
     const nameOf = namer(), context = missionsPrompt(studio.listMissions(), agentId, nameOf, (id) => studio.listMemory(id), (id) => studio.currentPlan(id));
     const recalled = memoryFor(agentId, { query: items.filter((m) => m.senderType === 'user').slice(-3).map((m) => m.body).join('\n') });
-    await stream(res, agentId, `${profile.displayName} répond déjà à un message.`, profile, agentId, 'chat', `${recalled}${context}\n\n${conversationPrompt(items, nameOf, profile.displayName)}`, (text) => studio.saveAgentReply(agentId, text, 'claude'));
+    await stream(res, agentId, `${profile.displayName} répond déjà à un message.`, profile, agentId, 'chat', null, `${recalled}${context}\n\n${conversationPrompt(items, nameOf, profile.displayName)}`, (text) => studio.saveAgentReply(agentId, text, 'claude'));
   }
   // Fil d'équipe : seul un membre désigné (responsable ou collaborateur) parle, une réponse à la fois par mission.
   // Appel explicite : le responsable propose (ou révise) un plan, enregistré comme nouvelle version non validée.
@@ -308,7 +330,7 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
     const members = [mission.assignedTo, ...mission.collaborators], nameOf = namer();
     const context = missionsPrompt([mission], mission.assignedTo, nameOf, (id) => studio.listMemory(id), (id) => studio.currentPlan(id));
     const recalled = memoryFor(members, { missionId, query: `${mission.title} ${mission.objective ?? ''} ${revision}` }); // le plan est lu par toute l'équipe
-    await stream(res, `mission:${missionId}`, 'Un agent travaille déjà sur cette mission.', profile, mission.assignedTo, 'plan',
+    await stream(res, `mission:${missionId}`, 'Un agent travaille déjà sur cette mission.', profile, mission.assignedTo, 'plan', missionId,
       `${recalled}${context}\n\n${planRequestPrompt(mission, studio.listDiscussion(missionId).slice(-50), nameOf, members, revision)}`,
       (text) => studio.savePlan(missionId, parsePlan(text, studio.listAgents()), { origin: 'ai', authorAgentId: mission.assignedTo, revisionNote: revision }));
   }
@@ -323,7 +345,7 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
     const nameOf = namer(), context = missionsPrompt([mission], agentId, nameOf, (id) => studio.listMemory(id), (id) => studio.currentPlan(id));
     // Le fil est lu par tous ses membres : seul le souvenir que TOUS peuvent lire entre dans la réponse (rien de privé ne fuite).
     const recalled = memoryFor(members, { missionId, query: `${mission.title} ${mission.objective ?? ''} ${items.slice(-3).map((m) => m.body).join(' ')}` });
-    await stream(res, `mission:${missionId}`, 'Un agent répond déjà dans ce fil.', profile, agentId, 'team', `${recalled}${context}\n\n${teamPrompt(mission, items, nameOf, profile.displayName, members)}`, (text) => studio.saveDiscussionReply(missionId, agentId, text, 'claude'));
+    await stream(res, `mission:${missionId}`, 'Un agent répond déjà dans ce fil.', profile, agentId, 'team', missionId, `${recalled}${context}\n\n${teamPrompt(mission, items, nameOf, profile.displayName, members)}`, (text) => studio.saveDiscussionReply(missionId, agentId, text, 'claude'));
   }
   // Fin de mission : l'agent (responsable ou collaborateur) PROPOSE des souvenirs, enregistrés « en attente » ; le propriétaire valide.
   async function proposeMemory(missionId, input, res) {
@@ -335,7 +357,7 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
     const profile = profileOf(agentId), nameOf = namer();
     const notes = studio.listMemory(missionId).filter((n) => !n.archivedAt).slice(0, 20);
     const recalled = memoryFor(agentId, { missionId, query: `${mission.title} ${mission.objective ?? ''}` });
-    await stream(res, `mission:${missionId}`, 'Un agent travaille déjà sur cette mission.', profile, agentId, 'memory',
+    await stream(res, `mission:${missionId}`, 'Un agent travaille déjà sur cette mission.', profile, agentId, 'memory', missionId,
       `${recalled}${memoryProposalPrompt(mission, studio.listDiscussion(missionId).slice(-50), nameOf, notes, studio.currentPlan(missionId), profile.displayName)}`,
       (text) => memory.propose(agentId, parseMemoryProposals(text), { missionId }));
   }
@@ -343,7 +365,7 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
   if (automations) {
     const a = automations;
     Object.assign(routes, {
-      'GET /api/automations': () => ({ status: a.status(), rules: a.list().map((d) => ({ ...d, availability: readAutomationSources(studio, d).missing })), agents: linked().list.map((p) => ({ slug: p.slug, name: p.displayName })), templates: AUTOMATION_TEMPLATES, events: EVENTS }),
+      'GET /api/automations': () => ({ status: a.status(), rules: a.list().map((d) => ({ ...d, availability: readAutomationSources(studio, d).missing, engine: studio.engines?.resolve(studio.comm?.agentOfSlug(d.agentSlug)) ?? null })), agents: linked().list.map((p) => ({ slug: p.slug, name: p.displayName })), templates: AUTOMATION_TEMPLATES, events: EVENTS }),
       'POST /api/automations': (d) => a.save(d),
       'GET /api/automations/export': () => a.exportDefinitions(),
       'POST /api/automations/import': (d) => a.importDefinitions(d?.definitions),
@@ -360,7 +382,7 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
       ['POST', /^\/api\/automations\/([a-zA-Z0-9-]+)\/run$/, (m,d) => a.manual(m[1],d)]
     );
   }
-  if (comm) orch = createOrchestrator({ studio, profiles: () => profiles, runner: runClaude, memoryFor, pumpEveryMs, canRun, agentReady });
+  if (comm) orch = createOrchestrator({ studio, profiles: () => profiles, runner: runClaude, memoryFor, pumpEveryMs, canRun, engineReason });
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://localhost');

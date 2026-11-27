@@ -336,3 +336,6 @@ button.link{border:0;padding:0;background:none;color:var(--accent);font-weight:7
   .integrations-center select,.integrations-center input{max-width:100%}
   .net-banner{top:calc(72px + env(safe-area-inset-top))}
 }
+/* Les listes à libellés longs (agents, moteurs désactivés) ne doivent pas élargir les panneaux sur téléphone. */
+.comm-center .memory-form, .comm-center .memory-form label:not(.check) { grid-template-columns: minmax(0, 1fr); }
+.comm-center .memory-form select, .engine-select { width: 100%; min-width: 0; }

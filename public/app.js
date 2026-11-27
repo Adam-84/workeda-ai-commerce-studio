@@ -19,6 +19,7 @@ import { homeView, teamView, missionsView, moreView, alertsView, startAlerts } f
 import { missionsTab } from './missions.js';
 import { paintCommButtons } from './comm-view.js';
 import { instructionsBlock } from './instructions.js';
+import { SOURCES, engineLabel, engineFromValue, optionNodes, affectedAutomations } from './engine-view.js';
 
 const $ = (s) => document.querySelector(s);
 // Session du serveur central expirée ou révoquée : retour à la page de connexion (jamais émis en mode local).
@@ -429,11 +430,35 @@ function islandEditor(id, back) {
 
 // Recentre la carte sur un agent puis ouvre sa fenêtre (recherche, boutons « Collabore avec »).
 function focusAgent(id) { const p = state.placed.find((x) => x.agent.id === id); if (p) centerOnWorld(p.x, p.y - 40); show('agent', id); }
+// Moteur de l'agent : le fichier de la fiche ne change pas, le choix est enregistré dans le Studio.
+function engineBlock(p) {
+  const box = h('div', { class: 'engine-block' }, h('span', { class: 'chip accent' }, `Modèle ${modelLabel(p.model)}`));
+  const err = h('p', { class: 'err', role: 'alert' });
+  async function load() {
+    const data = await get('/api/engines'), me = data.agents.find((a) => a.agentId === p.agentId);
+    if (!me) return;
+    const select = h('select', { class: 'engine-select', 'aria-label': `Moteur IA de ${p.displayName}` }, optionNodes(h, data.catalog, me.choice, `Fiche (${engineLabel(me.fiche)})`));
+    select.addEventListener('change', async () => {
+      err.textContent = '';
+      try {
+        const names = affectedAutomations((await get('/api/automations')).rules, p.slug);
+        if (names.length && !confirm(`Ces automatisations actives utiliseront ce moteur : ${names.join(', ')}. Continuer ?`)) return await load();
+        await send('PUT', `/api/agents/${encodeURIComponent(p.agentId)}/engine`, { engine: engineFromValue(select.value) });
+        announce('Moteur enregistré'); await load();
+      } catch (x) { err.textContent = x.message; }
+    });
+    box.replaceChildren(...[h('span', { class: 'chip accent' }, `Moteur ${engineLabel(me.effective)} · ${SOURCES[me.effective.source]}`),
+      h('label', {}, 'Moteur IA', select), me.unavailable ? h('p', { class: 'err' }, me.unavailable) : null,
+      h('p', { class: 'note' }, 'Vaut pour les prochaines demandes. Les tâches déjà créées gardent leur moteur. Un choix de mission passe avant celui-ci.'), err].filter(Boolean));
+  }
+  load().catch((x) => { err.textContent = x.message; box.append(err); });
+  return box;
+}
 function profileBlock(p) {
   const team = colleagues(p, state.agents);
   return h('div', { class: 'profile' },
     h('p', { class: 'metier' }, p.sections.metier),
-    h('span', { class: 'chip accent' }, `Modèle ${modelLabel(p.model)}`),
+    engineBlock(p),
     p.connectors.length > 0 && [h('h3', {}, 'Outils externes'), h('ul', {}, p.connectors.map((c) => h('li', {}, connectorText(c))))],
     team.length > 0 && [h('h3', {}, 'Collabore avec'), h('div', { class: 'colleagues' }, team.map((c) => (c.agentId ? h('button', { type: 'button', 'aria-label': `Voir ${c.label}`, onclick: () => focusAgent(c.agentId) }, c.label) : h('span', { class: 'chip soft' }, c.label))))],
     h('h3', {}, 'Livrable attendu'), h('p', { class: 'pre' }, p.sections.livrable),

@@ -14,7 +14,7 @@ import {
   THREAD_KINDS, MESSAGE_KINDS, DELIVERY_STATES, TASK_STATES, TASK_KINDS, TASK_TRANSITIONS, OPEN_STATES, MISSION_STATE, LIMITS, WEB_TOOLS,
   bad, ID_RE, isoOf, clean, assertNoSecret, normalizeRefs, fingerprint, parseJsonList, normUrl, COUNTED_RUN_KINDS, LOCAL_RUN_KINDS
 } from './comm-core.js';
-import { DEFAULT_PROVIDER, isModelId, isProviderId, checkModel } from './engines.js';
+import { DEFAULT_PROVIDER, isModelId, isProviderId, checkModel, engineId, parseEngine } from './engines.js';
 import { findSecret } from './memory-core.js';
 import { INTEGRATION_IDS } from './integrations-core.js';
 
@@ -70,6 +70,12 @@ export const COMM_MIGRATIONS = [{
   // Seul Claude a jamais été branché : les exécutions antérieures lui sont rattachées.
   up: `ALTER TABLE comm_runs ADD COLUMN provider TEXT; ALTER TABLE comm_runs ADD COLUMN observed_models TEXT NOT NULL DEFAULT '[]'; UPDATE comm_runs SET provider = 'claude' WHERE provider IS NULL;`,
   down: `ALTER TABLE comm_runs DROP COLUMN observed_models; ALTER TABLE comm_runs DROP COLUMN provider;`
+}, {
+  version: 6,
+  name: 'choix du moteur par agent, mission et tâche',
+  up: `CREATE TABLE IF NOT EXISTS engine_choices (scope TEXT NOT NULL, ref TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (scope, ref));
+    ALTER TABLE comm_tasks ADD COLUMN provider TEXT; ALTER TABLE comm_tasks ADD COLUMN model TEXT; ALTER TABLE comm_tasks ADD COLUMN engine_source TEXT;`,
+  down: `ALTER TABLE comm_tasks DROP COLUMN engine_source; ALTER TABLE comm_tasks DROP COLUMN model; ALTER TABLE comm_tasks DROP COLUMN provider; DROP TABLE IF EXISTS engine_choices;`
 }];
 export const COMM_SCHEMA_VERSION = COMM_MIGRATIONS.at(-1).version;
 
@@ -80,7 +86,7 @@ const cmpVersion = (a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.rev - b.rev
 const notFound = (what) => bad(`${what} introuvable.`, 404);
 const short = (s, n) => { s = scrubContacts(s); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
 
-export function createCommStore(db, { journalDir = null, device = 'inconnu', memory = null, missions, emit = () => null, backup = () => null, clock = () => new Date().toISOString(), readOnly = false } = {}) {
+export function createCommStore(db, { engines = null, journalDir = null, device = 'inconnu', memory = null, missions, emit = () => null, backup = () => null, clock = () => new Date().toISOString(), readOnly = false } = {}) {
   const get = (sql, ...a) => db.prepare(sql).get(...a);
   const all = (sql, ...a) => db.prepare(sql).all(...a);
   const run = (sql, ...a) => db.prepare(sql).run(...a);
@@ -152,7 +158,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     task: (id) => {
       const t = get('SELECT * FROM comm_tasks WHERE id = ?', id); if (!t) return null;
       const m = get('SELECT * FROM missions WHERE id = ?', t.mission_id);
-      return { id: t.id, automationKey: t.automation_key ?? null, missionId: t.mission_id, rootTaskId: t.root_task_id, parentTaskId: t.parent_task_id, threadId: t.thread_id, kind: t.kind, title: redactAgentAsk(t.id, t.title), instruction: redactAgentAsk(t.id, t.instruction), requestedBy: t.requested_by === 'user' ? 'user' : slugOf(t.requested_by), assignee: slugOf(t.assignee_id), depth: t.depth, state: t.state, stateNote: t.state_note ? redactFor(t.id, t.state_note) : t.state_note, dependsOn: parseJsonList(t.depends_on), allowWeb: Boolean(t.allow_web), requiresSources: Boolean(t.requires_sources), withCatalog: Boolean(t.with_catalog), withIntegrations: parseJsonList(t.with_integrations), budgetUsd: t.budget_usd ?? null, dedupeKey: t.dedupe_key, dueAt: t.due_at, notBefore: t.not_before, attempts: t.attempts, maxAttempts: t.max_attempts, device: t.device, createdAt: t.created_at, updatedAt: t.updated_at, startedAt: t.started_at, finishedAt: t.finished_at,
+      return { id: t.id, automationKey: t.automation_key ?? null, missionId: t.mission_id, rootTaskId: t.root_task_id, parentTaskId: t.parent_task_id, threadId: t.thread_id, kind: t.kind, title: redactAgentAsk(t.id, t.title), instruction: redactAgentAsk(t.id, t.instruction), requestedBy: t.requested_by === 'user' ? 'user' : slugOf(t.requested_by), assignee: slugOf(t.assignee_id), depth: t.depth, state: t.state, stateNote: t.state_note ? redactFor(t.id, t.state_note) : t.state_note, dependsOn: parseJsonList(t.depends_on), allowWeb: Boolean(t.allow_web), requiresSources: Boolean(t.requires_sources), withCatalog: Boolean(t.with_catalog), withIntegrations: parseJsonList(t.with_integrations), provider: t.provider ?? null, model: t.model ?? null, engineSource: t.engine_source ?? null, budgetUsd: t.budget_usd ?? null, dedupeKey: t.dedupe_key, dueAt: t.due_at, notBefore: t.not_before, attempts: t.attempts, maxAttempts: t.max_attempts, device: t.device, createdAt: t.created_at, updatedAt: t.updated_at, startedAt: t.started_at, finishedAt: t.finished_at,
         mission: m && { id: m.id, title: redactAgentAsk(t.id, m.title), objective: redactAgentAsk(t.id, m.objective), expectedResult: redactAgentAsk(t.id, m.expected_result), contextText: redactAgentAsk(t.id, m.context_text), priority: m.priority, requiresApproval: Boolean(m.requires_approval), requestedBy: m.requested_by ? slugOf(m.requested_by) : null, assignedTo: m.assigned_to ? slugOf(m.assigned_to) : null, createdAt: m.created_at } };
     },
     result: (id) => { const r = get('SELECT * FROM comm_results WHERE id = ?', id); return r && { id: r.id, taskId: r.task_id, agent: slugOf(r.agent_id), runId: r.run_id, summary: redactFor(r.task_id, r.summary), body: redactFor(r.task_id, r.body), sources: redactFor(r.task_id, 'x') === LOCAL_ONLY ? [] : parseJsonList(r.sources), observed: redactFor(r.task_id, 'x') === LOCAL_ONLY ? {} : jsonObserved(r.observed), verified: Boolean(r.verified), level: r.level, verification: redactFor(r.task_id, r.verification), verifiedBy: r.verified_by, createdAt: r.created_at }; },
@@ -412,7 +418,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
   const mapTask = (t) => {
     if (!t) return null;
     const res = get('SELECT * FROM comm_results WHERE task_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1', t.id);
-    return { id: t.id, automationKey: t.automation_key ?? null, missionId: t.mission_id, rootTaskId: t.root_task_id, parentTaskId: t.parent_task_id, threadId: t.thread_id, kind: t.kind, title: t.title, instruction: t.instruction, requestedBy: t.requested_by, assigneeId: t.assignee_id, depth: t.depth, state: t.state, stateNote: t.state_note, dependsOn: parseJsonList(t.depends_on), allowWeb: Boolean(t.allow_web), requiresSources: Boolean(t.requires_sources), withCatalog: Boolean(t.with_catalog), withIntegrations: parseJsonList(t.with_integrations), budgetUsd: t.budget_usd ?? null, spentUsd: t.budget_usd == null ? null : spentOf(t.root_task_id), unreportedRuns: t.budget_usd == null ? null : unreportedOf(t.root_task_id), dueAt: t.due_at, notBefore: t.not_before, attempts: t.attempts, maxAttempts: t.max_attempts, device: t.device, createdAt: t.created_at, updatedAt: t.updated_at, startedAt: t.started_at, finishedAt: t.finished_at, resultId: res?.id ?? null, verified: res ? Boolean(res.verified) : false };
+    return { id: t.id, automationKey: t.automation_key ?? null, missionId: t.mission_id, rootTaskId: t.root_task_id, parentTaskId: t.parent_task_id, threadId: t.thread_id, kind: t.kind, title: t.title, instruction: t.instruction, requestedBy: t.requested_by, assigneeId: t.assignee_id, depth: t.depth, state: t.state, stateNote: t.state_note, dependsOn: parseJsonList(t.depends_on), allowWeb: Boolean(t.allow_web), requiresSources: Boolean(t.requires_sources), withCatalog: Boolean(t.with_catalog), withIntegrations: parseJsonList(t.with_integrations), provider: t.provider ?? null, model: t.model ?? null, engineSource: t.engine_source ?? null, budgetUsd: t.budget_usd ?? null, spentUsd: t.budget_usd == null ? null : spentOf(t.root_task_id), unreportedRuns: t.budget_usd == null ? null : unreportedOf(t.root_task_id), dueAt: t.due_at, notBefore: t.not_before, attempts: t.attempts, maxAttempts: t.max_attempts, device: t.device, createdAt: t.created_at, updatedAt: t.updated_at, startedAt: t.started_at, finishedAt: t.finished_at, resultId: res?.id ?? null, verified: res ? Boolean(res.verified) : false };
   };
   const task = (id) => { const t = get('SELECT * FROM comm_tasks WHERE id = ?', id); if (!t) throw notFound('Tâche'); return mapTask(t); };
   const mapResult = (r) => !r ? null : { id: r.id, taskId: r.task_id, agentId: r.agent_id, runId: r.run_id, summary: r.summary, body: r.body, sources: parseJsonList(r.sources), observed: (() => { try { return JSON.parse(r.observed); } catch { return {}; } })(), verified: Boolean(r.verified), level: r.level, verification: r.verification, verifiedBy: r.verified_by, createdAt: r.created_at };
@@ -420,6 +426,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
   const setMissionState = (missionId, state) => { try { missions.setState(missionId, MISSION_STATE[state] ?? state); } catch { /* mission absente : sans conséquence pour la tâche */ } };
   const ancestors = (t) => { const out = []; let cur = t; while (cur?.parentTaskId) { cur = task(cur.parentTaskId); out.push(cur); } return out; };
 
+  const automationKeyOf = (slug, cacheKey, suffix) => `automation:${slug}:${cacheKey}${suffix ? `:${suffix}` : ''}`;
   const createTaskRaw = (input = {}, by = { type: 'user' }) => {
     const automated = by.type === 'automation';
     if (automated) {
@@ -453,7 +460,11 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     // Intégrations : un agent ne peut jamais élargir ce que le propriétaire a demandé ; seules les intégrations connues sont retenues.
     const wantedInts = [...new Set(Array.isArray(input.withIntegrations) ? input.withIntegrations.filter((x) => INTEGRATION_IDS.includes(x)) : [])];
     const withIntegrations = by.type === 'user' || automated ? wantedInts : wantedInts.filter((x) => (parent?.withIntegrations ?? []).includes(x));
-    const key = automated ? `automation:${assignee.slug}:${input.cacheKey}` : fingerprint(assignee.slug, instruction, allowWeb, withCatalog, withIntegrations);
+    // Moteur résolu maintenant et figé sur la tâche. Seul le propriétaire en choisit un, sur une demande racine.
+    const explicit = by.type === 'user' && !parent && input.engine !== undefined ? parseEngine(input.engine) : undefined;
+    const engine = engines?.resolve(assignee.id, parent ? parent.missionId : input.missionId ?? null, explicit) ?? null;
+    const suffix = engines?.keySuffix(engine, assignee.id) ?? '';
+    const key = automated ? automationKeyOf(assignee.slug, input.cacheKey, suffix) : fingerprint(assignee.slug, instruction, allowWeb, withCatalog, withIntegrations, suffix);
     if (!input.forceFresh) {
       const open = get(`SELECT * FROM comm_tasks WHERE dedupe_key = ? AND state IN (${OPEN_STATES.map(() => '?').join(',')}) ${rootId ? 'AND root_task_id = ?' : ''} ORDER BY created_at LIMIT 1`, key, ...OPEN_STATES, ...(rootId ? [rootId] : []));
       if (open) return { task: mapTask(open), created: false, reused: 'open' };
@@ -485,6 +496,8 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
         id, missionId, rootId ?? id, parent?.id ?? null, threadId, kind, short(mission.title, LIMITS.title), instruction, requesterId ?? 'user', assignee.id, depth, stateNow, JSON.stringify(deps.map((d) => d.id)), Number(allowWeb), Number(input.requiresSources ?? allowWeb), key, due, LIMITS.maxAttempts, device, t0, t0);
       for (const a of [assignee.id, requesterId].filter(Boolean)) { const th = thread(threadId); if (!th.members.includes(a)) run('INSERT INTO comm_thread_members (thread_id, agent_id) VALUES (?, ?)', threadId, a); }
       run('UPDATE comm_tasks SET with_catalog = ?, budget_usd = ?, with_integrations = ? WHERE id = ?', Number(withCatalog), budget, JSON.stringify(withIntegrations), id); // même transaction : jamais de tâche sans ses champs v2
+      run('UPDATE comm_tasks SET provider = ?, model = ?, engine_source = ? WHERE id = ?', engine?.provider ?? null, engine?.model ?? null, engine?.source ?? null, id);
+      if (explicit !== undefined && (explicit || input.missionId)) engines?.setMissionChoice(missionId, explicit);
     });
     if (automated) run('UPDATE comm_tasks SET automation_key=?,max_attempts=1 WHERE id=?', by.runId, id);
     setMissionState(missionId, stateNow);
@@ -551,10 +564,29 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     journal('task', id);
     return task(id);
   };
+  const ENGINE_EDITABLE = ['pending_approval', 'queued', 'blocked', 'failed', 'expired', 'review'];
+  // Seul le propriétaire change le moteur d'une tâche, explicitement. null revient au choix par défaut (mission, agent, fiche).
+  const setTaskEngine = (id, input) => {
+    const t = task(id);
+    if (!engines) throw bad('Choix du moteur indisponible.', 409);
+    if (t.automationKey) throw bad('Le moteur d’une tâche issue d’une automatisation ne se change pas à la main.', 409);
+    if (!ENGINE_EDITABLE.includes(t.state)) throw bad('Le moteur ne se change que sur une tâche à valider, en file, bloquée, en échec, expirée ou à vérifier.', 409);
+    const chosen = parseEngine(input);
+    const next = chosen ? { ...chosen, source: 'task' } : engines.resolve(t.assigneeId, t.missionId);
+    const before = engines.ofTask(t);
+    const key = fingerprint(slugOf(t.assigneeId), t.instruction, t.allowWeb, t.withCatalog, t.withIntegrations, engines.keySuffix(next, t.assigneeId));
+    run('UPDATE comm_tasks SET provider = ?, model = ?, engine_source = ?, dedupe_key = ?, state_note = ?, updated_at = ? WHERE id = ?', next?.provider ?? null, next?.model ?? null, next?.source ?? null, key, t.state === 'queued' ? '' : t.stateNote, now(), id);
+    journal('task', id);
+    postMessage(t.threadId, { kind: 'system', body: `Moteur changé par le propriétaire : ${engineId(before)} → ${engineId(next)}.`, taskId: id }, { type: 'system' });
+    return task(id);
+  };
   // Vérification humaine : le propriétaire valide un résultat que le Studio n'a pas pu confirmer lui-même.
   const verifyTask = (id, note = '') => {
     const t = task(id); if (t.state !== 'review') throw bad('Seule une tâche « à vérifier » peut être validée.', 409);
     const r = resultOf(id); if (!r) throw bad('Aucun résultat à valider.', 409);
+    // Valider rend le résultat réutilisable pour le moteur affiché : ce doit être celui qui l'a produit.
+    const made = getRun(r.runId);
+    if (t.provider && made?.model && (made.provider !== t.provider || made.model !== t.model)) throw bad('Ce résultat vient d’un autre moteur : relancez la tâche, ou revenez à son moteur d’origine avant de le valider.', 409);
     run("UPDATE comm_results SET verified = 1, level = 'manual', verified_by = 'proprietaire', verification = ? WHERE id = ?", short(`Validé par le propriétaire${note ? ` : ${note}` : ''}`, 400), r.id);
     journal('result', r.id);
     return setTaskState(id, 'done', 'Résultat validé par le propriétaire');
@@ -570,8 +602,14 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     setTaskState(id, 'blocked', note);
     automationInterrupted();
   };
+  // Une tâche qui attend son moteur reste en file : seul le motif change, aucun essai n'est consommé.
+  const noteWaiting = (t, why) => {
+    const note = short(why, 500); if (t.stateNote === note) return;
+    run('UPDATE comm_tasks SET state_note = ?, updated_at = ? WHERE id = ?', note, now(), t.id);
+    journal('task', t.id);
+  };
   // Choisit la prochaine tâche exécutable : prête (dépendances terminées), agent libre et disponible, quota respecté.
-  const claimNextRaw = ({ busy = new Set() } = {}) => {
+  const claimNextRaw = ({ busy = new Set(), blocked = () => '' } = {}) => {
     expireDue();
     for (const stale of all("SELECT id FROM comm_tasks WHERE state='running' AND automation_key IS NOT NULL AND automation_lease<=?", now())) interruptAutomation(stale.id, 'Résultat incertain : bail expiré, décision humaine requise.');
     for (const r of all("SELECT * FROM comm_tasks WHERE state = 'queued' AND device = ? ORDER BY depth, created_at, rowid", device)) {
@@ -594,6 +632,8 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
         continue;
       }
       if (busy.has(t.assigneeId)) continue;
+      const why = blocked(t);
+      if (why) { noteWaiting(t, why); continue; }
       if (runsToday() >= LIMITS.maxRunsPerDay) return { quota: true };
       if (t.automationKey) run('UPDATE comm_tasks SET automation_lease=? WHERE id=?', new Date(Date.parse(now()) + 90000).toISOString(), t.id);
       return { task: setTaskState(t.id, 'running', '', { extra: { startedAt: now(), attempts: t.attempts + 1 } }) };
@@ -703,6 +743,14 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
       if (Object.hasOwn(d, 'withCatalog')) run('UPDATE comm_tasks SET with_catalog = ? WHERE id = ?', Number(Boolean(d.withCatalog)), d.id);
       if (Object.hasOwn(d, 'withIntegrations')) run('UPDATE comm_tasks SET with_integrations = ? WHERE id = ?', JSON.stringify(Array.isArray(d.withIntegrations) ? d.withIntegrations.filter((x) => INTEGRATION_IDS.includes(x)) : []), d.id);
       if (Object.hasOwn(d, 'budgetUsd')) run('UPDATE comm_tasks SET budget_usd = ? WHERE id = ?', Number.isFinite(d.budgetUsd) && d.budgetUsd >= 0.1 && d.budgetUsd <= LIMITS.maxBudgetUsd ? d.budgetUsd : null, d.id);
+      // Champs de la migration 6. Un moteur inconnu ici est conservé : la tâche attendra, rien n'est substitué.
+      if (Object.hasOwn(d, 'provider')) {
+        const none = d.provider == null && d.model == null;
+        if (!none && (!isProviderId(d.provider) || !isModelId(d.model))) throw new Error('moteur invalide');
+        const source = ['mission', 'agent', 'fiche', 'task'].includes(d.engineSource) ? d.engineSource : null;
+        run('UPDATE comm_tasks SET provider = ?, model = ?, engine_source = ? WHERE id = ?', d.provider ?? null, d.model ?? null, source, d.id);
+        if (!none && source === 'mission' && !d.parentTaskId) engines?.adoptMissionChoice(d.missionId, { provider: d.provider, model: d.model });
+      }
     },
     result(d) {
       assertNoSecret('Le résultat', clean(d.body, 'Le résultat', LIMITS.result, { required: true }));
@@ -797,7 +845,11 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
   };
 
   return {
-    reusableAutomation: (slug, cacheKey, freshnessMs) => { const row = get("SELECT t.* FROM comm_tasks t JOIN comm_results r ON r.task_id=t.id WHERE t.dedupe_key=? AND t.state='done' AND r.verified=1 AND t.finished_at>=? ORDER BY t.finished_at DESC LIMIT 1", `automation:${slug}:${cacheKey}`, new Date(Date.parse(now()) - Math.min(LIMITS.reuseMs, freshnessMs)).toISOString()); return row ? mapTask(row) : null; },
+    reusableAutomation: (slug, cacheKey, freshnessMs) => {
+      const agentId = agentOfSlug(slug), suffix = engines?.keySuffix(engines.resolve(agentId), agentId) ?? '';
+      const row = get("SELECT t.* FROM comm_tasks t JOIN comm_results r ON r.task_id=t.id WHERE t.dedupe_key=? AND t.state='done' AND r.verified=1 AND t.finished_at>=? ORDER BY t.finished_at DESC LIMIT 1", automationKeyOf(slug, cacheKey, suffix), new Date(Date.parse(now()) - Math.min(LIMITS.reuseMs, freshnessMs)).toISOString());
+      return row ? mapTask(row) : null;
+    },
     renewAutomation: (id) => run("UPDATE comm_tasks SET automation_lease=? WHERE id=? AND state='running' AND automation_key IS NOT NULL", new Date(Date.parse(now()) + 90000).toISOString(), id),
     setAutomationGate: (gate, onInterrupted = () => {}) => { automationGate = gate; automationInterrupted = onInterrupted; }, automationAllowed: (t) => !t.automationKey || automationGate(t.automationKey, t),
     device, schemaVersion, lastMigration, rollback, journalError: () => journalError,
@@ -805,7 +857,7 @@ export function createCommStore(db, { journalDir = null, device = 'inconnu', mem
     createThread, addMember, thread, threadForMission, listThreads, postMessage, getMessage, listMessages, markDelivery, pendingFor,
     startRun, endRun, getRun, activeRuns, recentRuns, runsOfTask, usage, available, agentInfo: (id) => agentRow(id), slugOf, agentOfSlug, realAgent, nameOf,
     visibleMessages, quotaExceeded: () => runsToday() >= LIMITS.maxRunsPerDay,
-    createTask, task, listTasks, setTaskState, approveTask, cancelTask, retryTask, adoptTask, setBudget, spentOf, budgetExceeded, verifyTask, expireDue, claimNext, recordResult, resultOf, results, recover,
+    createTask, task, listTasks, setTaskState, approveTask, cancelTask, retryTask, adoptTask, setTaskEngine, setBudget, spentOf, budgetExceeded, verifyTask, expireDue, claimNext, recordResult, resultOf, results, recover,
     notifications, markSeen: () => { setMeta('seen_at', now()); return { seenAt: meta('seen_at') }; }, exchanges,
     importJournal, check, flushOutbox
   };

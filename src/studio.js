@@ -15,6 +15,7 @@ import { dirname, join } from 'node:path';
 import { createAutomationStore } from './studio-automation.js';
 import { automationIdentity } from './automation-identity.js';
 import { readAutomationSources } from './automation-sources.js';
+import { createEngineStore } from './studio-engines.js';
 
 const DEPARTMENTS = [
   ['Direction', 'Pilotage et validations'], ['Catalogue', 'Produits et collections'],
@@ -398,6 +399,7 @@ export function createStudio(filename = 'data/workeda.db', options = {}) {
     listAgentFiles: () => db.prepare('SELECT agent_id, slug FROM agent_files ORDER BY slug').all().map((r) => ({ agentId: r.agent_id, slug: r.slug })),
     // Relie chaque fiche .claude/agents/<slug>.md à un agent. Ne modifie ni ne supprime jamais un agent existant.
     syncAgentFiles(profiles) {
+      api.engines.learn(profiles);
       const result = { created: [], linked: [], warnings: [] };
       const link = db.prepare('INSERT INTO agent_files (agent_id, slug, linked_at) VALUES (?, ?, ?)');
       db.exec('BEGIN');
@@ -423,7 +425,8 @@ export function createStudio(filename = 'data/workeda.db', options = {}) {
     close: () => { api.shop?.close?.(); api.integrations?.close?.(); db.close(); }
   };
   // Communication entre agents : tables à part, chaque tâche déléguée est une mission (moteur existant), le journal voyage avec git.
-  api.comm = createCommStore(db, { journalDir: options.commJournalDir ?? null, device: memory.device, memory, emit, backup: memory.backup, clock: options.clock, missions: { create: (m) => api.createMission(m), setState: (id, st) => api.setMissionState(id, st) } });
+  api.engines = createEngineStore(db, { clock: options.clock, emit });
+  api.comm = createCommStore(db, { journalDir: options.commJournalDir ?? null, device: memory.device, memory, emit, backup: memory.backup, clock: options.clock, engines: api.engines, missions: { create: (m) => api.createMission(m), setState: (id, st) => api.setMissionState(id, st) } });
   // Catalogue Shopify : relevés datés en LECTURE SEULE (le connecteur n'a aucune écriture). Injectable pour les tests ; sans jeton, pages publiques.
   let connector = options.shopConnector; if (connector === undefined) { try { connector = createShopConnector({ env: options.env ?? process.env, ...(options.shopFetch ? { fetchImpl: options.shopFetch } : {}) }); } catch { connector = null; } }
   api.shop = createShopStore(db, { connector, clock: options.clock });
@@ -431,7 +434,7 @@ export function createStudio(filename = 'data/workeda.db', options = {}) {
   const secretsDir = options.secretsDir ?? (filename === ':memory:' ? null : join(dirname(filename), 'secrets'));
   const secrets = options.secrets ?? createSecretStore({ dir: secretsDir }); // sans dossier (base en mémoire) : stockage indisponible, jamais de repli en clair
   api.integrations = createIntegrationService({ db, secrets, shop: api.shop, env: options.env ?? process.env, fetchImpl: options.integrationsFetch, now: options.nowMs, redirectUri: options.redirectUri, sleep: options.integrationsSleep });
-  api.automation = createAutomationStore(db, { clock: options.clock, backup: memory.backup, identity: options.automationIdentity ?? automationIdentity(filename), aiAvailable: options.aiAvailable, validateAgent: (slug) => api.comm.available(api.comm.agentOfSlug(slug)), cancelTask: (id) => { const t = api.comm.task(id); if (t.state === 'running') return false; if (['queued','pending_approval','blocked'].includes(t.state)) api.comm.cancelTask(id, 'Automatisation désactivée ou suspendue'); return true; } });
+  api.automation = createAutomationStore(db, { clock: options.clock, backup: memory.backup, identity: options.automationIdentity ?? automationIdentity(filename), aiAvailable: options.aiAvailable ?? ((slug) => !api.engines.reason(api.engines.resolve(api.comm.agentOfSlug(slug)))), validateAgent: (slug) => api.comm.available(api.comm.agentOfSlug(slug)), cancelTask: (id) => { const t = api.comm.task(id); if (t.state === 'running') return false; if (['queued','pending_approval','blocked'].includes(t.state)) api.comm.cancelTask(id, 'Automatisation désactivée ou suspendue'); return true; } });
   api.comm.setAutomationGate((key, task = null) => {
     try {
       const r = api.automation.run(key), d = api.automation.rule(r.rule_id);
