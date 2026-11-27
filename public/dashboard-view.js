@@ -1,5 +1,7 @@
 // public/dashboard-view.js — modèle du tableau de bord (fonction pure, testée dans Node).
 // Règle : une donnée absente est dite « Indisponible » ou « Inconnu », jamais remplacée par zéro.
+import { signalLine } from './engine-view.js';
+
 const plural = (n, one, many = `${one}s`) => `${n} ${n > 1 ? many : one}`;
 const card = (id, label, value, detail = '', tone = 'ok', open = null) => ({ id, label, value, detail, tone, open });
 const missing = (id, label, detail = 'Source non disponible.', open = null) => card(id, label, 'Indisponible', detail, 'unknown', open);
@@ -11,7 +13,7 @@ export const DECISIONS = ['approval', 'review'];
 export const readOperations = (get) => get('/api/operations').catch((error) => (error.status === 404 ? null : false));
 const SILENT = 'Le serveur n’a pas répondu.';
 
-export function buildDashboard({ agents, missions, notifications, memoryPending, automations, usage, integrations, operations = null, localHealth, now = Date.now() } = {}) {
+export function buildDashboard({ agents, missions, notifications, memoryPending, automations, usage, integrations, engines, operations = null, localHealth, now = Date.now() } = {}) {
   const cards = [];
 
   if (operations === false) cards.push(missing('server', 'Serveur', SILENT));
@@ -43,7 +45,12 @@ export function buildDashboard({ agents, missions, notifications, memoryPending,
   else cards.push(card('costs', 'Coûts IA du jour', `${today.costUsd.toFixed(2).replace('.', ',')} $ rapportés`, `Coût rapporté pour ${today.runsWithCost} sur ${today.runs} exécutions ; ce n’est pas une facture.`, today.runsWithCost < today.runs ? 'unknown' : 'ok'));
 
   const limit = usage?.quota ? ` Limite interne Archipel : ${usage.quota.remaining} exécutions restantes sur ${usage.quota.runsPerDay} aujourd’hui pour les tâches et réponses.` : '';
-  cards.push(card('quotas', 'Quotas fournisseurs', 'Inconnu', `Les abonnements ne communiquent pas leur solde à Archipel.${limit}`, 'unknown'));
+  const current = (engines?.signals ?? []).filter((s) => !s.stale);
+  if (!current.length) cards.push(card('quotas', 'Quotas fournisseurs', 'Inconnu', `Les abonnements ne communiquent pas leur solde à Archipel.${limit}`, 'unknown'));
+  else {
+    const held = current.some((s) => s.blocking), near = current.some((s) => s.status === 'allowed_warning');
+    cards.push(card('quotas', 'Quotas fournisseurs', held ? 'Claude en attente' : near ? 'Claude proche de la limite' : 'Claude autorisé', `${current.map(signalLine).join(' ; ')}.${limit}`, held || near ? 'warn' : 'ok', 'comm'));
+  }
 
   if (integrations) {
     const all = integrations.integrations ?? integrations, tested = all.filter((i) => i.state === 'tested').length;

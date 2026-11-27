@@ -164,3 +164,19 @@ test('central : un worker refusé est mis de côté, un autre prend la tâche', 
     assert.equal(comm.task(t.id).state, 'done');
   } finally { await runtime.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+import { signalLine } from '../public/engine-view.js';
+import { buildDashboard } from '../public/dashboard-view.js';
+
+test('écran : inconnu sans relevé ou relevé périmé, jamais zéro', () => {
+  const base = { provider: 'claude', source: 'local', window: 'five_hour', status: 'allowed', utilization: null, resetsAt: later, overage: false, observedAt: past, stale: false, blocking: '' };
+  assert.match(signalLine(base), /Claude · cet ordinateur · fenêtre de 5 h : autorisé · consommation inconnue/);
+  assert.match(signalLine({ ...base, utilization: 0.82 }), /82 % utilisés/);
+  assert.match(signalLine({ ...base, stale: true }), /Inconnu \(relevé du .* périmé\)/);
+  const quotas = (engines) => buildDashboard({ engines }).find((c) => c.id === 'quotas');
+  assert.equal(quotas(null).value, 'Inconnu');
+  assert.equal(quotas({ signals: [{ ...base, stale: true }] }).value, 'Inconnu');
+  assert.equal(quotas({ signals: [base] }).value, 'Claude autorisé');
+  assert.equal(quotas({ signals: [{ ...base, blocking: 'x' }] }).value, 'Claude en attente');
+  assert.equal(quotas({ signals: [{ ...base, status: 'allowed_warning' }] }).tone, 'warn');
+});

@@ -5,7 +5,7 @@ import {
   groupThreads, filterThreads, threadTitle, threadKindLabel, messageKindLabel, deliveryLabel, taskStateLabel, taskActions, taskTree, isOpen,
   dateFr, dueLabel, attemptsLabel, sourceLine, verificationLine, costLine, engineLine, activeText, runLine, side, NOTIFICATION
 } from './comm-view.js';
-import { SOURCES, engineLabel, engineFromValue, optionNodes } from './engine-view.js';
+import { SOURCES, engineLabel, engineFromValue, optionNodes, signalLine } from './engine-view.js';
 
 const enc = encodeURIComponent;
 const put = (el, ...nodes) => el.replaceChildren(...nodes.flat(Infinity).filter((n) => n != null && n !== false));
@@ -268,7 +268,7 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
   async function loadActivity(msg = '') {
     reload = () => loadActivity();
     try {
-      const [act, usage, runs, status, check, shop] = await Promise.all([get('/api/comm/activity'), get('/api/comm/usage'), get('/api/comm/runs?limit=30'), get('/api/comm/status'), get('/api/comm/check'), get('/api/shop/status').catch(() => null)]);
+      const [act, usage, runs, status, check, shop, engines] = await Promise.all([get('/api/comm/activity'), get('/api/comm/usage'), get('/api/comm/runs?limit=30'), get('/api/comm/status'), get('/api/comm/check'), get('/api/shop/status').catch(() => null), get('/api/engines').catch(() => null)]);
       const err = errBox(), out = h('p', { class: 'note', role: 'status' }, msg);
       const sync = h('button', { type: 'button', class: 'primary', onclick: async () => { sync.disabled = true; try { const r = await send('POST', '/api/comm/import'); announce('Journal importé'); await loadActivity(`Journal : ${r.applied} appliqué(s), ${r.superseded} plus ancien(s) conservé(s), ${r.invalid} invalide(s).${r.warnings.length ? ` ${r.warnings.slice(0, 3).join(' ')}` : ''}`); } catch (x) { fail(err, x); sync.disabled = false; } } }, 'Importer le journal des autres ordinateurs');
       put(box.activity,
@@ -276,6 +276,10 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
         h('p', { class: 'note' }, `${act.maxActive} agents actifs au maximum à la fois. Claude Code ${status.engines.claudeCode ? 'détecté' : 'non détecté'} · Codex ${status.engines.codexCli ? 'détecté' : 'non détecté'} (« détecté » : présent sur le PC, pas forcément connecté).`),
         shop && shopSection(shop),
         h('h3', {}, 'Coûts et quotas'), h('p', {}, costLine(usage)), usage.byEngine.length > 0 && h('ul', {}, usage.byEngine.map((e) => h('li', {}, engineLine(e)))), h('p', { class: 'note' }, usage.note),
+        h('h3', {}, 'Quota observé chez le fournisseur'),
+        engines?.signals?.length ? h('ul', {}, engines.signals.map((s) => h('li', {}, signalLine(s), s.blocking && h('p', { class: 'err' }, s.blocking),
+          s.resumable && confirmBtn('Reprendre…', 'Confirmer la reprise', async () => { await send('POST', '/api/engines/claude/resume', { source: s.source, confirm: true }); announce('Reprise confirmée'); await loadActivity('Reprise confirmée.'); }))))
+          : h('p', { class: 'note' }, engines ? 'Inconnu : Claude Code n’a transmis aucun relevé.' : 'Indisponible.'),
         h('h3', {}, 'Historique des exécutions'), runs.length ? h('ul', { class: 'comm-runs' }, runs.map((r) => h('li', {}, `${dateFr(r.startedAt)} — ${runLine(r, nameOf)}`))) : h('p', {}, 'Aucune exécution pour le moment.'),
         h('h3', {}, 'Cohérence'), check.problems.length ? h('ul', {}, check.problems.map((p) => h('li', { class: 'err' }, p))) : h('p', {}, 'Aucun problème détecté.'), check.notes.length > 0 && h('ul', {}, check.notes.map((n) => h('li', { class: 'note' }, n))),
         h('h3', {}, 'Synchronisation entre ordinateurs'), h('p', {}, `Cet ordinateur : ${status.device} · ${check.journalFiles} journal(aux) · ${check.tasks} tâche(s) · ${check.messages} message(s).`),
