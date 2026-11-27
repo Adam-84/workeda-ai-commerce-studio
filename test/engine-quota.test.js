@@ -120,3 +120,47 @@ test('API : discussion refusée pendant le blocage, reprise seulement confirmée
     assert.equal((await call('POST', `/api/agents/${ids.lucas}/reply`, {})).body.type, 'done');
   } finally { server.closeAllConnections(); await new Promise((r) => server.close(r)); studio.close(); }
 });
+
+import { DatabaseSync } from 'node:sqlite';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { createWorkerBroker } from '../src/worker-broker.js';
+import { runWorkerOnce } from '../src/worker-client.js';
+import { createCloudRuntime } from '../src/cloud-server.js';
+import { hashPassword } from '../src/cloud-auth.js';
+
+test('courtier : signal borné ; un modèle refusé n’est plus attribué à ce worker', () => {
+  const db = new DatabaseSync(':memory:'), broker = createWorkerBroker(db, { models: ['sonnet'] });
+  const w = broker.enroll({ name: 'w', models: ['sonnet'] });
+  const add = (key) => broker.enqueue({ key, payload: { provider: 'claude', model: 'sonnet', system: '', prompt: 'q', tools: [], timeoutMs: 5000 } });
+  add('a');
+  assert.equal(broker.claim(w.id, { allow: () => false }), null);
+  const job = broker.claim(w.id);
+  assert.throws(() => broker.complete(w.id, job.id, job.leaseToken, { status: 'done', output: 'x', quota: [{ status: 'x' }] }), /quota/);
+  const done = broker.complete(w.id, job.id, job.leaseToken, { status: 'done', output: 'x', quota: [{ status: 'allowed', window: 'five_hour', source: 'usurpée', extra: 1 }] });
+  assert.deepEqual(done.result.quota, [{ status: 'allowed', window: 'five_hour', utilization: null, resetsAt: null, overage: false }]);
+  db.close();
+});
+
+test('central : un worker refusé est mis de côté, un autre prend la tâche', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'archipel-lot3-'));
+  const runtime = await createCloudRuntime({ dataDir: dir, passwordHash: await hashPassword('test-only-password-long'), port: 0, env: {} });
+  try {
+    const { comm, engines } = runtime.studio;
+    const [a, b] = ['a', 'b'].map((name) => runtime.broker.enroll({ name, models: ['sonnet'] }));
+    runtime.broker.heartbeat(a.id); runtime.broker.heartbeat(b.id);
+    const lucas = runtime.studio.listAgentFiles().find((f) => f.slug === 'lucas').agentId;
+    const t = comm.createTask({ assigneeId: lucas, instruction: 'Résumer' }).task;
+    runtime.app.orchestrator.pump();
+    const options = (w, runner) => ({ baseUrl: runtime.origin, token: w.token, models: ['sonnet'], runner });
+    await runWorkerOnce(options(a, async (o) => { o.onEvent(event({ status: 'rejected', rateLimitType: 'five_hour', resetsAt: soon() })); throw new Error('limite simulée'); }));
+    for (let i = 0; i < 100 && !runtime.broker.status().jobs.queued; i += 1) await delay(50);
+    assert.equal(await runWorkerOnce(options(a, async () => 'jamais')), null);
+    assert.match(engines.quotaReason(sonnet, a.id), /Limite/);
+    await runWorkerOnce(options(b, async () => JSON.stringify({ report: 'ok' })));
+    await runtime.app.orchestrator.idle();
+    assert.equal(comm.task(t.id).state, 'done');
+  } finally { await runtime.close(); rmSync(dir, { recursive: true, force: true }); }
+});

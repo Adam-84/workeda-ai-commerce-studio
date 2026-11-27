@@ -1,7 +1,7 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { runClaude } from './claude-reply.js';
 import { validateWorkerPayload } from './worker-broker.js';
-import { modelOfEvent } from './engines.js';
+import { modelOfEvent, quotaOfEvent } from './engines.js';
 
 const BLOCKED = 'Worker identity is blocked by an uncertain job. Check the earlier process has stopped, then run on the server: node tools/workers.mjs release --id WORKER_ID --process-stopped';
 // A refusal is final; network failures, timeouts, 408, 429 and 5xx are worth another try.
@@ -28,8 +28,8 @@ export async function runWorkerOnce({ baseUrl, token, models, runner = runClaude
   if (typeof job.id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(job.id) || typeof job.leaseToken !== 'string') throw new Error('Invalid worker claim.');
   const interval = Math.max(10, Math.min(10000, Number(job.heartbeatIntervalMs) || 5000));
   let timer, pendingHeartbeat = null, refusal = null, accounting = { usage: null, costUsd: null }, result, deliverUntil = Date.now() + 30000;
-  const observed = new Set();
-  const report = () => ({ ...accounting, ...(observed.size ? { models: [...observed] } : {}) });
+  const observed = new Set(), signals = new Map();
+  const report = () => ({ ...accounting, ...(observed.size ? { models: [...observed] } : {}), ...(signals.size ? { quota: [...signals.values()].slice(0, 8) } : {}) });
   try {
     try {
       if (job.type !== 'claude.text') throw new Error('Unsupported job type.');
@@ -43,6 +43,8 @@ export async function runWorkerOnce({ baseUrl, token, models, runner = runClaude
       const output = await runner({ model: payload.model, system: payload.system, prompt: payload.prompt, tools: [], timeoutMs: payload.timeoutMs, onEvent: event => {
         const model = modelOfEvent(event);
         if (model && observed.size < 8) observed.add(model);
+        const quota = quotaOfEvent(event);
+        if (quota) { const { source, ...signal } = quota; signals.set(signal.window, signal); }
         if (event?.type === 'result') accounting = { usage: event.usage ?? null, costUsd: event.total_cost_usd ?? null };
       } });
       result = { status: 'done', output, ...report() };

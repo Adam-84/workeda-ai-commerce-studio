@@ -49,10 +49,15 @@ export async function createCloudRuntime({ dataDir, passwordHash, origin, port =
   const readState = key => control.prepare('SELECT value FROM runtime_state WHERE key=?').get(key)?.value;
   const writeState = (key, value) => control.prepare('INSERT INTO runtime_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, String(value));
   const liveWorkers = model => broker.status().workers.filter(w => !w.revoked && !w.blocked && w.lastSeenAt && Date.now() - w.lastSeenAt < 60000 && (!model || w.models.includes(model)));
-  // Motif d'attente d'un moteur : refus du catalogue, ou aucun worker connecté qui l'offre. Jamais de remplacement.
+  const usableWorkers = model => liveWorkers(model).filter(w => !studio.engines.quotaReason({ provider: 'claude', model }, w.id));
+  // Motif d'attente d'un moteur : catalogue, aucun worker, ou tous les workers refusés par le fournisseur. Jamais de remplacement.
   const engineReason = engine => {
     if (!engine) return '';
-    return studio.engines.reason(engine) || (liveWorkers(engine.model).length ? '' : `Aucun worker disponible n’offre le modèle « ${engine.model} » : la demande attend, sans bascule.`);
+    const off = studio.engines.reason(engine); if (off) return off;
+    const live = liveWorkers(engine.model);
+    if (!live.length) return `Aucun worker disponible n’offre le modèle « ${engine.model} » : la demande attend, sans bascule.`;
+    const held = live.map(w => studio.engines.quotaReason(engine, w.id));
+    return held.every(Boolean) ? held[0] : '';
   };
   let stopped = false, halted = readState('halted') === 'true', auth, app, backupBusy = false, lastBackup = null, backupError = false;
   const backupsDir = join(dataDir, 'backups');
@@ -73,12 +78,13 @@ export async function createCloudRuntime({ dataDir, passwordHash, origin, port =
   async function runRemote(options) {
     if (stopped || halted) throw error('Exécution suspendue.');
     if (options.tools?.length) throw error('Le worker distant autorise uniquement les réponses sans outils.');
-    if (!liveWorkers(options.model).length) throw error('Aucun worker autorisé disponible pour ce modèle ; aucune bascule fournisseur.');
+    if (!usableWorkers(options.model).length) throw error('Aucun worker autorisé disponible pour ce modèle ; aucune bascule fournisseur.');
     const timeoutMs = Math.min(options.timeoutMs ?? 180000, maxJobMs, 300000);
     const job = broker.enqueue({ key: randomUUID(), payload: { provider: 'claude', model: options.model, system: options.system ?? '', prompt: options.prompt ?? '', tools: [], timeoutMs } });
     // Rejoue côté serveur ce que le worker a observé : modèles et comptes, en succès comme en échec.
-    const replay = (result) => {
+    const replay = (result, source) => {
       for (const model of result?.models ?? []) options.onEvent?.({ type: 'assistant', message: { model, content: [] } });
+      for (const q of result?.quota ?? []) options.onEvent?.({ type: 'rate_limit_event', archipel_source: source, rate_limit_info: { status: q.status, rateLimitType: q.window, utilization: q.utilization ?? undefined, resetsAt: q.resetsAt ? Date.parse(q.resetsAt) / 1000 : undefined, isUsingOverage: q.overage } });
       options.onEvent?.({ type: 'result', total_cost_usd: result?.costUsd ?? undefined, usage: result?.usage ?? undefined });
     };
     const work = (async () => {
@@ -87,10 +93,10 @@ export async function createCloudRuntime({ dataDir, passwordHash, origin, port =
         const current = broker.job(job.id);
         if (current.status === 'running') deadline = current.deadlineAt + 1000;
         if (current.status === 'done') {
-          replay(current.result);
+          replay(current.result, current.workerId);
           options.onText?.(current.result.output); return current.result.output;
         }
-        if (current.status === 'failed') { replay(current.result); throw Object.assign(error(workerFailure(current.result?.error)), { noRetry: true }); }
+        if (current.status === 'failed') { replay(current.result, current.workerId); throw Object.assign(error(workerFailure(current.result?.error)), { noRetry: true }); }
         if (['uncertain', 'cancelled'].includes(current.status)) throw error(INTERRUPTED_JOB);
         if (Date.now() >= deadline) break;
         await delay(100);
@@ -138,7 +144,7 @@ export async function createCloudRuntime({ dataDir, passwordHash, origin, port =
         // Un rapport peut atteindre un million de caractères (borne du courtier), soit plusieurs octets chacun.
         const body = await readJson(req, path.endsWith('/complete') ? 6_000_000 : 300000);
         if (path === '/worker/heartbeat') return json(res, 200, broker.heartbeat(worker.id, body));
-        if (path === '/worker/claim') return json(res, 200, broker.isBlocked(worker.id) ? { job: null, blocked: true } : { job: halted ? null : broker.claim(worker.id) });
+        if (path === '/worker/claim') return json(res, 200, broker.isBlocked(worker.id) ? { job: null, blocked: true } : { job: halted ? null : broker.claim(worker.id, { allow: model => !studio.engines.quotaReason({ provider: 'claude', model }, worker.id) }) });
         const match = path.match(/^\/worker\/jobs\/([a-f0-9-]+)\/complete$/);
         if (match) return json(res, 200, broker.complete(worker.id, match[1], body.leaseToken, body.result));
         throw error('Introuvable.', 404);
