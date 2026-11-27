@@ -76,6 +76,11 @@ export const COMM_MIGRATIONS = [{
   up: `CREATE TABLE IF NOT EXISTS engine_choices (scope TEXT NOT NULL, ref TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (scope, ref));
     ALTER TABLE comm_tasks ADD COLUMN provider TEXT; ALTER TABLE comm_tasks ADD COLUMN model TEXT; ALTER TABLE comm_tasks ADD COLUMN engine_source TEXT;`,
   down: `ALTER TABLE comm_tasks DROP COLUMN engine_source; ALTER TABLE comm_tasks DROP COLUMN model; ALTER TABLE comm_tasks DROP COLUMN provider; DROP TABLE IF EXISTS engine_choices;`
+}, {
+  version: 7,
+  name: 'quota observé chez le fournisseur',
+  up: `CREATE TABLE IF NOT EXISTS provider_signals (provider TEXT NOT NULL, source TEXT NOT NULL, rate_window TEXT NOT NULL, status TEXT NOT NULL, utilization REAL, resets_at TEXT, overage INTEGER NOT NULL DEFAULT 0, observed_at TEXT NOT NULL, confirmed_until TEXT, PRIMARY KEY (provider, source, rate_window));`,
+  down: `DROP TABLE IF EXISTS provider_signals;`
 }];
 export const COMM_SCHEMA_VERSION = COMM_MIGRATIONS.at(-1).version;
 
@@ -385,12 +390,13 @@ export function createCommStore(db, { engines = null, journalDir = null, device 
   };
   const mapRun = (r) => { const observedModels = parseJsonList(r.observed_models); return { id: r.id, agentId: r.agent_id, kind: r.kind, taskId: r.task_id, threadId: r.thread_id, model: r.model, provider: r.provider ?? null, observedModels, modelStatus: checkModel(r.model, observedModels).status, web: Boolean(r.web), state: r.state, error: r.error, costUsd: r.cost_usd, inputTokens: r.input_tokens, outputTokens: r.output_tokens, durationMs: r.duration_ms, device: r.device, startedAt: r.started_at, finishedAt: r.finished_at }; };
   const getRun = (id) => { const r = get('SELECT * FROM comm_runs WHERE id = ?', id); return r ? mapRun(r) : null; };
-  const endRun = (id, { state = 'done', error = null, costUsd = null, usage = null, models = [] } = {}) => {
+  const endRun = (id, { state = 'done', error = null, costUsd = null, usage = null, models = [], quota = [] } = {}) => {
     const r = getRun(id); if (!r) throw notFound('Exécution');
     if (r.state !== 'running') return r;
     const finished = now();
     run('UPDATE comm_runs SET state = ?, error = ?, cost_usd = ?, input_tokens = ?, output_tokens = ?, duration_ms = ?, observed_models = ?, finished_at = ? WHERE id = ?', state === 'done' ? 'done' : 'error', error ? short(String(error), 500) : null, costUsd, usage?.input ?? null, usage?.output ?? null, Math.max(0, Date.parse(finished) - Date.parse(r.startedAt)), JSON.stringify((models ?? []).filter(isModelId).slice(0, 8)), finished, id);
     journal('run', id);
+    if (quota?.length) { try { engines?.recordSignals(r.provider ?? DEFAULT_PROVIDER, quota); } catch { /* relevé perdu : le quota reste inconnu */ } }
     return getRun(id);
   };
 

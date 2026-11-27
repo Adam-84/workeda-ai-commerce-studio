@@ -1,6 +1,6 @@
 // src/studio-engines.js — choix du moteur par agent ou mission, résolution et disponibilité.
 // Les tables sont créées par les migrations de la communication. Les choix restent sur cet ordinateur.
-import { CATALOG, DEFAULT_PROVIDER, catalogReason, engineId, parseEngine, resolveEngine } from './engines.js';
+import { CATALOG, DEFAULT_PROVIDER, catalogReason, cleanSignal, engineId, parseEngine, resolveEngine, signalReason, signalStale } from './engines.js';
 
 const refuse = (message, status) => Object.assign(new Error(message), { status });
 
@@ -45,10 +45,45 @@ export function createEngineStore(db, { clock = () => new Date().toISOString(), 
   };
   // Choix de mission reçu par le journal : il ne remplace jamais un choix fait ici.
   const adoptMissionChoice = (missionId, engine) => { if (engine && !catalogReason(engine) && !choice('mission', missionId)) put('mission', missionId, engine); };
-  const reason = (engine) => catalogReason(engine);
-  const catalog = (reasonOf = reason) => CATALOG.map((p) => ({ provider: p.provider, label: p.label, state: p.state, reason: p.reason, models: p.models.map((model) => ({ model, reason: reasonOf({ provider: p.provider, model }) })) }));
+  const mapSignal = (r) => ({ provider: r.provider, source: r.source, window: r.rate_window, status: r.status, utilization: r.utilization, resetsAt: r.resets_at, overage: Boolean(r.overage), observedAt: r.observed_at, confirmedUntil: r.confirmed_until });
+  const recordSignals = (provider, list = []) => {
+    for (const raw of list) {
+      const s = cleanSignal(raw); if (!s) continue;
+      const source = raw.source ?? 'local';
+      run(`INSERT INTO provider_signals (provider, source, rate_window, status, utilization, resets_at, overage, observed_at, confirmed_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        ON CONFLICT(provider, source, rate_window) DO UPDATE SET status = excluded.status, utilization = excluded.utilization, resets_at = excluded.resets_at, overage = excluded.overage, observed_at = excluded.observed_at,
+        confirmed_until = CASE WHEN excluded.status = 'rejected' OR provider_signals.resets_at IS NOT excluded.resets_at THEN NULL ELSE provider_signals.confirmed_until END`,
+      provider, source, s.window, s.status, s.utilization, s.resetsAt, Number(s.overage), clock());
+      // Plus de dépense supplémentaire en cours : les anciens relevés de dépassement de cette source ne valent plus.
+      if (!s.overage) run('UPDATE provider_signals SET overage = 0 WHERE provider = ? AND source = ?', provider, source);
+    }
+  };
+  const quotaReason = (engine, source = 'local') => {
+    if (!engine) return '';
+    const now = Date.parse(clock());
+    for (const r of all('SELECT * FROM provider_signals WHERE provider = ? AND source = ? ORDER BY rate_window', engine.provider, source)) { const why = signalReason(mapSignal(r), engine, now); if (why) return why; }
+    return '';
+  };
+  const signals = () => {
+    const now = Date.parse(clock());
+    return all('SELECT * FROM provider_signals ORDER BY provider, source, rate_window').map((r) => {
+      const s = mapSignal(r), blocking = signalReason(s, { provider: s.provider, model: s.window === 'seven_day_sonnet' ? 'sonnet' : 'opus' }, now);
+      // Un refus daté se lève seul à sa remise à zéro : il n'y a rien à confirmer.
+      return { ...s, stale: signalStale(s, now), blocking, resumable: Boolean(blocking) && (s.status !== 'rejected' || !s.resetsAt) };
+    });
+  };
+  const resume = (provider, source) => {
+    const endOfDay = `${clock().slice(0, 10)}T23:59:59.999Z`;
+    const targets = signals().filter((s) => s.provider === provider && s.source === source && s.resumable);
+    if (!targets.length) throw refuse('Rien à confirmer : une limite datée se lève seule à sa remise à zéro.', 409);
+    for (const s of targets) run('UPDATE provider_signals SET confirmed_until = ? WHERE provider = ? AND source = ? AND rate_window = ?', s.status === 'rejected' ? endOfDay : s.resetsAt ?? endOfDay, provider, source, s.window);
+    emit(null, 'engine.resume.confirmed', `Reprise confirmée par le propriétaire (${provider}, ${source}).`, 'manual', true);
+    return signals();
+  };
+  const reason = (engine, source = 'local') => catalogReason(engine) || quotaReason(engine, source);
+  const catalog = (reasonOf = (e) => reason(e)) => CATALOG.map((p) => ({ provider: p.provider, label: p.label, state: p.state, reason: p.reason, models: p.models.map((model) => ({ model, reason: reasonOf({ provider: p.provider, model }) })) }));
   return {
-    learn, choice, rootMissionOf, resolve, ofTask, keySuffix, setAgentChoice, setMissionChoice, adoptMissionChoice, missionEngine, reason, catalog,
+    recordSignals, signals, quotaReason, resume, learn, choice, rootMissionOf, resolve, ofTask, keySuffix, setAgentChoice, setMissionChoice, adoptMissionChoice, missionEngine, reason, catalog,
     missionChoices: () => all("SELECT ref, provider, model FROM engine_choices WHERE scope = 'mission'").map((r) => ({ missionId: r.ref, provider: r.provider, model: r.model }))
   };
 }

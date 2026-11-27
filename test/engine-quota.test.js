@@ -35,3 +35,43 @@ test('jugement : refus daté, fenêtre par modèle, relevé périmé, confirmati
   assert.equal(signalReason({ ...signal({ overage: true }), confirmedUntil: later }, sonnet, NOW), '');
   assert.equal(signalReason(signal(), sonnet, NOW), '');
 });
+
+import { fileURLToPath } from 'node:url';
+import { createStudio } from '../src/studio.js';
+import { loadAgentFiles } from '../src/agent-files.js';
+
+const { profiles } = loadAgentFiles(fileURLToPath(new URL('../.claude/agents', import.meta.url)));
+function setup(options = {}) {
+  const studio = createStudio(':memory:', options); studio.syncAgentFiles(profiles);
+  const ids = Object.fromEntries(studio.listAgentFiles().map((f) => [f.slug, f.agentId]));
+  return { studio, comm: studio.comm, engines: studio.engines, ids };
+}
+
+test('stockage : aucun signal ne bloque rien ; refus enregistré à la fin d’une exécution', () => {
+  const { comm, engines, ids } = setup({ clock: () => new Date(NOW).toISOString() });
+  assert.deepEqual(engines.signals(), []); assert.equal(engines.reason(sonnet), '');
+  const r = comm.startRun({ agentId: ids.lucas, kind: 'task', model: 'sonnet' });
+  comm.endRun(r.id, { state: 'error', error: 'limite', quota: [{ ...signal({ status: 'rejected' }), source: 'local' }] });
+  assert.match(engines.reason(sonnet), /reprise après/);
+  assert.equal(engines.reason(sonnet, 'autre-source'), '');
+  assert.equal(engines.signals()[0].resumable, false);
+  assert.throws(() => engines.resume('claude', 'local'), { status: 409 });
+});
+
+test('dépassement : confirmation conservée jusqu’à la remise à zéro ; un nouveau refus rebloque', () => {
+  const { engines } = setup({ clock: () => new Date(NOW).toISOString() });
+  const over = [{ ...signal({ overage: true }), source: 'local' }];
+  engines.recordSignals('claude', over);
+  assert.match(engines.reason(opus), /Dépense/);
+  engines.resume('claude', 'local');
+  engines.recordSignals('claude', over);
+  assert.equal(engines.reason(opus), '');
+  assert.equal(engines.signals()[0].confirmedUntil, later);
+  const open = [{ ...signal({ status: 'rejected', window: 'seven_day', resetsAt: null }), source: 'local' }];
+  engines.recordSignals('claude', open); engines.resume('claude', 'local');
+  assert.equal(engines.reason(opus), '');
+  engines.recordSignals('claude', open);
+  assert.match(engines.reason(opus), /confirmez/);
+  engines.recordSignals('claude', [{ ...signal({ window: 'seven_day', resetsAt: null }), source: 'local' }]);
+  assert.equal(engines.reason(opus), '');
+});
