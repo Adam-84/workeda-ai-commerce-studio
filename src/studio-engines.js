@@ -1,6 +1,6 @@
 // src/studio-engines.js — choix du moteur par agent ou mission, résolution et disponibilité.
 // Les tables sont créées par les migrations de la communication. Les choix restent sur cet ordinateur.
-import { CATALOG, DEFAULT_PROVIDER, catalogReason, cleanSignal, engineId, parseEngine, resolveEngine, signalReason, signalStale } from './engines.js';
+import { CATALOG, DEFAULT_PROVIDER, catalogReason, cleanSignal, engineId, needsConfirmation, parseEngine, resolveEngine, signalReason, signalStale } from './engines.js';
 
 const refuse = (message, status) => Object.assign(new Error(message), { status });
 
@@ -51,11 +51,11 @@ export function createEngineStore(db, { clock = () => new Date().toISOString(), 
       const s = cleanSignal(raw); if (!s) continue;
       const source = raw.source ?? 'local';
       run(`INSERT INTO provider_signals (provider, source, rate_window, status, utilization, resets_at, overage, observed_at, confirmed_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
-        ON CONFLICT(provider, source, rate_window) DO UPDATE SET status = excluded.status, utilization = excluded.utilization, resets_at = excluded.resets_at, overage = excluded.overage, observed_at = excluded.observed_at,
+        ON CONFLICT(provider, source, rate_window) DO UPDATE SET status = excluded.status, utilization = excluded.utilization, resets_at = excluded.resets_at, observed_at = excluded.observed_at,
+        -- Seul un « oui » ou un « non » explicite change la retenue ; sans information, elle tient tant que sa fenêtre court.
+        overage = CASE WHEN ? THEN excluded.overage WHEN provider_signals.resets_at IS NULL OR provider_signals.resets_at > excluded.observed_at THEN provider_signals.overage ELSE 0 END,
         confirmed_until = CASE WHEN excluded.status = 'rejected' OR provider_signals.resets_at IS NOT excluded.resets_at THEN NULL ELSE provider_signals.confirmed_until END`,
-      provider, source, s.window, s.status, s.utilization, s.resetsAt, Number(s.overage), clock());
-      // Plus de dépense supplémentaire en cours : les anciens relevés de dépassement de cette source ne valent plus.
-      if (!s.overage) run('UPDATE provider_signals SET overage = 0 WHERE provider = ? AND source = ?', provider, source);
+      provider, source, s.window, s.status, s.utilization, s.resetsAt, Number(s.overage === true), clock(), Number(s.overage !== null));
     }
   };
   const quotaReason = (engine, source = 'local') => {
@@ -69,14 +69,14 @@ export function createEngineStore(db, { clock = () => new Date().toISOString(), 
     return all('SELECT * FROM provider_signals ORDER BY provider, source, rate_window').map((r) => {
       const s = mapSignal(r), blocking = signalReason(s, { provider: s.provider, model: s.window === 'seven_day_sonnet' ? 'sonnet' : 'opus' }, now);
       // Un refus daté se lève seul à sa remise à zéro : il n'y a rien à confirmer.
-      return { ...s, stale: signalStale(s, now), blocking, resumable: Boolean(blocking) && (s.status !== 'rejected' || !s.resetsAt) };
+      return { ...s, stale: signalStale(s, now), blocking, resumable: needsConfirmation(s, now) };
     });
   };
   const resume = (provider, source) => {
     const endOfDay = `${clock().slice(0, 10)}T23:59:59.999Z`;
     const targets = signals().filter((s) => s.provider === provider && s.source === source && s.resumable);
     if (!targets.length) throw refuse('Rien à confirmer : une limite datée se lève seule à sa remise à zéro.', 409);
-    for (const s of targets) run('UPDATE provider_signals SET confirmed_until = ? WHERE provider = ? AND source = ? AND rate_window = ?', s.status === 'rejected' ? endOfDay : s.resetsAt ?? endOfDay, provider, source, s.window);
+    for (const s of targets) run('UPDATE provider_signals SET confirmed_until = ? WHERE provider = ? AND source = ? AND rate_window = ?', s.resetsAt ?? endOfDay, provider, source, s.window);
     emit(null, 'engine.resume.confirmed', `Reprise confirmée par le propriétaire (${provider}, ${source}).`, 'manual', true);
     return signals();
   };

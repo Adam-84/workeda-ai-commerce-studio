@@ -26,6 +26,8 @@ Les dix modèles sont des définitions inactives, sans grant et sans autorisatio
 
 Autorisation IA distincte pour chaque révision. Maximum un appel par occurrence, un travail IA Automation actif, cinq appels/jour/règle et vingt réservations/jour Automation, en plus des plafonds Comms existants. Les délégations et outils web sont désactivés pour ces tâches ; collecter les données séparément évite qu'une page web voie les données privées. Une révision modifiée désactive la règle et révoque ses consentements.
 
+Une analyse retenue par le seul moteur IA (limite, dépense à confirmer, aucun worker) repart d'elle-même quand il revient, tant que son échéance n'est pas passée. Les autres attentes IA demandent toujours « Réexaminer les attentes IA ».
+
 Avant de lancer une analyse en attente, Archipel revérifie l'autorisation, la fraîcheur et le contenu des sources externes (catalogue, intégrations) : un changement la bloque. Les états internes des missions et des recommandations peuvent évoluer pendant l'attente sans la bloquer ; l'analyse porte sur le relevé daté joint à la demande. Les tâches « en cours » reçues d'un autre ordinateur ne comptent pas dans les limites locales.
 
 Les budgets USD et tokens sont fondés sur la consommation rapportée. Ils bloquent les appels suivants ; ils ne garantissent pas une coupure financière au milieu d'un appel. Une consommation antérieure inconnue interdit de nouveaux appels de cette règle pour la journée. Les réservations échouées restent comptées pour éviter de dépasser le plafond en cas de crash. Aucun fallback vers une API payante. Un résultat récent, vérifié et issu des mêmes révisions de données/politique est réutilisé avant de réserver un nouvel appel.

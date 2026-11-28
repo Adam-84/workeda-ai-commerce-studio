@@ -14,6 +14,8 @@ export function engineOptions(catalog = [], defaultLabel = 'Choix par défaut') 
   return out;
 }
 export const optionNodes = (h, catalog, current, defaultLabel) => engineOptions(catalog, defaultLabel).map((o) => h('option', { value: o.value, disabled: o.disabled, selected: o.value === engineValue(current) }, o.label));
+// Le bouton n'agit qu'après un choix différent de celui affiché : un clic seul ne change rien.
+export function armOnChange(select, button) { const shown = select.value; button.disabled = true; select.onchange = () => { button.disabled = select.value === shown; }; }
 export const affectedAutomations = (rules = [], slug) => rules.filter((r) => r.enabled && r.allowAi && r.agentSlug === slug).map((r) => r.name);
 const WINDOWS = { five_hour: 'fenêtre de 5 h', seven_day: 'semaine', seven_day_opus: 'semaine Opus', seven_day_sonnet: 'semaine Sonnet', overage: 'dépense supplémentaire', unknown: 'fenêtre non précisée' };
 const QUOTA = { allowed: 'autorisé', allowed_warning: 'proche de la limite', rejected: 'refusé' };

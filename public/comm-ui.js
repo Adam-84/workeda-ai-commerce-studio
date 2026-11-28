@@ -5,7 +5,7 @@ import {
   groupThreads, filterThreads, threadTitle, threadKindLabel, messageKindLabel, deliveryLabel, taskStateLabel, taskActions, taskTree, isOpen,
   dateFr, dueLabel, attemptsLabel, sourceLine, verificationLine, costLine, engineLine, activeText, runLine, side, NOTIFICATION
 } from './comm-view.js';
-import { SOURCES, engineLabel, engineFromValue, optionNodes, signalLine } from './engine-view.js';
+import { SOURCES, engineLabel, engineFromValue, optionNodes, signalLine, armOnChange } from './engine-view.js';
 
 const enc = encodeURIComponent;
 const put = (el, ...nodes) => el.replaceChildren(...nodes.flat(Infinity).filter((n) => n != null && n !== false));
@@ -192,7 +192,7 @@ export function commCenter({ ui, agents = [], departments = [], missions = [], p
     const line = h('p', { class: 'note' }, `Moteur : ${t.model ? engineLabel(t) : 'celui de la fiche'}${t.engineSource ? ` (${SOURCES[t.engineSource]})` : ''}`);
     if (t.automationKey || !CHANGEABLE.includes(t.state)) return line;
     const err = errBox(), select = h('select', { class: 'engine-select', 'aria-label': 'Moteur de la tâche' }), apply = h('button', { type: 'submit', disabled: true }, 'Changer le moteur');
-    get('/api/engines').then((d) => { select.replaceChildren(...optionNodes(h, d.catalog, t.engineSource === 'task' ? t : null, 'Choix par défaut')); apply.disabled = false; }).catch((x) => fail(err, x));
+    get('/api/engines').then((d) => { select.replaceChildren(...optionNodes(h, d.catalog, t.model ? t : null, 'Choix par défaut')); armOnChange(select, apply); }).catch((x) => fail(err, x));
     return h('form', { class: 'memory-form', onsubmit: async (e) => { e.preventDefault(); err.textContent = ''; try { await send('POST', `/api/comm/tasks/${enc(t.id)}/engine`, { engine: engineFromValue(select.value) }); announce('Moteur de la tâche changé'); ui.pollComm?.(); await loadTasks(); } catch (x) { fail(err, x); } } },
       line, h('label', {}, 'Nouveau moteur', select), apply, err);
   }

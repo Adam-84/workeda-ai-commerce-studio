@@ -11,7 +11,7 @@ const opus = { provider: 'claude', model: 'opus' }, sonnet = { provider: 'claude
 const signal = (extra = {}) => ({ status: 'allowed', window: 'five_hour', utilization: null, resetsAt: later, overage: false, ...extra });
 
 test('événement : champs bornés, absents laissés inconnus, inconnu ignoré', () => {
-  assert.deepEqual(quotaOfEvent(event({ status: 'rejected', resetsAt: Date.parse(later) / 1000, rateLimitType: 'seven_day_opus' })), { status: 'rejected', window: 'seven_day_opus', utilization: null, resetsAt: later, overage: false, source: 'local' });
+  assert.deepEqual(quotaOfEvent(event({ status: 'rejected', resetsAt: Date.parse(later) / 1000, rateLimitType: 'seven_day_opus' })), { status: 'rejected', window: 'seven_day_opus', utilization: null, resetsAt: later, overage: null, source: 'local' });
   assert.equal(quotaOfEvent(event({ status: 'allowed' })).resetsAt, null);
   assert.equal(quotaOfEvent(event({ status: 'allowed', rateLimitType: 'nouvelle' })).window, 'unknown');
   assert.equal(quotaOfEvent(event({ status: 'autre' })), null);
@@ -140,7 +140,7 @@ test('courtier : signal borné ; un modèle refusé n’est plus attribué à ce
   const job = broker.claim(w.id);
   assert.throws(() => broker.complete(w.id, job.id, job.leaseToken, { status: 'done', output: 'x', quota: [{ status: 'x' }] }), /quota/);
   const done = broker.complete(w.id, job.id, job.leaseToken, { status: 'done', output: 'x', quota: [{ status: 'allowed', window: 'five_hour', source: 'usurpée', extra: 1 }] });
-  assert.deepEqual(done.result.quota, [{ status: 'allowed', window: 'five_hour', utilization: null, resetsAt: null, overage: false }]);
+  assert.deepEqual(done.result.quota, [{ status: 'allowed', window: 'five_hour', utilization: null, resetsAt: null, overage: null }]);
   db.close();
 });
 

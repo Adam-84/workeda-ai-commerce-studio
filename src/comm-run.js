@@ -15,6 +15,11 @@ import {
 const TRANSIENT = /surcharg|à temps|n’a pas pu répondre|n'a pas pu répondre|réponse vide|code de sortie/i;
 const short = (s, n) => { s = scrubContacts(s); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
 
+// Motif d'un refus du fournisseur observé pendant l'exécution, sinon chaîne vide.
+const refusalOf = (observed, engine) => (observed?.quota ?? []).filter((s) => s.status === 'rejected').map((s) => signalReason(s, engine)).find(Boolean) ?? '';
+// Refusée avant toute réponse (ni coût, ni jetons, ni modèle) : rien à estimer au budget.
+const runState = (refusal, observed) => (refusal && observed.cost == null && !observed.usage && !observed.models.length ? 'refused' : 'error');
+
 const NOT_SHARED = '[Résultat issu de données DSers/17TRACK/imports/Shopify Admin : non transmis (accès différent ou tâche qui lit le web).]';
 export function createOrchestrator({ studio, profiles = () => [], runner = realClaude, memoryFor = () => '', maxActive = LIMITS.maxActive, pumpEveryMs = 0, canRun = () => true, engineReason = (engine) => studio.engines?.reason(engine) ?? '' } = {}) {
   const comm = studio.comm;
@@ -144,11 +149,11 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
 
   function fail(task, run, error, inbox = [], observed = null) {
     const message = String(error?.message ?? error);
-    comm.endRun(run.id, { state: 'error', error: message, costUsd: observed?.cost ?? null, usage: observed?.usage ?? null, models: observed?.models ?? [], quota: observed?.quota ?? [] }); // un coût déjà rapporté avant l'erreur est conservé
+    const refusal = refusalOf(observed, taskEngine(task));
+    comm.endRun(run.id, { state: runState(refusal, observed), error: message, costUsd: observed?.cost ?? null, usage: observed?.usage ?? null, models: observed?.models ?? [], quota: observed?.quota ?? [] }); // un coût déjà rapporté avant l'erreur est conservé
     for (const id of inbox) { try { comm.markDelivery(id, task.assigneeId, 'error', message); } catch { /* distribution déjà traitée */ } }
     if (task.automationKey) { studio.automation.pauseAi(true); const ar = studio.automation.forTask(task.id); if (ar) studio.automation.finish(ar.id, 'uncertain', 'Appel IA interrompu ou indisponible ; décision humaine requise dans Comms.'); }
     // Refus du fournisseur : la tâche n'a pas échoué, elle attend la remise à zéro ; l'essai est rendu, rien ne bascule.
-    const refusal = (observed?.quota ?? []).filter((s) => s.status === 'rejected').map((s) => signalReason(s, taskEngine(task))).find(Boolean);
     if (refusal && !task.automationKey) {
       comm.setTaskState(task.id, 'queued', refusal, { extra: { attempts: task.attempts - 1 } });
       try { comm.postMessage(task.threadId, { kind: 'system', body: `${comm.nameOf(task.assigneeId)} attend : ${refusal}`, taskId: task.id }, { type: 'system' }); } catch { /* fil clos */ }
@@ -253,7 +258,7 @@ export function createOrchestrator({ studio, profiles = () => [], runner = realC
         for (const id of inbox) comm.markDelivery(id, agentId, 'processed');
         setActivity(agentId, 'idle', 'Réponse envoyée');
       } catch (e) {
-        comm.endRun(run.id, { state: 'error', error: e.message, costUsd: seen.state.cost, usage: seen.state.usage, models: seen.state.models, quota: seen.state.quota });
+        comm.endRun(run.id, { state: runState(refusalOf(seen.state, engine), seen.state), error: e.message, costUsd: seen.state.cost, usage: seen.state.usage, models: seen.state.models, quota: seen.state.quota });
         for (const id of inbox) { try { comm.markDelivery(id, agentId, 'error', e.message); } catch { /* déjà traité */ } }
         try { comm.postMessage(threadId, { kind: 'system', body: `${a.name} n'a pas pu répondre : ${short(e.message, 300)}` }, { type: 'system' }); } catch { /* fil clos */ }
         setActivity(agentId, 'blocked', short(e.message, 120));

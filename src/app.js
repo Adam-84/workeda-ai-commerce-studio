@@ -60,7 +60,7 @@ function assertLocalRequest(req, { checkOrigin = true } = {}) {
   }
 }
 
-export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPresent, runClaude = realClaude, agentFiles: { profiles = [], warnings = [] } = {}, pumpEveryMs = 0, authorizeRequest = assertLocalRequest, canRun = () => true, engineReason = (engine) => studio.engines?.reason(engine) ?? '' }) {
+export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPresent, runClaude = realClaude, agentFiles: { profiles = [], warnings = [] } = {}, pumpEveryMs = 0, authorizeRequest = assertLocalRequest, canRun = () => true, engineReason = (engine) => studio.engines?.reason(engine) ?? '', signalVisible = () => true }) {
   const assertLocalWrite = authorizeRequest;
   // La détection lance un processus synchrone : on garde le résultat quelques secondes.
   const seen = new Map();
@@ -221,7 +221,7 @@ export function createApp({ studio, publicDir, skills, detect: rawDetect = cliPr
         catalog: engines.catalog(engineReason),
         agents: list.map((p) => { const agentId = ids.get(p.slug), effective = engines.resolve(agentId); return { agentId, slug: p.slug, name: p.displayName, fiche: { provider: 'claude', model: p.model }, choice: engines.choice('agent', agentId), effective, unavailable: engineReason(effective) }; }),
         missions: engines.missionChoices(),
-        signals: engines.signals()
+        signals: engines.signals().filter((s) => signalVisible(s.source))
       };
     };
     const required = (d) => { if (!(d && 'engine' in d)) fail(400, 'Moteur requis (null pour revenir au choix par défaut).'); return d.engine; };

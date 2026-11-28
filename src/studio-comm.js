@@ -394,7 +394,7 @@ export function createCommStore(db, { engines = null, journalDir = null, device 
     const r = getRun(id); if (!r) throw notFound('Exécution');
     if (r.state !== 'running') return r;
     const finished = now();
-    run('UPDATE comm_runs SET state = ?, error = ?, cost_usd = ?, input_tokens = ?, output_tokens = ?, duration_ms = ?, observed_models = ?, finished_at = ? WHERE id = ?', state === 'done' ? 'done' : 'error', error ? short(String(error), 500) : null, costUsd, usage?.input ?? null, usage?.output ?? null, Math.max(0, Date.parse(finished) - Date.parse(r.startedAt)), JSON.stringify((models ?? []).filter(isModelId).slice(0, 8)), finished, id);
+    run('UPDATE comm_runs SET state = ?, error = ?, cost_usd = ?, input_tokens = ?, output_tokens = ?, duration_ms = ?, observed_models = ?, finished_at = ? WHERE id = ?', ['done', 'refused'].includes(state) ? state : 'error', error ? short(String(error), 500) : null, costUsd, usage?.input ?? null, usage?.output ?? null, Math.max(0, Date.parse(finished) - Date.parse(r.startedAt)), JSON.stringify((models ?? []).filter(isModelId).slice(0, 8)), finished, id);
     journal('run', id);
     if (quota?.length) { try { engines?.recordSignals(r.provider ?? DEFAULT_PROVIDER, quota); } catch { /* relevé perdu : le quota reste inconnu */ } }
     return getRun(id);
@@ -405,7 +405,7 @@ export function createCommStore(db, { engines = null, journalDir = null, device 
   const OF_ROOT = "(r.task_id IN (SELECT id FROM comm_tasks WHERE root_task_id = ?) OR (r.kind = 'reply' AND r.thread_id IN (SELECT id FROM comm_threads WHERE mission_id = ?)))";
   const missionOfRoot = (rootId) => get('SELECT mission_id FROM comm_tasks WHERE id = ?', rootId)?.mission_id ?? '';
   // Terminée sans coût rapporté (réussie ou non) : le coût réel est inconnu, on compte une estimation prudente, jamais 0.
-  const unreportedOf = (rootId) => get(`SELECT COUNT(*) AS n FROM comm_runs r WHERE r.state != 'running' AND r.cost_usd IS NULL AND ${OF_ROOT}`, rootId, missionOfRoot(rootId)).n;
+  const unreportedOf = (rootId) => get(`SELECT COUNT(*) AS n FROM comm_runs r WHERE r.state NOT IN ('running', 'refused') AND r.cost_usd IS NULL AND ${OF_ROOT}`, rootId, missionOfRoot(rootId)).n;
   const spentOf = (rootId) => {
     const reported = get(`SELECT COALESCE(SUM(r.cost_usd), 0) AS c FROM comm_runs r WHERE ${OF_ROOT}`, rootId, missionOfRoot(rootId)).c;
     return Math.round((reported + unreportedOf(rootId) * LIMITS.unreportedRunUsd) * 1e4) / 1e4;
