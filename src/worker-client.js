@@ -1,7 +1,7 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { runClaude } from './claude-reply.js';
 import { validateWorkerPayload } from './worker-broker.js';
-import { modelOfEvent, quotaOfEvent } from './engines.js';
+import { mergeSignal, modelOfEvent, quotaOfEvent } from './engines.js';
 
 const BLOCKED = 'Worker identity is blocked by an uncertain job. Check the earlier process has stopped, then run on the server: node tools/workers.mjs release --id WORKER_ID --process-stopped';
 // A refusal is final; network failures, timeouts, 408, 429 and 5xx are worth another try.
@@ -44,7 +44,7 @@ export async function runWorkerOnce({ baseUrl, token, models, runner = runClaude
         const model = modelOfEvent(event);
         if (model && observed.size < 8) observed.add(model);
         const quota = quotaOfEvent(event);
-        if (quota) { const { source, ...signal } = quota; signals.set(signal.window, signal); }
+        if (quota) { const { source, ...signal } = quota; signals.set(signal.window, mergeSignal(signals.get(signal.window), signal)); }
         if (event?.type === 'result') accounting = { usage: event.usage ?? null, costUsd: event.total_cost_usd ?? null };
       } });
       result = { status: 'done', output, ...report() };

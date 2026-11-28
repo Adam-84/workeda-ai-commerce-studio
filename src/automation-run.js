@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { readAutomationSources, pollAutomationObservations } from './automation-sources.js';
 import { condition } from './automation-core.js';
+import { ENGINE_WAIT } from './studio-automation.js';
 
 export function createAutomationRunner({ studio, clock = () => new Date().toISOString(), everyMs = 15000, canRun = () => true } = {}) {
   const a = studio.automation, worker = randomUUID(); let timer = null, busy = false, stopped = false;
@@ -17,7 +18,7 @@ export function createAutomationRunner({ studio, clock = () => new Date().toISOS
     try {
       reconcile();
       if (!canRun() || !a.status().owner || a.status().paused) return;
-      pollAutomationObservations(studio, Date.parse(clock())); a.scheduleDue(); a.purge();
+      pollAutomationObservations(studio, Date.parse(clock())); a.scheduleDue(); a.purge(); a.resumeEngineWaits();
       const r = a.claim(worker); if (!r) return;
       const heartbeat = setInterval(() => a.renew(r.id, worker), 25000); heartbeat.unref?.();
       try {
@@ -49,7 +50,7 @@ export function createAutomationRunner({ studio, clock = () => new Date().toISOS
         }
         const reusable = studio.comm.reusableAutomation(d.agentSlug, `${d.id}:${d.revision}:${data.hash}`, d.freshnessMinutes * 60000);
         if (reusable) { a.tx(() => { a.link(r.id, reusable.id, data.hash); a.finish(r.id, 'done', 'Résultat vérifié récent réutilisé sans nouvel appel IA'); }); return; }
-        if (!a.reserveAi(r.id)) return a.finish(r.id, 'waiting_ai', 'Autorisation, moteur IA, quota ou place indisponible ; reprise explicite.');
+        if (!a.reserveAi(r.id)) return a.finish(r.id, 'waiting_ai', a.engineReady(d.agentSlug) ? 'Autorisation, quota ou place indisponible ; reprise explicite.' : ENGINE_WAIT);
         a.tx(() => {
           const created = studio.comm.createTask({ assigneeId: agentId, title: d.name, instruction: `${d.objective}\nSources choisies, datées (aperçu borné) :\n${data.summary.slice(0, 1600)}\nLecture seule. Coûts absents inconnus ; pas de délégation. Toute action sensible exige une validation humaine.`, withCatalog: d.sources.includes('catalog'), withIntegrations: d.sources.filter((s) => ['shopify_apps', 'manual_import', 'shopify_admin', 'dsers', 'track17'].includes(s)), budgetUsd: d.budgetUsd, requiresApproval: true, dueAt: r.due_at, cacheKey: `${d.id}:${d.revision}:${data.hash}` }, { type: 'automation', runId: r.id });
           a.link(r.id, created.task.id, data.launchHash);

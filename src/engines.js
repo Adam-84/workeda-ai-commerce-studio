@@ -51,8 +51,8 @@ export function cleanSignal(raw) {
   const at = typeof raw.resetsAt === 'string' ? Date.parse(raw.resetsAt) : NaN;
   return {
     status: raw.status, window: QUOTA_WINDOWS.includes(raw.window) ? raw.window : 'unknown',
-    utilization: Number.isFinite(raw.utilization) && raw.utilization >= 0 && raw.utilization <= 100 ? raw.utilization : null,
-    resetsAt: Number.isFinite(at) ? new Date(at).toISOString() : null, overage: raw.overage === true
+    utilization: Number.isFinite(raw.utilization) && raw.utilization >= 0 && raw.utilization <= 1 ? raw.utilization : null, // fraction
+    resetsAt: Number.isFinite(at) ? new Date(at).toISOString() : null, overage: typeof raw.overage === 'boolean' ? raw.overage : null
   };
 }
 // Événement « rate_limit_event » de Claude Code. « archipel_source » n'est posé que par le serveur central.
@@ -60,18 +60,28 @@ export function quotaOfEvent(event) {
   const info = event?.type === 'rate_limit_event' ? event.rate_limit_info : null;
   if (!info) return null;
   const seconds = info.resetsAt;
-  const signal = cleanSignal({ status: info.status, window: info.rateLimitType, utilization: info.utilization, resetsAt: Number.isFinite(seconds) && seconds > 0 && seconds < 1e11 ? new Date(seconds * 1000).toISOString() : null, overage: info.isUsingOverage === true });
+  const signal = cleanSignal({ status: info.status, window: info.rateLimitType, utilization: info.utilization, resetsAt: Number.isFinite(seconds) && seconds > 0 && seconds < 1e11 ? new Date(seconds * 1000).toISOString() : null, overage: info.isUsingOverage });
   return signal && { ...signal, source: SOURCE_ID.test(event.archipel_source ?? '') ? event.archipel_source : 'local' };
 }
+// Deux relevés d'une même fenêtre pendant une exécution : une information absente ne contredit pas la précédente.
+export const mergeSignal = (previous, next) => (next.overage === null && previous ? { ...next, overage: previous.overage } : next);
 export const signalStale = (s, now = Date.now()) => Boolean(s.resetsAt && Date.parse(s.resetsAt) <= now);
 const when = (iso) => new Date(iso).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short', timeZone: 'Europe/Paris' });
+const MODEL_WINDOWS = { seven_day_opus: 'opus', seven_day_sonnet: 'sonnet' };
+const isConfirmed = (s, now) => Boolean(s.confirmedUntil && Date.parse(s.confirmedUntil) > now);
+// Ce qu'une confirmation du propriétaire peut lever : un refus sans date, ou une dépense supplémentaire non masquée par un refus daté général.
+export function needsConfirmation(s, now = Date.now()) {
+  if (signalStale(s, now) || isConfirmed(s, now)) return false;
+  if (s.status === 'rejected' && !s.resetsAt) return true;
+  return Boolean(s.overage) && !(s.status === 'rejected' && !MODEL_WINDOWS[s.window]);
+}
 // Pourquoi ce signal fait attendre ce moteur ; chaîne vide s'il ne bloque pas.
+// Une limite de modèle ne retient que ce modèle ; une dépense supplémentaire les retient tous.
 export function signalReason(s, engine, now = Date.now()) {
-  if (s.window === 'seven_day_opus' && engine?.model !== 'opus') return '';
-  if (s.window === 'seven_day_sonnet' && engine?.model !== 'sonnet') return '';
   if (signalStale(s, now)) return '';
-  const confirmed = Boolean(s.confirmedUntil && Date.parse(s.confirmedUntil) > now);
-  if (s.status === 'rejected') {
+  const confirmed = isConfirmed(s, now);
+  const only = MODEL_WINDOWS[s.window];
+  if (s.status === 'rejected' && (!only || engine?.model === only)) {
     if (s.resetsAt) return `Limite Claude atteinte : reprise après le ${when(s.resetsAt)}.`;
     return confirmed ? '' : 'Limite Claude atteinte sans date de remise à zéro : confirmez la reprise.';
   }

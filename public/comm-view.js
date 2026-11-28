@@ -93,7 +93,7 @@ export const activeText = (active, nameOf) => (active.length ? `${active.map((a)
 const RUN_KINDS = { reply: 'réponse dans un fil', chat: 'discussion directe', team: 'fil d’équipe', plan: 'proposition de plan', memory: 'proposition de souvenirs' };
 // Une exécution réelle, en une ligne.
 export function runLine(r, nameOf) {
-  const state = { running: 'en cours', done: 'terminée', error: 'en erreur' }[r.state] ?? r.state;
+  const state = { running: 'en cours', done: 'terminée', error: 'en erreur', refused: 'refusée par le fournisseur (limite)' }[r.state] ?? r.state;
   const dur = r.durationMs != null ? ` · ${Math.round(r.durationMs / 1000)} s` : '';
   const what = r.kind === 'task' ? `tâche « ${r.taskTitle ?? '?'} »` : RUN_KINDS[r.kind] ?? r.kind;
   const model = !r.model ? '' : r.modelStatus === 'mismatch' ? ` · ⚠ ${r.observedModels.join(', ')} constaté au lieu de ${r.model}` : ` · ${r.model}${r.modelStatus === 'unknown' && r.state === 'done' ? ' (modèle constaté inconnu)' : ''}`;

@@ -183,7 +183,9 @@ export async function createCloudRuntime({ dataDir, passwordHash, origin, port =
   auth = createCloudAuth({ passwordHash, origin: origin ?? `http://127.0.0.1:${server.address().port}` });
   app = createApp({ studio, skills, publicDir: join(root, 'public'), detect: () => false, agentFiles: loaded, runClaude: runRemote,
     authorizeRequest: auth.authorize, canRun: () => !halted, pumpEveryMs: 5000,
-    engineReason });
+    engineReason,
+    // Le relevé d'un worker révoqué ne retient plus rien : il n'est plus affiché.
+    signalVisible: source => source === 'local' || broker.status().workers.some(w => w.id === source && !w.revoked) });
   app.orchestrator.start(); app.automationRunner.start();
   // Contrôle d'échéance plutôt qu'un délai depuis le démarrage : des redémarrages fréquents ne repoussent plus la sauvegarde.
   const overdue = () => !lastBackup || Date.now() - Date.parse(lastBackup.at) >= backupEveryMs;

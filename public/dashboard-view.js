@@ -1,6 +1,6 @@
 // public/dashboard-view.js — modèle du tableau de bord (fonction pure, testée dans Node).
 // Règle : une donnée absente est dite « Indisponible » ou « Inconnu », jamais remplacée par zéro.
-import { signalShort } from './engine-view.js';
+import { signalShort, engineLabel } from './engine-view.js';
 
 const plural = (n, one, many = `${one}s`) => `${n} ${n > 1 ? many : one}`;
 const card = (id, label, value, detail = '', tone = 'ok', open = null) => ({ id, label, value, detail, tone, open });
@@ -48,10 +48,17 @@ export function buildDashboard({ agents, missions, notifications, memoryPending,
   const current = (engines?.signals ?? []).filter((s) => !s.stale);
   if (!current.length) cards.push(card('quotas', 'Quotas fournisseurs', 'Inconnu', `Les abonnements ne communiquent pas leur solde à Archipel.${limit}`, 'unknown'));
   else {
+    // Le catalogue dit quels modèles sont réellement retenus ; un relevé bloquant peut ne viser qu'un modèle ou qu'un worker.
+    const models = engines.catalog?.find((p) => p.provider === 'claude')?.models;
     const held = current.some((s) => s.blocking), near = current.some((s) => s.status === 'allowed_warning');
+    const waiting = models ? models.filter((m) => m.reason) : [];
+    const stopped = models ? waiting.length === models.length : held;
+    const named = waiting.map((m) => engineLabel({ provider: 'claude', model: m.model }).replace('Claude ', '')).join(' et ');
+    const value = stopped ? 'Claude en attente' : waiting.length ? `Claude ${named} en attente` : near ? 'Claude proche de la limite' : 'Claude autorisé';
+    const partly = held && !stopped && !waiting.length ? ' Une source est retenue, d’autres restent disponibles.' : '';
     const first = current.find((s) => s.blocking) ?? current.find((s) => s.status === 'allowed_warning') ?? current[0];
     const others = current.length > 1 ? ` ${plural(current.length - 1, 'autre relevé', 'autres relevés')} dans Comms, onglet Activité.` : '';
-    cards.push(card('quotas', 'Quotas fournisseurs', held ? 'Claude en attente' : near ? 'Claude proche de la limite' : 'Claude autorisé', `${signalShort(first)}.${others}${limit}`, held || near ? 'warn' : 'ok', 'comm'));
+    cards.push(card('quotas', 'Quotas fournisseurs', value, `${signalShort(first)}.${partly}${others}${limit}`, held || near || waiting.length ? 'warn' : 'ok', 'comm'));
   }
 
   if (integrations) {

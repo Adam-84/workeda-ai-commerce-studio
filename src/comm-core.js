@@ -3,7 +3,7 @@
 import { scrubContacts, scrubProjectedPrompt } from './catalog-privacy.js';
 import { createHash } from 'node:crypto';
 import { findSecret } from './memory-core.js';
-import { modelOfEvent, quotaOfEvent } from './engines.js';
+import { mergeSignal, modelOfEvent, quotaOfEvent } from './engines.js';
 
 export const THREAD_KINDS = ['direct', 'department', 'mission', 'group'];
 export const MESSAGE_KINDS = ['message', 'delegation', 'result', 'help', 'blocker', 'proposal', 'decision', 'system'];
@@ -129,7 +129,10 @@ export function observeTools() {
     state,
     feed(event) {
       const signal = quotaOfEvent(event); // dernier signal par fenêtre et par source
-      if (signal) state.quota = [...state.quota.filter((q) => q.window !== signal.window || q.source !== signal.source), signal].slice(-8);
+      if (signal) {
+        const same = (q) => q.window === signal.window && q.source === signal.source;
+        state.quota = [...state.quota.filter((q) => !same(q)), mergeSignal(state.quota.find(same), signal)].slice(-8);
+      }
       if (state.models.length < 8) add(state.models, modelOfEvent(event));
       if (event?.type === 'assistant') for (const b of event.message?.content ?? []) {
         if (b.type !== 'tool_use') continue;
